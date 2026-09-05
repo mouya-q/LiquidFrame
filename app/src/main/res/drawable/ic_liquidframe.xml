@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+
+    android:width="512dp"
+    android:height="512dp"
+
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+
+    <!-- ========================= -->
+    <!-- Background Glass Gradient -->
+    <!-- ========================= -->
+
+    <path
+        android:pathData="
+        M0,0
+        H512
+        V512
+        H0
+        Z"
+        android:fillColor="#F7FAFF"/>
+
+
+    <!-- soft blue glass tint -->
+
+    <path
+        android:pathData="
+        M0,260
+        C120,180 260,190 512,80
+        V512
+        H0
+        Z"
+        android:fillColor="#55DCEBFF"/>
+
+
+
+    <!-- purple refraction -->
+
+    <path
+        android:pathData="
+        M0,420
+        C180,330 300,460 512,350
+        V512
+        H0
+        Z"
+        android:fillColor="#55C8B6FF"/>
+
+
+
+    <!-- pink light -->
+
+    <path
+        android:pathData="
+        M0,0
+        H512
+        V100
+        C300,160 120,120 0,220
+        Z"
+        android:fillColor="#33FFD8E8"/>
+
+
+
+
+    <!-- ========================= -->
+    <!-- Glass Main Panel -->
+    <!-- ========================= -->
+
+
+    <path
+        android:pathData="
+        M72,96
+        H440
+        V416
+        H72
+        Z"
+
+        android:fillColor="#35FFFFFF"/>
+
+
+
+    <!-- Inner glass layer -->
+
+    <path
+        android:pathData="
+        M96,120
+        H416
+        V392
+        H96
+        Z"
+
+        android:fillColor="#22FFFFFF"/>
+
+
+
+
+    <!-- ========================= -->
+    <!-- Glass Edge Highlight -->
+    <!-- ========================= -->
+
+
+    <path
+        android:pathData="
+        M72,96
+        H440
+        V416
+        H72
+        Z"
+
+        android:strokeColor="#BFFFFFFF"
+        android:strokeWidth="5"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+    <!-- secondary reflection -->
+
+    <path
+        android:pathData="
+        M90,115
+        H420"
+
+        android:strokeColor="#66FFFFFF"
+        android:strokeWidth="8"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+    <!-- ========================= -->
+    <!-- Liquid Wave -->
+    <!-- ========================= -->
+
+
+    <path
+        android:pathData="
+        M0,360
+
+        C90,310
+        170,330
+        250,360
+
+        C340,400
+        420,300
+        512,320
+
+        V512
+
+        H0
+
+        Z"
+
+        android:fillColor="#558EBFFF"/>
+
+
+
+    <!-- wave highlight -->
+
+    <path
+        android:pathData="
+        M0,360
+
+        C90,310
+        170,330
+        250,360
+
+        C340,400
+        420,300
+        512,320"
+
+        android:strokeColor="#99FFFFFF"
+        android:strokeWidth="4"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+
+    <!-- ========================= -->
+    <!-- LiquidFrame Logo -->
+    <!-- ========================= -->
+
+
+    <!-- L -->
+
+    <path
+        android:pathData="
+        M190,170
+
+        V310
+
+        C190,330
+        205,345
+        225,345
+
+        H330"
+
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="22"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+    <!-- glass shadow inside L -->
+
+    <path
+        android:pathData="
+        M190,170
+
+        V310"
+
+        android:strokeColor="#66FFFFFF"
+        android:strokeWidth="30"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+    <!-- Dot -->
+
+
+    <path
+        android:pathData="
+        M370,320
+
+        m-18,0
+
+        a18,18 0 1,0 36,0
+
+        a18,18 0 1,0 -36,0"
+
+        android:fillColor="#FFFFFFFF"/>
+
+
+
+
+    <!-- ========================= -->
+    <!-- Final Glass Shine -->
+    <!-- ========================= -->
+
+
+    <path
+        android:pathData="
+        M110,150
+
+        C180,120
+        260,130
+        400,150"
+
+        android:strokeColor="#55FFFFFF"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+    <path
+        android:pathData="
+        M120,390
+
+        C220,420
+        320,410
+        410,380"
+
+        android:strokeColor="#44FFFFFF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"/>
+
+
+
+</vector>
