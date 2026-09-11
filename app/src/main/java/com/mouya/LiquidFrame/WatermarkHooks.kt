@@ -2,10 +2,11 @@ package com.mouya.LiquidFrame
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
-import android.graphics.RectF
-import com.mouya.LiquidFrame.glass.LiquidGlassDrawable
+import android.graphics.Path
+import android.graphics.RadialGradient
+import android.graphics.Shader
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -16,169 +17,138 @@ object WatermarkHooks {
     private const val TAG = "LiquidFrame"
 
     fun install(param: XC_LoadPackage.LoadPackageParam) {
-        hookDrawMethods(param)
+        hookWatermarkGeneration(param)
     }
 
-    private fun hookDrawMethods(param: XC_LoadPackage.LoadPackageParam) {
-        // Hook Canvas.drawBitmap - intercept watermark bitmap drawing
+    /**
+     * Precision hook: com.xiaomi.cam.watermark.a.F() generates the watermark Bitmap.
+     * We post-process the returned Bitmap to replace its background with Liquid Glass
+     * while preserving text/metadata pixels.
+     */
+    private fun hookWatermarkGeneration(param: XC_LoadPackage.LoadPackageParam) {
         try {
-            XposedHelpers.findAndHookMethod(
-                Canvas::class.java,
-                "drawBitmap",
-                Bitmap::class.java,
-                Rect::class.java,
-                RectF::class.java,
-                Paint::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val bitmap = param.args[0] as? Bitmap ?: return
-                        val srcRect = param.args[1] as? Rect
-                        val dstRect = param.args[2] as? RectF ?: return
-
-                        if (isWatermarkBitmap(bitmap, dstRect)) {
-                            // Replace watermark background with glass while preserving text
-                            replaceWatermarkBackground(bitmap)
-                        }
-                    }
-                }
+            val watermarkClass = XposedHelpers.findClass(
+                "com.xiaomi.cam.watermark.a",
+                param.classLoader
             )
-            XposedBridge.log("$TAG: drawBitmap hooked")
-        } catch (e: Throwable) {
-            XposedBridge.log("$TAG: drawBitmap hook failed: ${e.message}")
-        }
 
-        // Hook Canvas.drawRoundRect - intercept watermark rounded rect background
-        try {
             XposedHelpers.findAndHookMethod(
-                Canvas::class.java,
-                "drawRoundRect",
-                RectF::class.java,
-                Float::class.javaPrimitiveType,
-                Float::class.javaPrimitiveType,
-                Paint::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val rect = param.args[0] as? RectF ?: return
-                        val rx = param.args[1] as Float
-
-                        if (isWatermarkRect(rect, rx)) {
-                            // Skip original draw, will be replaced by glass
-                            param.result = null
-                        }
-                    }
-                }
-            )
-            XposedBridge.log("$TAG: drawRoundRect hooked")
-        } catch (e: Throwable) {
-            XposedBridge.log("$TAG: drawRoundRect hook failed: ${e.message}")
-        }
-
-        // Hook Bitmap.createBitmap for watermark-sized bitmaps
-        try {
-            XposedHelpers.findAndHookMethod(
-                Bitmap::class.java,
-                "createBitmap",
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType,
-                Bitmap.Config::class.java,
+                watermarkClass,
+                "F",
+                watermarkClass,
+                android.content.Context::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val bitmap = param.result as? Bitmap ?: return
-                        val width = param.args[0] as Int
-                        val height = param.args[1] as Int
-
-                        if (isWatermarkSize(width, height)) {
-                            markWatermarkBitmap(bitmap)
-                        }
+                        if (bitmap.isRecycled) return
+                        processWatermarkBackground(bitmap)
                     }
                 }
             )
-            XposedBridge.log("$TAG: createBitmap hooked")
+            XposedBridge.log("$TAG: com.xiaomi.cam.watermark.a.F() hooked")
         } catch (e: Throwable) {
-            XposedBridge.log("$TAG: createBitmap hook failed: ${e.message}")
+            XposedBridge.log("$TAG: watermark hook failed: ${e.message}")
         }
     }
 
-    private fun isWatermarkBitmap(bitmap: Bitmap, dstRect: RectF): Boolean {
-        // Watermark is typically at bottom of image, width 35-45%, height 8-12%
-        val photoWidth = dstRect.width().toInt() // approximation
-        val ratioW = dstRect.width() / photoWidth
-        val ratioH = dstRect.height() / photoWidth
-
-        return ratioW in 0.30f..0.50f && ratioH in 0.06f..0.15f &&
-                bitmap.config == Bitmap.Config.ARGB_8888 &&
-                bitmap.hasAlpha()
-    }
-
-    private fun isWatermarkRect(rect: RectF, cornerRadius: Float): Boolean {
-        // Watermark background: large width, small height, rounded corners
-        val aspectRatio = rect.width() / rect.height()
-        return aspectRatio > 3f && aspectRatio < 10f && cornerRadius > 4f
-    }
-
-    private fun isWatermarkSize(width: Int, height: Int): Boolean {
-        val aspectRatio = width.toFloat() / height.toFloat()
-        return aspectRatio > 3f && aspectRatio < 10f && width > 200
-    }
-
-    private fun replaceWatermarkBackground(bitmap: Bitmap) {
-        // Replace the watermark bitmap background with Liquid Glass
-        // Preserves text pixels (non-transparent, non-background colored)
+    /**
+     * Detect and replace watermark background with glass effect.
+     * Preserves text/metadata pixels by analyzing alpha and brightness.
+     */
+    private fun processWatermarkBackground(bitmap: Bitmap) {
         try {
-            val canvas = Canvas(bitmap)
-            val width = bitmap.width.toFloat()
-            val height = bitmap.height.toFloat()
+            val width = bitmap.width
+            val height = bitmap.height
 
-            // Create glass drawable
-            val glass = LiquidGlassDrawable(
-                radiusPx = height * 0.15f, // ~15% of height as corner radius
-                refractionHeightPx = 20f,
-                refractionAmountPx = 60f,
-                highlightStrength = 0.8f,
-                tintAlpha = 0.12f,
-            )
+            // Watermark must be wide and short
+            val aspectRatio = width.toFloat() / height.toFloat()
+            if (aspectRatio < 3f || aspectRatio > 15f || width < 200) return
 
-            // Save original text pixels
-            val originalPixels = IntArray(bitmap.width * bitmap.height)
-            bitmap.getPixels(originalPixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
-            // Draw glass background
-            glass.setBounds(0, 0, bitmap.width, bitmap.height)
-            glass.draw(canvas)
+            val backgroundMask = BooleanArray(width * height)
+            var bgCount = 0
 
-            // Restore text pixels (keep non-background pixels from original)
-            restoreTextPixels(bitmap, originalPixels)
+            for (i in pixels.indices) {
+                val pixel = pixels[i]
+                val alpha = pixel ushr 24
+                val red = (pixel shr 16) and 0xFF
+                val green = (pixel shr 8) and 0xFF
+                val blue = pixel and 0xFF
+
+                val maxC = maxOf(red, green, blue)
+                val minC = minOf(red, green, blue)
+                val saturation = if (maxC == 0) 0 else (maxC - minC)
+
+                if (alpha in 10..200 && maxC > 150 && saturation < 40) {
+                    backgroundMask[i] = true
+                    bgCount++
+                }
+            }
+
+            val bgRatio = bgCount.toFloat() / pixels.size
+            if (bgRatio < 0.15f || bgRatio > 0.75f) return
+
+            renderGlassBackground(bitmap, backgroundMask, width, height)
 
         } catch (e: Throwable) {
-            XposedBridge.log("$TAG: replaceWatermarkBackground failed: ${e.message}")
+            XposedBridge.log("$TAG: processWatermarkBackground failed: ${e.message}")
         }
     }
 
-    private fun restoreTextPixels(bitmap: Bitmap, originalPixels: IntArray) {
-        val width = bitmap.width
-        val height = bitmap.height
-        val newPixels = IntArray(width * height)
-        bitmap.getPixels(newPixels, 0, width, 0, 0, width, height)
+    private fun renderGlassBackground(
+        bitmap: Bitmap,
+        backgroundMask: BooleanArray,
+        width: Int,
+        height: Int
+    ) {
+        val glassBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(glassBitmap)
 
-        for (i in originalPixels.indices) {
-            val orig = originalPixels[i]
-            val new = newPixels[i]
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(50, 255, 255, 255)
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fillPaint)
 
-            // If original pixel was text (opaque, dark), keep it
-            val origAlpha = orig ushr 24
-            val origBrightness = ((orig shr 16) and 0xFF) + ((orig shr 8) and 0xFF) + (orig and 0xFF)
+        val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+            color = Color.argb(90, 255, 255, 255)
+        }
+        val rimPath = Path().apply {
+            addRoundRect(
+                1.25f, 1.25f, width - 1.25f, height - 1.25f,
+                height * 0.15f, height * 0.15f,
+                Path.Direction.CW
+            )
+        }
+        canvas.drawPath(rimPath, rimPaint)
 
-            if (origAlpha > 200 && origBrightness < 400) {
-                // Text pixel - restore original
-                newPixels[i] = orig
+        val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                width * 0.3f, height * 0.3f,
+                width * 0.6f,
+                intArrayOf(Color.argb(60, 255, 255, 255), Color.TRANSPARENT),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), highlightPaint)
+
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        val glassPixels = IntArray(width * height)
+        glassBitmap.getPixels(glassPixels, 0, width, 0, 0, width, height)
+
+        for (i in pixels.indices) {
+            if (backgroundMask[i]) {
+                pixels[i] = glassPixels[i]
             }
         }
 
-        bitmap.setPixels(newPixels, 0, width, 0, 0, width, height)
-    }
-
-    private fun markWatermarkBitmap(bitmap: Bitmap) {
-        // Set a tag on the bitmap for later identification
-        // In production, use a WeakHashMap or similar
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        glassBitmap.recycle()
     }
 }

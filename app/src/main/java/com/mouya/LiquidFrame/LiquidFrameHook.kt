@@ -1,11 +1,5 @@
 package com.mouya.LiquidFrame
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
-import android.graphics.RectF
-import com.mouya.LiquidFrame.glass.LiquidGlassDrawable
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
