@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LSPosed 推荐作用域：小米/红米相机（HyperOS / MIUI） -->
+    <string-array name="xposed_scope">
+        <!-- 澎湃OS / 小米相机 -->
+        <item>com.android.camera</item>
+        <item>com.miui.camera</item>
+    </string-array>
+</resources>

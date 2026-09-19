@@ -1,28 +1,24 @@
-<manifest
-xmlns:android="http://schemas.android.com/apk/res/android">
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <application
+        android:allowBackup="true"
+        android:label="LiquidFrame"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light">
 
-<application
-android:theme="@android:style/Theme.Material.Light"
-android:label="LiquidFrame">
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="Apple Liquid Glass Watermark for HyperOS" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposed_scope" />
 
-
-<meta-data
-android:name="xposedmodule"
-android:value="true"/>
-
-
-<meta-data
-android:name="xposeddescription"
-android:value="Apple Liquid Glass Watermark for HyperOS"/>
-
-
-<meta-data
-android:name="xposedminversion"
-android:value="93"/>
-
-
-</application>
-
-
+    </application>
 </manifest>
