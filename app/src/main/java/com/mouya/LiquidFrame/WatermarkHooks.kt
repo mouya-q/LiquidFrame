@@ -105,50 +105,103 @@ object WatermarkHooks {
     ) {
         val glassBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(glassBitmap)
-
-        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(50, 255, 255, 255)
+        
+        // iOS 液态玻璃核心参数
+        val glassBaseColor = Color.argb(35, 220, 230, 255) // 冷调半透明白
+        val glassHighlight = Color.argb(60, 255, 255, 255)
+        val glassShadow = Color.argb(40, 0, 0, 50)
+        
+        // 1. 底层颜色填充（带冷色调）
+        val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = glassBaseColor
         }
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fillPaint)
-
-        val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2.5f
-            color = Color.argb(90, 255, 255, 255)
-        }
-        val rimPath = Path().apply {
-            addRoundRect(
-                1.25f, 1.25f, width - 1.25f, height - 1.25f,
-                height * 0.15f, height * 0.15f,
-                Path.Direction.CW
-            )
-        }
-        canvas.drawPath(rimPath, rimPaint)
-
-        val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), basePaint)
+        
+        // 2. 多层高光（模拟液态玻璃折射）
+        val highlight1 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = RadialGradient(
-                width * 0.3f, height * 0.3f,
-                width * 0.6f,
-                intArrayOf(Color.argb(60, 255, 255, 255), Color.TRANSPARENT),
+                width * 0.25f, height * 0.25f,
+                width * 0.4f,
+                intArrayOf(glassHighlight, Color.TRANSPARENT),
                 floatArrayOf(0f, 1f),
                 Shader.TileMode.CLAMP
             )
         }
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), highlightPaint)
-
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), highlight1)
+        
+        val highlight2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                width * 0.7f, height * 0.6f,
+                width * 0.3f,
+                intArrayOf(glassHighlight, Color.TRANSPARENT),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), highlight2)
+        
+        // 3. 边缘光（圆角描边 + 内发光）
+        val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.argb(100, 255, 255, 255)
+            shadowColor = Color.argb(50, 255, 255, 255)
+            shadowDx = 0f
+            shadowDy = 1f
+            shadowRadius = 3f
+        }
+        val rimPath = Path().apply {
+            addRoundRect(
+                1.5f, 1.5f, width - 1.5f, height - 1.5f,
+                height * 0.12f, height * 0.12f,
+                Path.Direction.CW
+            )
+        }
+        canvas.drawPath(rimPath, rimPaint)
+        
+        // 4. 阴影层（增加立体感）
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = glassShadow
+        }
+        canvas.drawRect(2f, height - 2f, width - 2f, height + 1f, shadowPaint)
+        canvas.drawRect(2f, 2f, width - 2f, 1f, shadowPaint)
+        canvas.drawRect(2f, 2f, width - 1f, height - 2f, shadowPaint)
+        canvas.drawRect(1f, 2f, width - 2f, height - 2f, shadowPaint)
+        
+        // 5. 获取像素并混合
         val pixels = IntArray(width * height)
+        glassBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        val glassPixels = IntArray(width * height)
-        glassBitmap.getPixels(glassPixels, 0, width, 0, 0, width, height)
-
+        
         for (i in pixels.indices) {
             if (backgroundMask[i]) {
-                pixels[i] = glassPixels[i]
+                // 液态玻璃效果：背景像素 + 玻璃层混合
+                pixels[i] = mixLiquidGlass(pixels[i], glassPixels[i], 0.3f)
             }
         }
-
+        
         bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
         glassBitmap.recycle()
+    }
+    
+    // 混合液态玻璃效果（简单模拟折射）
+    private fun mixLiquidGlass(bg: Int, glass: Int, alpha: Float): Int {
+        val bgA = (bg shr 24) and 0xFF
+        val bgR = (bg shr 16) and 0xFF
+        val bgG = (bg shr 8) and 0xFF
+        val bgB = bg and 0xFF
+        
+        val glassA = (glass shr 24) and 0xFF
+        val glassR = (glass shr 16) and 0xFF
+        val glassG = (glass shr 8) and 0xFF
+        val glassB = glass and 0xFF
+        
+        val finalA = (bgA * (1 - alpha) + glassA * alpha).toInt().coerceIn(0, 255)
+        val finalR = (bgR * (1 - alpha) + glassR * alpha).toInt().coerceIn(0, 255)
+        val finalG = (bgG * (1 - alpha) + glassG * alpha).toInt().coerceIn(0, 255)
+        val finalB = (bgB * (1 - alpha) + glassB * alpha).toInt().coerceIn(0, 255)
+        
+        return (finalA shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
     }
 }
