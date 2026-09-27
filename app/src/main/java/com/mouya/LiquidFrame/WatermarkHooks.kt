@@ -171,8 +171,10 @@ object WatermarkHooks {
         
         // 5. 获取像素并混合
         val pixels = IntArray(width * height)
-        glassBitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        val glassPixels = IntArray(width * height)
+        glassBitmap.getPixels(glassPixels, 0, width, 0, 0, width, height)
         
         for (i in pixels.indices) {
             if (backgroundMask[i]) {
