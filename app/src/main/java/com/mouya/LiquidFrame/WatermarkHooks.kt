@@ -145,10 +145,7 @@ object WatermarkHooks {
             style = Paint.Style.STROKE
             strokeWidth = 2f
             color = Color.argb(100, 255, 255, 255)
-            shadowColor = Color.argb(50, 255, 255, 255)
-            shadowDx = 0f
-            shadowDy = 1f
-            shadowRadius = 3f
+            setShadowLayer(3f, 0f, 1f, Color.argb(50, 255, 255, 255))
         }
         val rimPath = Path().apply {
             addRoundRect(
