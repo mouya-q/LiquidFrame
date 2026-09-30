@@ -40,4 +40,5 @@ dependencies {
     compileOnly 'androidx.annotation:annotation:1.9.1'
     // LSPosed 高级接口 (libxposed-interface 101.0.0)，对齐 MusicHapticsX API level
     compileOnly files('libs/libxposed-interface-101.0.0.aar')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
 }

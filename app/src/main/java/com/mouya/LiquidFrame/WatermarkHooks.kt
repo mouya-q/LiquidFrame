@@ -41,11 +41,18 @@ object WatermarkHooks {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val bitmap = param.result as? Bitmap ?: return
                         if (bitmap.isRecycled) return
-                        processWatermarkBackground(bitmap)
+                        if (!GlassConfig.masterEnabled) {
+                            LogHelper.log(TAG, "Module disabled, skipping")
+                            return
+                        }
+                        LogHelper.log(TAG, "Hook triggered, bitmap ${bitmap.width}x${bitmap.height}")
+                        val result = processWatermarkBackground(bitmap)
+                        LogHelper.log(TAG, "Processing result: $result")
                     }
                 }
             )
             XposedBridge.log("$TAG: com.xiaomi.cam.watermark.a.F() hooked")
+            LogHelper.log(TAG, "Hook installed: com.xiaomi.cam.watermark.a.F()")
         } catch (e: Throwable) {
             XposedBridge.log("$TAG: watermark hook failed: ${e.message}")
         }
@@ -55,14 +62,16 @@ object WatermarkHooks {
      * Detect and replace watermark background with glass effect.
      * Preserves text/metadata pixels by analyzing alpha and brightness.
      */
-    private fun processWatermarkBackground(bitmap: Bitmap) {
+    private fun processWatermarkBackground(bitmap: Bitmap): String {
         try {
             val width = bitmap.width
             val height = bitmap.height
 
             // Watermark must be wide and short
             val aspectRatio = width.toFloat() / height.toFloat()
-            if (aspectRatio < 3f || aspectRatio > 15f || width < 200) return
+            if (aspectRatio < 3f || aspectRatio > 15f || width < 200) {
+                return "skipped: not watermark size (${width}x${height}, ratio=$aspectRatio)"
+            }
 
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
@@ -88,12 +97,15 @@ object WatermarkHooks {
             }
 
             val bgRatio = bgCount.toFloat() / pixels.size
-            if (bgRatio < 0.15f || bgRatio > 0.75f) return
+            if (bgRatio < 0.15f || bgRatio > 0.75f) {
+                return "skipped: bg ratio $bgRatio out of range"
+            }
 
             renderGlassBackground(bitmap, backgroundMask, width, height)
+            return "success: replaced $bgCount bg pixels (${(bgRatio * 100).toInt()}%)"
 
         } catch (e: Throwable) {
-            XposedBridge.log("$TAG: processWatermarkBackground failed: ${e.message}")
+            return "error: ${e.message}"
         }
     }
 
