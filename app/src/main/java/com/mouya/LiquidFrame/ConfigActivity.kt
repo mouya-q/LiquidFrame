@@ -10,12 +10,12 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import android.app.Activity
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class ConfigActivity : AppCompatActivity() {
+class ConfigActivity : Activity() {
 
     private lateinit var logView: TextView
     private val logBuffer = StringBuilder()
