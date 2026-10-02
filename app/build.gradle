@@ -1,6 +1,9 @@
+// LSPosed module that gives Xiaomi's camera an Apple-style liquid glass watermark.
+//
+// AGP 9 has built-in Kotlin support, so `org.jetbrains.kotlin.android` is deliberately NOT
+// applied here: the plugin is rejected outright from AGP 9.0 onward.
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
@@ -28,10 +31,6 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = '17'
     }
 }
 
