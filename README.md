@@ -252,13 +252,16 @@ Because obfuscated names can change between camera builds, the panel is also rec
 pixels alone: `PanelScan` searches for the camera's opaque background band and measures its bounds
 and corner radius. If a future build renames the hooked classes, the module still finds the panel.
 
-The hook targets are currently hardcoded. [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler)
-solves this exact problem with [DexKit](https://github.com/LuckyPray/DexKit) — discovering methods
-by signature (return type, parameter count, invoked methods, referenced strings) instead of by name.
-Their camera hooks contain zero hardcoded obfuscated names, and their own note on the matter is
-that every major camera version invalidates hardcoded signatures. Migrating this module to DexKit
-is the planned fix for the biggest remaining limitation; see `hyperceiler-findings.md` for the
-analysis and the equivalent queries.
+The hook targets are currently discovered with [DexKit](https://github.com/LuckyPray/DexKit) at
+runtime, following the same approach [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler)
+uses for its camera hooks. Rather than hardcoding `Fe.a` and `pe.o`, the module queries by
+signature: the canvas wrapper class by its `Bitmap` constructor, the composite method by its
+`Bitmap` return type and parameter count, and the `drawRect` wrapper by its `void` return type and
+5-parameter shape. HyperCeiler's own note on the matter is that every major camera version
+invalidates hardcoded signatures, which is exactly the fragility this removes. If DexKit cannot
+initialize or find a target, the module falls back to the known obfuscated names from the
+reverse-engineered builds. See `hyperceiler-findings.md` for the analysis and the equivalent
+queries.
 
 ## Building
 
@@ -307,14 +310,15 @@ without the material by design rather than crashing.
 
 ## Limitations and known issues
 
-- **Verified against two camera builds.** The hook depends on obfuscated names
-  (`Fe.a`, `pe.o`). The pixel-based panel fallback is intended to survive renames, but it has not
-  been exercised on a build it was not derived from. The planned fix is to replace the hardcoded
-  names with [DexKit](https://github.com/LuckyPray/DexKit) signature queries — the same approach
+- **Hook targets are discovered at runtime with [DexKit](https://github.com/LuckyPray/DexKit)**, not
+  hardcoded. The module queries for the canvas wrapper class (by its `Bitmap` constructor), the
+  composite method (by its `Bitmap` return type and parameter count), and the `drawRect` wrapper
+  (by its `void` return type and 5-parameter signature). This is the same approach
   [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler) uses for its camera hooks, and the
   reason it is worth adopting is their own comment in `UnlockLeica.kt`: *"跨一个大版本就需要改一下特征点"*
-  (every major version needs its signature points changed). See `hyperceiler-findings.md` for the
-  comparison.
+  (every major version needs its signature points changed). If DexKit fails to initialize or find
+  a target, the module falls back to the known obfuscated names from the reverse-engineered builds.
+  See `hyperceiler-findings.md` for the full analysis.
 - **Not yet verified on a physical device end to end.** The optics are verified off-device by
   rendering to images and inspecting them; the hook's runtime behaviour needs log confirmation on
   the target phone.

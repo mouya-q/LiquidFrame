@@ -1,5 +1,6 @@
 package com.mouya.LiquidFrame
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
@@ -14,6 +15,7 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.lang.reflect.Method
 import java.util.Locale
 
 /**
@@ -84,34 +86,46 @@ object WatermarkHooks {
     private var current: Frame? = null
 
     fun install(param: XC_LoadPackage.LoadPackageParam) {
-        val loader = param.classLoader
-        hookCanvasWrapper(loader)
-        hookDrawRect(loader)
-        hookComposite(loader)
+        val context = try {
+            XposedHelpers.callStaticMethod(
+                XposedHelpers.findClass("android.app.ActivityThread", param.classLoader),
+                "currentApplication"
+            ) as? Context
+        } catch (e: Throwable) { null }
+
+        if (context != null) {
+            DexKitHelper.init(context)
+            DexKitHelper.setClassLoader(param.classLoader)
+        }
+
+        val canvasWrapperClass = DexKitHelper.findCanvasWrapper()
+        val compositeMethod = DexKitHelper.findCompositeMethod(param.classLoader)
+
+        if (canvasWrapperClass != null) {
+            hookCanvasWrapper(canvasWrapperClass)
+            hookDrawRect(canvasWrapperClass)
+        } else {
+            log("DexKit failed to find canvas wrapper; falling back to hardcoded names")
+            hookCanvasWrapperFallback(param.classLoader)
+            hookDrawRectFallback(param.classLoader)
+        }
+
+        if (compositeMethod != null) {
+            hookComposite(compositeMethod)
+        } else {
+            log("DexKit failed to find composite method; falling back to hardcoded names")
+            hookCompositeFallback(param.classLoader)
+        }
     }
 
     // ---------------------------------------------------------------------------------------
-    // Hook 1: the canvas wrapper. Gives us the live destination bitmap.
+    // DexKit-based Hooks
     // ---------------------------------------------------------------------------------------
 
-    /**
-     * `Lpe/o-><init>(Landroid/graphics/Bitmap;)V` is called once per render, from `Fe/a->j`,
-     * with the bitmap everything is drawn into. Capturing it here removes any need to reach for
-     * the photo separately: by the time the panel is drawn, the photo is already in it.
-     */
-    private fun hookCanvasWrapper(classLoader: ClassLoader) {
-        val cls = runCatching { XposedHelpers.findClass("pe.o", classLoader) }.getOrNull()
-        if (cls == null) {
-            log("class pe.o not found")
-            return
-        }
+    private fun hookCanvasWrapper(cls: Class<*>) {
         val ctor = cls.declaredConstructors.firstOrNull { c ->
             c.parameterTypes.size == 1 && Bitmap::class.java.isAssignableFrom(c.parameterTypes[0])
-        }
-        if (ctor == null) {
-            log("pe/o(Bitmap) constructor not found")
-            return
-        }
+        } ?: return
 
         XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
             override fun afterHookedMethod(p: MethodHookParam) {
@@ -122,38 +136,11 @@ object WatermarkHooks {
                 current = frame
             }
         })
-        log("hooked pe/o(Bitmap)")
+        log("hooked canvas wrapper via DexKit")
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Hook 2: the panel rectangle. Element-local, so it is mapped through the canvas matrix.
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * `Lpe/o->h(FFFFLandroid/graphics/Paint;)V` is `Canvas.drawRect`, and the disassembly shows
-     * only two callers in the whole app: `Fe/a->b` (shader-carrying layers, i.e. the background
-     * panel) and `Fe/c->a` (the dedicated panel element). A flat canvas clear does not come
-     * through here — that is `Canvas.drawColor` on the unwrapped canvas — so every hit is a
-     * panel.
-     */
-    private fun hookDrawRect(classLoader: ClassLoader) {
-        val cls = runCatching { XposedHelpers.findClass("pe.o", classLoader) }.getOrNull()
-        if (cls == null) return
-
-        val floatType = Float::class.javaPrimitiveType
-        val target = cls.declaredMethods.firstOrNull { method ->
-            method.name == "h" &&
-                    method.parameterTypes.size == 5 &&
-                    method.parameterTypes[0] == floatType &&
-                    method.parameterTypes[1] == floatType &&
-                    method.parameterTypes[2] == floatType &&
-                    method.parameterTypes[3] == floatType &&
-                    Paint::class.java.isAssignableFrom(method.parameterTypes[4])
-        }
-        if (target == null) {
-            log("pe/o->h not found; panels will be located from pixels")
-            return
-        }
+    private fun hookDrawRect(cls: Class<*>) {
+        val target = DexKitHelper.findDrawRectMethod(cls) ?: return
 
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
@@ -183,7 +170,118 @@ object WatermarkHooks {
                 }
             }
         })
-        log("hooked pe/o->h(FFFF,Paint)")
+        log("hooked drawRect via DexKit")
+    }
+
+    private fun hookComposite(method: Method) {
+        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+            override fun afterHookedMethod(p: MethodHookParam) {
+                val out = p.result as? Bitmap ?: return
+                val frame = current
+                current = null
+                if (!GlassConfig.masterEnabled) return
+                if (out.isRecycled) return
+                if (!out.isMutable) {
+                    log("skip: composite bitmap not mutable (${out.width}x${out.height})")
+                    return
+                }
+                try {
+                    process(out, frame)
+                } catch (t: Throwable) {
+                    log("process failed: ${t.javaClass.simpleName}: ${t.message}")
+                }
+            }
+        })
+        log("hooked composite method via DexKit")
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Fallback Hardcoded Hooks (for when DexKit fails or isn't initialized)
+    // ---------------------------------------------------------------------------------------
+
+    private fun hookCanvasWrapperFallback(classLoader: ClassLoader) {
+        val cls = runCatching { XposedHelpers.findClass("pe.o", classLoader) }.getOrNull() ?: return
+        val ctor = cls.declaredConstructors.firstOrNull { c ->
+            c.parameterTypes.size == 1 && Bitmap::class.java.isAssignableFrom(c.parameterTypes[0])
+        } ?: return
+
+        XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
+            override fun afterHookedMethod(p: MethodHookParam) {
+                val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
+                val frame = Frame()
+                frame.destination = bitmap
+                frames[this] = frame
+                current = frame
+            }
+        })
+    }
+
+    private fun hookDrawRectFallback(classLoader: ClassLoader) {
+        val cls = runCatching { XposedHelpers.findClass("pe.o", classLoader) }.getOrNull() ?: return
+        val floatType = Float::class.javaPrimitiveType
+        val target = cls.declaredMethods.firstOrNull { method ->
+            method.name == "h" &&
+                    method.parameterTypes.size == 5 &&
+                    method.parameterTypes[0] == floatType &&
+                    method.parameterTypes[1] == floatType &&
+                    method.parameterTypes[2] == floatType &&
+                    method.parameterTypes[3] == floatType &&
+                    Paint::class.java.isAssignableFrom(method.parameterTypes[4])
+        } ?: return
+
+        XposedBridge.hookMethod(target, object : XC_MethodHook() {
+            override fun beforeHookedMethod(p: MethodHookParam) {
+                val frame = current ?: return
+                val paint = p.args?.getOrNull(4) as? Paint ?: return
+                val shader = paint.shader ?: return
+                val x0 = p.args[0] as? Float ?: return
+                val y0 = p.args[1] as? Float ?: return
+                val x1 = p.args[2] as? Float ?: return
+                val y1 = p.args[3] as? Float ?: return
+                val w = x1 - x0
+                val h = y1 - y0
+                if (w < MIN_PANEL_WIDTH || h < 4f) return
+
+                val radiusHint = shaderRadius(shader, w, h)
+                val rect = absoluteRect(this, frame, x0, y0, x1, y1)
+                if (frame.panels.size < MAX_PANELS) {
+                    frame.panels.add(
+                        PanelRect(
+                            left = rect.left,
+                            top = rect.top,
+                            width = rect.width(),
+                            height = rect.height(),
+                            cornerRadiusPx = radiusHint,
+                        )
+                    )
+                }
+            }
+        })
+    }
+
+    private fun hookCompositeFallback(classLoader: ClassLoader) {
+        val cls = runCatching { XposedHelpers.findClass("Fe.a", classLoader) }.getOrNull() ?: return
+        val target = cls.declaredMethods.firstOrNull { method ->
+            method.name == "j" &&
+                    method.parameterTypes.size == 6 &&
+                    Bitmap::class.java.isAssignableFrom(method.parameterTypes[0])
+        } ?: return
+
+        XposedBridge.hookMethod(target, object : XC_MethodHook() {
+            override fun afterHookedMethod(p: MethodHookParam) {
+                val out = p.result as? Bitmap ?: return
+                val frame = current
+                current = null
+                if (!GlassConfig.masterEnabled) return
+                if (out.isRecycled) return
+                if (!out.isMutable) return
+                try {
+                    process(out, frame)
+                } catch (t: Throwable) {
+                    log("process failed: ${t.javaClass.simpleName}: ${t.message}")
+                }
+            }
+        })
     }
 
     /**
