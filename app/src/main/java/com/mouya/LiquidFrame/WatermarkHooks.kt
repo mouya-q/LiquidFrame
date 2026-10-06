@@ -73,11 +73,10 @@ object WatermarkHooks {
     private const val SCAN_WORK_WIDTH = 192
 
     /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
-    private const val PANEL_CROP_PAD_FRACTION = 0.6f
+    private const val PANEL_CROP_PAD_FRACTION = 0.55f
 
-    /** The destination bitmap `Fe/a->j` is drawing into, and the panels found in it. */
+    /** Per-composite panel observations. No strong reference to the destination bitmap is kept. */
     private class Frame {
-        var destination: Bitmap? = null
         val panels = ArrayList<PanelRect>(MAX_PANELS)
     }
 
@@ -86,9 +85,10 @@ object WatermarkHooks {
         java.util.WeakHashMap<Any, Frame>()
     )
 
-    /** The frame currently being built, so `drawRect` knows where to record its panel. */
-    @Volatile
-    private var current: Frame? = null
+    /** Secondary lookup by destination Bitmap, so the composite callback cannot mix captures. */
+    private val framesByBitmap = java.util.Collections.synchronizedMap(
+        java.util.WeakHashMap<Bitmap, Frame>()
+    )
 
     /** Classes already hooked, so the late discovery pass cannot double-hook a fallback target. */
     private val hookedClasses = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -161,12 +161,11 @@ object WatermarkHooks {
                 val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
                 val self = p.thisObject ?: return
                 val frame = Frame()
-                frame.destination = bitmap
                 // Keyed by the wrapper *instance*, not by this hook object: the wrapper is
                 // created once per composite, so concurrent composites no longer overwrite each
                 // other's state and the drawRect hook can find its own canvas.
                 frames[self] = frame
-                current = frame
+                framesByBitmap[bitmap] = frame
             }
         })
         log("hooked canvas wrapper via DexKit")
@@ -182,7 +181,7 @@ object WatermarkHooks {
                 // the canvas come from it, so a draw belonging to composite B can never be
                 // recorded against composite A's panel list.
                 val self = p.thisObject ?: return
-                val frame = frames[self] ?: current ?: return
+                val frame = frames[self] ?: return
                 val paint = p.args?.getOrNull(4) as? Paint ?: return
                 val shader = paint.shader ?: return
                 val x0 = p.args[0] as? Float ?: return
@@ -216,11 +215,7 @@ object WatermarkHooks {
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(p: MethodHookParam) {
                 val out = p.result as? Bitmap ?: return
-                val frame = current
-                // Only clear the shared slot if it still holds this frame. Another thread may
-                // have begun a composite in the meantime; clobbering it here would drop that
-                // one's panels.
-                if (current === frame) current = null
+                val frame = framesByBitmap.remove(out)
                 if (!GlassConfig.masterEnabled) return
                 if (out.isRecycled) return
                 if (!out.isMutable) {
@@ -368,7 +363,7 @@ object WatermarkHooks {
         // Read only the crop the material touches. The panel is a few percent of the frame, so
         // this is the difference between a ~48 MB buffer and a few hundred KB. It also keeps
         // the full-resolution pass off the critical path of a capture.
-        val padPx = PANEL_CROP_PAD_FRACTION * maxOf(resolved.width, resolved.height)
+        val padPx = maxOf(24f, PANEL_CROP_PAD_FRACTION * minOf(resolved.width, resolved.height))
         val left = (resolved.left - padPx).toInt().coerceIn(0, w - 1)
         val top = (resolved.top - padPx).toInt().coerceIn(0, h - 1)
         val right = (resolved.right + padPx).toInt().coerceIn(left + 1, w)

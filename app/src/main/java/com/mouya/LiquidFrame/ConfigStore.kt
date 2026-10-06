@@ -23,10 +23,9 @@ import java.util.Locale
  * reading a file that never existed. That is exactly the "I toggled it and nothing happened"
  * symptom, and it stayed invisible because the write path reported nothing either.
  *
- * So the writer no longer assumes it can write there. It tries the plain write first (fast, and
- * sufficient once the directory has been relaxed), falls back to escalating through `su` for
- * the first successful write, and then relaxes the mode so later writes do not pay for a
- * `su` fork per drag. Every path reports what it actually did through [lastWriteStatus], which
+ * So the writer no longer assumes it can write there. It tries the plain write first and falls
+ * back to `su` only when needed. Every path reports what it actually did through
+ * [lastWriteStatus], which
  * the settings screen surfaces instead of pretending.
  */
 object ConfigStore {
@@ -131,7 +130,12 @@ object ConfigStore {
     private fun writeText(text: String): Int {
         val plain = try {
             if (!file.parentFile?.exists()!!) file.parentFile?.mkdirs()
-            file.writeText(text)
+            val temp = File(file.parentFile, "$FILE_NAME.tmp")
+            temp.writeText(text)
+            if (!temp.renameTo(file)) {
+                temp.copyTo(file, overwrite = true)
+                temp.delete()
+            }
             true
         } catch (_: Throwable) {
             false
@@ -144,12 +148,13 @@ object ConfigStore {
         escalationCheckedMs = now
         if (alreadyTried && lastWriteMs == 0L) return WRITE_FAIL
 
+        val tempPath = file.absolutePath + ".tmp"
         val script = buildString {
             append("mkdir -p ").append(shellQuote(DIR))
-            append(" && chmod 777 ").append(shellQuote(DIR))
-            append(" && cat > ").append(shellQuote(file.absolutePath))
+            append(" && cat > ").append(shellQuote(tempPath))
             append(" <<'LF_EOF'\n").append(text).append("\nLF_EOF\n")
-            append("chmod 666 ").append(shellQuote(file.absolutePath)).append('\n')
+            append("chmod 666 ").append(shellQuote(tempPath))
+            append(" && mv -f ").append(shellQuote(tempPath)).append(' ').append(shellQuote(file.absolutePath)).append('\n')
         }
         val ok = try {
             runSu(script) == 0
@@ -158,8 +163,7 @@ object ConfigStore {
         }
         if (!ok) return WRITE_FAIL
 
-        // The relaxed directory should let the next write go through without root; verify by
-        // reading the file back so the status we report is measured, not assumed.
+        // Verify by reading the file back so the status we report is measured, not assumed.
         val readBack = try {
             file.exists() && parse(file.readText()).containsKey(KEY_ENABLED)
         } catch (_: Throwable) {

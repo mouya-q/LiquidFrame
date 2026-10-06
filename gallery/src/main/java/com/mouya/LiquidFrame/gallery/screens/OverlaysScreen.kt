@@ -45,8 +45,8 @@ fun OverlaysScreen() {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 96.dp, bottom = 140.dp, start = 20.dp, end = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(top = 68.dp, bottom = 96.dp, start = 20.dp, end = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Column {

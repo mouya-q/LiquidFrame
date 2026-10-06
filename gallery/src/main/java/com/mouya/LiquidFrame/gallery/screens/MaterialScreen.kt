@@ -60,8 +60,8 @@ fun MaterialScreen() {
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 96.dp, bottom = 140.dp, start = 20.dp, end = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(top = 68.dp, bottom = 96.dp, start = 20.dp, end = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item { ScreenHeader("液态玻璃材质", "同一背景下的材质对照") }
 
@@ -83,15 +83,6 @@ fun MaterialScreen() {
                 )
             }
 
-            item {
-                GlassPanel(
-                    backdrop = backdrop,
-                    spec = GlassSpec.Showy,
-                    title = "强色散",
-                    subtitle = "色散 0.45，折射带更厚 —— 看边缘的彩边",
-                )
-            }
-
             item { LiveMaterialTuner(backdrop) }
         }
     }
@@ -99,8 +90,8 @@ fun MaterialScreen() {
 
 @Composable
 private fun ScreenHeader(title: String, subtitle: String) {
-    Column(modifier = Modifier.padding(bottom = 4.dp)) {
-        Text(text = title, fontSize = 26.sp, color = MiuixTheme.colorScheme.onBackground)
+    Column(modifier = Modifier.padding(bottom = 2.dp)) {
+        Text(text = title, fontSize = 28.sp, color = MiuixTheme.colorScheme.onBackground)
         Text(
             text = subtitle,
             fontSize = 13.sp,
