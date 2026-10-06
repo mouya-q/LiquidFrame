@@ -163,7 +163,9 @@ object PhysicsSpring {
  */
 @Composable
 fun IOSToggle(checked: Boolean, onToggle: () -> Unit) {
-    val haptic = remember { HapticFeedback(LocalContext.current).apply { attach(LocalView.current) } }
+    val context = LocalContext.current
+    val view = LocalView.current
+    val haptic = remember { HapticFeedback(context).apply { attach(view) } }
     val scope = rememberCoroutineScope()
     val thumbOffset = remember { Animatable(if (checked) 22f else 2f) }
     val trackWidth = 52f
@@ -226,7 +228,9 @@ fun IOSSettingSliderRow(
     unit: String,
     onValueChange: (Float) -> Unit,
 ) {
-    val haptic = remember { HapticFeedback(LocalContext.current).apply { attach(LocalView.current) } }
+    val context = LocalContext.current
+    val view = LocalView.current
+    val haptic = remember { HapticFeedback(context).apply { attach(view) } }
     val thumbScale = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
@@ -403,7 +407,9 @@ fun IOSToggleRow(
     onToggle: () -> Unit,
     subtitle: String? = null,
 ) {
-    val haptic = remember { HapticFeedback(LocalContext.current).apply { attach(LocalView.current) } }
+    val context = LocalContext.current
+    val view = LocalView.current
+    val haptic = remember { HapticFeedback(context).apply { attach(view) } }
     Row(
         modifier = Modifier
             .fillMaxWidth()

@@ -461,7 +461,7 @@ object WatermarkHooks {
                 val y = sy * step
                 for (sx in 0 until sw) grid[sy * sw + sx] = out.getPixel(sx * step, y)
             }
-            val rect = PanelScan.find(grid, sw, sh) ?: return@let null
+            val rect = PanelScan.find(grid, sw, sh) ?: return null
 
             // Scale back to output pixels, then confirm on the full-resolution buffer. The
             // coarse grid can find a flat bar with hard edges, but it cannot tell a watermark
@@ -481,7 +481,7 @@ object WatermarkHooks {
             val sy0 = scaled.top.toInt().coerceIn(0, (h - 1).coerceAtLeast(0))
             val cw = stripW.coerceAtMost(w - sx0)
             val ch = stripH.coerceAtMost(h - sy0)
-            if (cw < 16 || ch < 6) return@let null
+            if (cw < 16 || ch < 6) return null
 
             val strip = IntArray(cw * ch)
             out.getPixels(strip, 0, cw, sx0, sy0, cw, ch)
