@@ -1,9 +1,6 @@
-// LSPosed module that gives Xiaomi's camera an Apple-style liquid glass watermark.
-//
-// AGP 9 has built-in Kotlin support, so `org.jetbrains.kotlin.android` is deliberately NOT
-// applied here: the plugin is rejected outright from AGP 9.0 onward.
 plugins {
     id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
 }
 
 android {
@@ -32,6 +29,10 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
 }
 
 dependencies {
@@ -39,7 +40,4 @@ dependencies {
     compileOnly 'androidx.annotation:annotation:1.9.1'
     // LSPosed 高级接口 (libxposed-interface 101.0.0)，对齐 MusicHapticsX API level
     compileOnly files('libs/libxposed-interface-101.0.0.aar')
-
-    // DexKit for robust hook target discovery across camera versions
-    implementation 'org.luckypray:dexkit:2.2.0'
 }

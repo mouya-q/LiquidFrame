@@ -25,4 +25,3 @@ dependencyResolutionManagement {
 rootProject.name="LiquidFrame"
 
 include ':app'
-include ':gallery'
