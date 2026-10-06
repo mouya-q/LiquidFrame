@@ -1,10 +1,11 @@
-name: Build LiquidFrame
+name: Build
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+  pull_request:
 
 jobs:
   build:
@@ -13,26 +14,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # AGP 9 requires JDK 17+ and is exercised on 21, which is also what this project is
+      # developed and verified against.
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: temurin
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK
+      # The gallery compiles against API 37, which needs an SDK platform the runner image may
+      # not carry yet.
+      - name: Install Android SDK platform 37
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" > /dev/null
+
+      - name: Build
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleDebug --stacktrace
 
-      - name: Upload APK
+      - name: Upload APKs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: LiquidFrame
           path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/**/*.apk
+            gallery/build/outputs/apk/**/*.apk
           if-no-files-found: warn
