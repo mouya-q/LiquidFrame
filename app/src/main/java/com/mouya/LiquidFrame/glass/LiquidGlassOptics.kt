@@ -148,7 +148,7 @@ object LiquidGlassOptics {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
         }
 
-        // NOTE ON BLUR. The camera's own watermark background is already a blurred layer 鈥?the
+        // NOTE ON BLUR. The camera's own watermark background is already a blurred layer — the
         // assets are literally named `icon_background_light_blur` / `_dark_blur`, and the
         // element tree blurs the photo into that panel before any label is drawn. Blurring
         // again here would destroy exactly the low-contrast local detail the lens is supposed
@@ -679,8 +679,12 @@ object LiquidGlassOptics {
                 // Panel-space position, normalised to -1..1 for the depth lean.
                 val px = gx + 0.5f
                 val py = gy + 0.5f
-                val nx = (px - panel.width * 0.5f) / (panel.width * 0.5f)
-                val ny = (py - panel.height * 0.5f) / (panel.height * 0.5f)
+                // NB: px/py are global bitmap coordinates, so the centre has to include the
+                // panel's own origin. Using `panel.width * 0.5` here (as an earlier revision did)
+                // put the "centre" at the bitmap's middle-left, which on a full-size frame made
+                // the depth normal collapse to a near-constant and silently disabled the lens.
+                val nx = (px - (panel.left + panel.width * 0.5f)) / (panel.width * 0.5f)
+                val ny = (py - (panel.top + panel.height * 0.5f)) / (panel.height * 0.5f)
 
                 val sd = sdRoundedRect(px, py, panel, radius)
                 if (-sd >= band) {
@@ -767,15 +771,18 @@ object LiquidGlassOptics {
 
                 // Inner shadow: shape filled, offset shape cleared, blurred, clipped.
                 if (shadowAlpha > 0.001f) {
-                    val sdOff = sdRoundedRect(
+                    // Inner shadow = shape minus an offset copy of itself. The offset shape is
+                    // the one that has to be *cleared*, so it is subtracted first; `shadowOffY`
+                    // is +1 (top edge) by default, which is `InnerShadow.Default`'s offset.
+                    val sdOffset = sdRoundedRect(
                         px - shadowOffX, py - shadowOffY, panel, radius
                     )
-                    val outward = minOf(sdOff / shadowRadius, 1f)
-                    val amount = (1f - smoothStep(-1f, 0f, outward)) * shadowAlpha
-                    if (amount > 0.001f) {
-                        cr = lerp(cr, 0f, amount)
-                        cg = lerp(cg, 0f, amount)
-                        cb = lerp(cb, 0f, amount)
+                    val cleared = (1f - smoothStep(-1f, 0f, minOf(sdOffset / shadowRadius, 1f)))
+                    val density = (cleared * shadowAlpha).coerceIn(0f, 1f)
+                    if (density > 0.001f) {
+                        cr = lerp(cr, 0f, density)
+                        cg = lerp(cg, 0f, density)
+                        cb = lerp(cb, 0f, density)
                     }
                 }
 
@@ -789,6 +796,10 @@ object LiquidGlassOptics {
             for (x in 0 until cw) {
                 val gx = cropLeft + x
                 val i = gy * width + gx
+                // The mask spans the whole bitmap while this loop only covers the crop, so the
+                // index has to be re-checked here; `cropTop + y` is already >= 0 but the
+                // product can still leave the buffer when the panel sits against an edge.
+                if (gx < 0 || gy < 0 || gx >= width || gy >= height) continue
                 if (i < 0 || i >= src.size) continue
                 val m = mask[i]
                 if (m == 0.toByte()) continue
@@ -798,9 +809,13 @@ object LiquidGlassOptics {
                 val glass = rendered[y * cw + x]
 
                 src[i] = if (m == GLASS) {
-                    // The app's own translucency decides how much lens shows through, but
-                    // never so faint that the material disappears.
-                    val alpha = (layerAlpha * 1.35f + 0.22f).coerceIn(0.18f, 0.72f)
+                    // How much of the material shows through is a *look* decision, not a fixed
+                    // curve: the app's own translucency sets the base, and the adaptive exposure
+                    // measured from the real backdrop thins it over bright scenes and densifies it
+                    // over dark ones. An earlier revision hard-clamped this to 0.18..0.72, which
+                    // capped the lens no matter how the scene was lit.
+                    val alpha = (layerAlpha * 0.85f + 0.30f + (1f - adapt) * 0.26f)
+                        .coerceIn(0.26f, 0.94f)
                     withAlpha(glass, (alpha * 255f).toInt())
                 } else {
                     // Glyph or opaque detail: keep it, over the glass underneath.

@@ -34,7 +34,23 @@ object GlassConfig {
         masterEnabled = ConfigStore.isEnabled()
         cachedParams = ConfigStore.glassParams()
         adaptiveGlass = cachedParams.adaptive
+
+        // The settings screen has no way to prove the camera actually received a change other
+        // than this line, so every refresh that observes a different `enabled` than the last one
+        // is announced. If the user's toggle never shows up here, the file is not being read.
+        if (masterEnabled != lastReportedEnabled) {
+            lastReportedEnabled = masterEnabled
+            LogHelper.log(
+                TAG,
+                "settings received: enabled=$masterEnabled adaptive=$adaptiveGlass " +
+                        "band=${cachedParams.refractionHeightFraction} " +
+                        "amount=${cachedParams.refractionAmountFraction} " +
+                        "blur=${cachedParams.blurFraction}",
+            )
+        }
     }
+
+    private var lastReportedEnabled: Boolean? = null
 
     /** The material parameters for this capture. */
     fun params(): GlassParams {

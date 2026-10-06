@@ -6,7 +6,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
-import com.mouya.LiquidFrame.glass.BitmapPanelScan
+import com.mouya.LiquidFrame.glass.PanelScan
 import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.PanelRect
@@ -68,6 +68,12 @@ object WatermarkHooks {
 
     /** Bounded work: keep at most this many bitmap locations per composite. */
     private const val MAX_PANELS = 8
+
+    /** Working width for the pixel fallback, in pixels. Structure survives this comfortably. */
+    private const val SCAN_WORK_WIDTH = 192
+
+    /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
+    private const val PANEL_CROP_PAD_FRACTION = 0.6f
 
     /** The destination bitmap `Fe/a->j` is drawing into, and the panels found in it. */
     private class Frame {
@@ -153,9 +159,13 @@ object WatermarkHooks {
         XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
             override fun afterHookedMethod(p: MethodHookParam) {
                 val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
+                val self = p.thisObject ?: return
                 val frame = Frame()
                 frame.destination = bitmap
-                frames[this] = frame
+                // Keyed by the wrapper *instance*, not by this hook object: the wrapper is
+                // created once per composite, so concurrent composites no longer overwrite each
+                // other's state and the drawRect hook can find its own canvas.
+                frames[self] = frame
                 current = frame
             }
         })
@@ -168,7 +178,11 @@ object WatermarkHooks {
 
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
-                val frame = current ?: return
+                // The receiver is the `Lpe/o` wrapper this draw is issued on. Both the frame and
+                // the canvas come from it, so a draw belonging to composite B can never be
+                // recorded against composite A's panel list.
+                val self = p.thisObject ?: return
+                val frame = frames[self] ?: current ?: return
                 val paint = p.args?.getOrNull(4) as? Paint ?: return
                 val shader = paint.shader ?: return
                 val x0 = p.args[0] as? Float ?: return
@@ -180,7 +194,7 @@ object WatermarkHooks {
                 if (w < MIN_PANEL_WIDTH || h < 4f) return
 
                 val radiusHint = shaderRadius(shader, w, h)
-                val rect = absoluteRect(this, frame, x0, y0, x1, y1)
+                val rect = absoluteRect(canvasOf(self), x0, y0, x1, y1)
                 if (frame.panels.size < MAX_PANELS) {
                     frame.panels.add(
                         PanelRect(
@@ -203,7 +217,10 @@ object WatermarkHooks {
             override fun afterHookedMethod(p: MethodHookParam) {
                 val out = p.result as? Bitmap ?: return
                 val frame = current
-                current = null
+                // Only clear the shared slot if it still holds this frame. Another thread may
+                // have begun a composite in the meantime; clobbering it here would drop that
+                // one's panels.
+                if (current === frame) current = null
                 if (!GlassConfig.masterEnabled) return
                 if (out.isRecycled) return
                 if (!out.isMutable) {
@@ -279,10 +296,10 @@ object WatermarkHooks {
      * mapped rectangle is taken as the axis-aligned bounding box.
      */
     private fun absoluteRect(
-        hook: Any, frame: Frame, x0: Float, y0: Float, x1: Float, y1: Float,
+        canvas: Canvas?, x0: Float, y0: Float, x1: Float, y1: Float,
     ): RectF {
         val local = RectF(x0, y0, x1, y1)
-        val canvas = canvasOf(hook) ?: return local
+        if (canvas == null) return local
         return try {
             val out = RectF()
             val matrix = Matrix()
@@ -342,18 +359,39 @@ object WatermarkHooks {
             log("app rect rejected (${f(reported.left)},${f(reported.top)} " +
                     "${f(reported.width)}x${f(reported.height)} in ${w}x$h); scanning pixels")
         }
-        val resolved = panel ?: BitmapPanelScan.find(out)
+        val resolved = panel ?: scanPanel(out, w, h)
         if (resolved == null) {
             log("skip: no watermark panel found in ${w}x$h")
             return
         }
 
-        val pixels = IntArray(w * h)
-        out.getPixels(pixels, 0, w, 0, 0, w, h)
-        val params = resolveParams(pixels)
-        val result = LiquidGlassOptics.renderPanel(pixels, w, h, resolved, params)
+        // Read only the crop the material touches. The panel is a few percent of the frame, so
+        // this is the difference between a ~48 MB buffer and a few hundred KB. It also keeps
+        // the full-resolution pass off the critical path of a capture.
+        val padPx = PANEL_CROP_PAD_FRACTION * maxOf(resolved.width, resolved.height)
+        val left = (resolved.left - padPx).toInt().coerceIn(0, w - 1)
+        val top = (resolved.top - padPx).toInt().coerceIn(0, h - 1)
+        val right = (resolved.right + padPx).toInt().coerceIn(left + 1, w)
+        val bottom = (resolved.bottom + padPx).toInt().coerceIn(top + 1, h)
+        val cw = right - left
+        val ch = bottom - top
+
+        val pixels = IntArray(cw * ch)
+        out.getPixels(pixels, 0, cw, left, top, cw, ch)
+
+        // The optics index in crop-local coordinates, so the panel is shifted with the crop.
+        val localPanel = PanelRect(
+            left = resolved.left - left,
+            top = resolved.top - top,
+            width = resolved.width,
+            height = resolved.height,
+            cornerRadiusPx = resolved.cornerRadiusPx,
+        )
+
+        val params = resolveParams(pixels, cw, ch, localPanel)
+        val result = LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
         if (!result.startsWith("skip")) {
-            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out.setPixels(pixels, 0, cw, left, top, cw, ch)
         }
 
         log("panel=${f(resolved.left)},${f(resolved.top)} " +
@@ -370,23 +408,100 @@ object WatermarkHooks {
         return rect.height >= 6f && rect.height <= h * 0.6f
     }
 
-    /** Picks the material variant for the scene behind the panel. */
-    private fun resolveParams(pixels: IntArray): GlassParams {
+    /**
+     * Picks the material variant for the scene behind the panel.
+     *
+     * Measured on the crop only, over the panel's own rectangle, because that is the backdrop
+     * the material has to cope with — averaging the whole photo would let a bright sky decide
+     * how dense a shadow strip at the bottom of the frame is rendered.
+     */
+    private fun resolveParams(pixels: IntArray, w: Int, h: Int, panel: PanelRect): GlassParams {
         if (!GlassConfig.adaptiveGlass) return GlassParams.Default.copy(adaptive = false)
+        val left = panel.left.toInt().coerceIn(0, w - 1)
+        val top = panel.top.toInt().coerceIn(0, h - 1)
+        val right = panel.right.toInt().coerceIn(left + 1, w)
+        val bottom = panel.bottom.toInt().coerceIn(top + 1, h)
         var total = 0.0
         var count = 0
-        var i = 0
-        while (i < pixels.size) {
-            val p = pixels[i]
-            total += 0.213 * ((p shr 16) and 0xFF) +
-                    0.715 * ((p shr 8) and 0xFF) +
-                    0.072 * (p and 0xFF)
-            count++
-            i += 97
+        for (y in top until bottom) {
+            val row = y * w
+            var x = left
+            while (x < right) {
+                val p = pixels[row + x]
+                total += 0.213 * ((p shr 16) and 0xFF) +
+                        0.715 * ((p shr 8) and 0xFF) +
+                        0.072 * (p and 0xFF)
+                count++
+                x += 2
+            }
         }
         if (count == 0) return GlassParams.Default
         val mean = total / count / 255.0
         return if (mean < 0.42) GlassParams.DarkScene else GlassParams.BrightScene
+    }
+
+    /**
+     * The pixel fallback, run on a downscaled copy.
+     *
+     * The scan needs structure, not colour accuracy, so it runs at roughly a tenth of the
+     * frame's width. That turns a 48 MB full-resolution read into a sub-megabyte one, and the
+     * returned rectangle is scaled back up to output pixels.
+     */
+    private fun scanPanel(out: Bitmap, w: Int, h: Int): PanelRect? {
+        val step = maxOf(1, w / SCAN_WORK_WIDTH)
+        val sw = w / step
+        val sh = h / step
+        if (sw < 8 || sh < 8) return null
+        return try {
+            // Bitmap.getPixels cannot stride, so the coarse grid is gathered pixel by pixel.
+            // At 192 px wide that is a few thousand reads, which is nothing next to a 12 MP
+            // buffer copy, and it needs no large allocation at all.
+            val grid = IntArray(sw * sh)
+            for (sy in 0 until sh) {
+                val y = sy * step
+                for (sx in 0 until sw) grid[sy * sw + sx] = out.getPixel(sx * step, y)
+            }
+            val rect = PanelScan.find(grid, sw, sh) ?: return@let null
+
+            // Scale back to output pixels, then confirm on the full-resolution buffer. The
+            // coarse grid can find a flat bar with hard edges, but it cannot tell a watermark
+            // panel from a strip of blown-out sky — only a *labelled* bar is a watermark. This
+            // reads the candidate strip alone, so it costs a few percent of the frame rather
+            // than another whole-image copy.
+            val scaled = PanelRect(
+                left = rect.left * step,
+                top = rect.top * step,
+                width = rect.width * step,
+                height = rect.height * step,
+                cornerRadiusPx = rect.cornerRadiusPx * step,
+            )
+            val stripW = scaled.width.toInt()
+            val stripH = scaled.height.toInt()
+            val sx0 = scaled.left.toInt().coerceIn(0, (w - 1).coerceAtLeast(0))
+            val sy0 = scaled.top.toInt().coerceIn(0, (h - 1).coerceAtLeast(0))
+            val cw = stripW.coerceAtMost(w - sx0)
+            val ch = stripH.coerceAtMost(h - sy0)
+            if (cw < 16 || ch < 6) return@let null
+
+            val strip = IntArray(cw * ch)
+            out.getPixels(strip, 0, cw, sx0, sy0, cw, ch)
+            val local = PanelRect(
+                left = 0f, top = 0f,
+                width = cw.toFloat(), height = ch.toFloat(),
+                cornerRadiusPx = scaled.cornerRadiusPx,
+            )
+            if (PanelScan.hasLabelDetail(strip, cw, ch, local)) {
+                scaled
+            } else {
+                log("pixel scan: flat bar at ${f(scaled.left)},${f(scaled.top)} " +
+                        "${f(scaled.width)}x${f(scaled.height)} carries no label; " +
+                        "declining (most likely plain scene)")
+                null
+            }
+        } catch (t: Throwable) {
+            log("pixel scan failed: ${t.javaClass.simpleName}: ${t.message}")
+            null
+        }
     }
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)

@@ -58,12 +58,12 @@ applied to that finished bitmap by the same optics the module runs.
 
 | Baseline (panel as drawn) | Frosted (blur + tint, no lens) | Liquid glass (adds lens) |
 | --- | --- | --- |
-| ![baseline](01-watermark-only-crop.png) | ![frosted](02-frosted-only-crop.png) | ![lens](03-liquid-glass-crop.png) |
+| ![baseline](docs/01-watermark-only-crop.png) | ![frosted](docs/02-frosted-only-crop.png) | ![lens](docs/03-liquid-glass-crop.png) |
 
 High-dispersion close-up — the spectral split is antisymmetric across the diagonals, so it reads
 as a prism on opposite edges rather than a uniform colour fringe:
 
-![dispersion](04-high-dispersion-crop.png)
+![dispersion](docs/04-high-dispersion-crop.png)
 
 > These are renders from the material's own optics, generated off-device by
 > `docs/RenderSamples.kt` over a synthetic scene (`./gradlew`-independent, run with the standalone
@@ -252,8 +252,12 @@ Two details are easy to get wrong and are handled explicitly:
   module **measures** the radius from the panel's own silhouette rather than assuming it.
 
 Because obfuscated names can change between camera builds, the panel is also recoverable from the
-pixels alone: `PanelScan` searches for the camera's opaque background band and measures its bounds
-and corner radius. If a future build renames the hooked classes, the module still finds the panel.
+pixels alone: `PanelScan` looks for a **horizontally uniform bar with hard edges** — the shape a
+blurred background WebP leaves behind — and then confirms it with `hasLabelDetail`, which requires
+the dark columns of actual text to arrive in runs. A bright strip of sky satisfies the first test
+and fails the second, so a plain patch of scene is not mistaken for a watermark. The scan runs on
+a stride-sampled grid, so it costs a few thousand reads instead of a full-resolution copy. If a
+future build renames the hooked classes, the module still finds the panel.
 
 Hook targets are discovered at runtime by **`app/src/main/java/com/mouya/LiquidFrame/dex/`**, a
 dependency-free DEX reader in this repository. Parsing the dex tables of the camera's own APK

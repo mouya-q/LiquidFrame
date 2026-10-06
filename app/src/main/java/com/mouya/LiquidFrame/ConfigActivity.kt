@@ -1,14 +1,17 @@
 package com.mouya.LiquidFrame
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
@@ -16,181 +19,94 @@ import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.PanelRect
-import java.util.Locale
+import com.mouya.LiquidFrame.ui.GlassCard
+import com.mouya.LiquidFrame.ui.IOSColors
+import com.mouya.LiquidFrame.ui.IOSSettingSliderRow
+import com.mouya.LiquidFrame.ui.IOSToggleRow
+import com.mouya.LiquidFrame.ui.bgPrimary
+import com.mouya.LiquidFrame.ui.isDark
+import com.mouya.LiquidFrame.ui.separatorColor
+import com.mouya.LiquidFrame.ui.textPrimary
+import com.mouya.LiquidFrame.ui.textSecondary
+import java.io.File
 
-// ---------------------------------------------------------------------------------------
-// iOS-style design tokens (adapted from MusicHapticsX HapticDashboardActivity)
-// ---------------------------------------------------------------------------------------
-
-private object IOSColors {
-    val blue = androidx.compose.ui.graphics.Color(0xFF007AFF)
-    val green = androidx.compose.ui.graphics.Color(0xFF34C759)
-    val lightBg = androidx.compose.ui.graphics.Color(0xFFF2F2F7)
-    val darkBg = androidx.compose.ui.graphics.Color(0xFF000000)
-    val lightCard = androidx.compose.ui.graphics.Color(0xFFFFFFFF)
-    val darkCard = androidx.compose.ui.graphics.Color(0xFF1C1C1E)
-    val glassLight = androidx.compose.ui.graphics.Color(0xFFFFFFFF).copy(alpha = 0.72f)
-    val glassDark = androidx.compose.ui.graphics.Color(0xFF1C1C1E).copy(alpha = 0.72f)
-    val lightTextPrimary = androidx.compose.ui.graphics.Color(0xFF000000)
-    val darkTextPrimary = androidx.compose.ui.graphics.Color(0xFFFFFFFF)
-    val lightTextSecondary = androidx.compose.ui.graphics.Color(0xFF3C3C43).copy(alpha = 0.6f)
-    val darkTextSecondary = androidx.compose.ui.graphics.Color(0xFFEBEBF5).copy(alpha = 0.6f)
-    val separatorLight = androidx.compose.ui.graphics.Color(0xFFC6C6C8)
-    val separatorDark = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.10f)
-    val toggleOffLight = androidx.compose.ui.graphics.Color(0xFFE9E9EA)
-    val toggleOffDark = androidx.compose.ui.graphics.Color(0xFF39393B)
-}
-
-@Composable private fun isDark() = isSystemInDarkTheme()
-@Composable private fun bgPrimary() = if (isDark()) IOSColors.darkBg else IOSColors.lightBg
-@Composable private fun cardColor() = if (isDark()) IOSColors.darkCard else IOSColors.lightCard
-@Composable private fun glassColor() = if (isDark()) IOSColors.glassDark else IOSColors.glassLight
-@Composable private fun textPrimary() = if (isDark()) IOSColors.darkTextPrimary else IOSColors.lightTextPrimary
-@Composable private fun textSecondary() = if (isDark()) IOSColors.darkTextSecondary else IOSColors.lightTextSecondary
-@Composable private fun separatorColor() = if (isDark()) IOSColors.separatorDark else IOSColors.separatorLight
-
-// ---------------------------------------------------------------------------------------
-// iOS Toggle
-// ---------------------------------------------------------------------------------------
-
-@Composable
-private fun IOSToggle(checked: Boolean, onToggle: () -> Unit) {
-    val animatedBg by animateColorAsState(
-        targetValue = if (checked) IOSColors.green else if (isDark()) IOSColors.toggleOffDark else IOSColors.toggleOffLight,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
-        label = "ToggleBg"
-    )
-    val thumbOffset by animateDpAsState(
-        targetValue = if (checked) 22.dp else 2.dp,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
-        label = "ThumbOffset"
-    )
-    Box(
-        modifier = Modifier.width(52.dp).height(32.dp)
-            .clip(RoundedCornerShape(16.dp)).background(animatedBg)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onToggle() }
-    ) {
-        Box(
-            modifier = Modifier.offset(x = thumbOffset, y = 2.dp).size(28.dp)
-                .clip(CircleShape).background(androidx.compose.ui.graphics.Color.White)
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-// iOS Slider
-// ---------------------------------------------------------------------------------------
-
-@Composable
-fun IOSSettingSliderRow(
-    label: String, value: Float, range: ClosedFloatingPointRange<Float>,
-    unit: String, onValueChange: (Float) -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(label, fontSize = 15.sp, color = textPrimary())
-            Text(
-                "${String.format(Locale.ROOT, "%.2f", value)} $unit",
-                fontSize = 15.sp, color = IOSColors.blue, fontWeight = FontWeight.Medium
-            )
-        }
-        val progress = ((value - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().height(36.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            val trackWidth = maxWidth
-            val thumbSize = 24.dp
-            val thumbOffset = trackWidth * progress - thumbSize / 2
-
-            Box(
-                Modifier.fillMaxWidth().height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(if (isDark()) IOSColors.toggleOffDark else IOSColors.toggleOffLight)
-            )
-            Box(
-                Modifier.fillMaxWidth(progress).height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(IOSColors.blue)
-            )
-            Box(
-                Modifier.offset(x = thumbOffset).size(thumbSize)
-                    .shadow(4.dp, CircleShape)
-                    .clip(CircleShape).background(androidx.compose.ui.graphics.Color.White)
-                    .border(0.5.dp, IOSColors.blue.copy(alpha = 0.2f), CircleShape)
-            )
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-// Glass card container
-// ---------------------------------------------------------------------------------------
-
-@Composable
-fun GlassCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(22.dp))
-            .background(glassColor())
-            .border(0.5.dp, if (isDark()) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.08f) else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.06f), RoundedCornerShape(22.dp))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        content = content
-    )
-}
-
-// ---------------------------------------------------------------------------------------
-// Activity
-// ---------------------------------------------------------------------------------------
-
+/**
+ * Settings screen.
+ *
+ * Everything here is a *tuning surface*, so two things matter more than they otherwise would:
+ *
+ *  - the preview must be the same optics the camera runs, on a real photograph, or the numbers
+ *    on the sliders describe a scene nobody will ever shoot;
+ *  - every control must leave evidence that it reached the camera process, because a setting
+ *    that only moves a Compose state is indistinguishable from one that works — until it
+ *    turns out not to.
+ */
 class ConfigActivity : ComponentActivity() {
 
     private val ui = Handler(Looper.getMainLooper())
     private var renderPending = false
     private var basePhoto: Bitmap? = null
 
+    /** Where the preview backdrop came from, so the UI can be honest about it. */
+    private var backdropSource = "未加载"
+
+    private val requestMedia = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            loadBackdrop()
+        } else {
+            backdropSource = "未授权读取图片，使用合成背景"
+            loadBackdrop()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ConfigStore.load()
-        basePhoto = buildSamplePhoto(PREVIEW_W, PREVIEW_H)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
@@ -201,6 +117,13 @@ class ConfigActivity : ComponentActivity() {
         WindowInsetsControllerCompat(window, window.decorView).apply {
             isAppearanceLightStatusBars = !darkUi
             isAppearanceLightNavigationBars = !darkUi
+        }
+
+        if (hasMediaPermission()) {
+            loadBackdrop()
+        } else {
+            backdropSource = "正在请求图片读取权限…"
+            requestMedia.launch(readMediaPermission())
         }
 
         setContent {
@@ -218,6 +141,107 @@ class ConfigActivity : ComponentActivity() {
     }
 
     // ---------------------------------------------------------------------------------------
+    // Backdrop
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The user's own photograph, at preview resolution.
+     *
+     * A synthetic scene was the wrong choice for tuning this material: refraction and dispersion
+     * are only judgeable against real tonal range and real detail, and a generated gradient
+     * hides exactly the artefacts this panel is prone to. The file is read at a reduced sample
+     * size so a 12 MP original never lands in memory, then centre-cropped to the panel's aspect.
+     *
+     * Reading it needs a runtime permission, and the module cannot ship someone's private photo
+     * inside a public repository, so the path is discovered at runtime with a visible fallback
+     * rather than being baked in as a resource.
+     */
+    private fun loadBackdrop() {
+        val source = findBackdrop() ?: buildSamplePhoto(PREVIEW_W, PREVIEW_H).also {
+            backdropSource = "合成背景（未找到 background-a.jpg）"
+        }
+        basePhoto?.recycle()
+        basePhoto = source
+        // Trigger the first preview render.
+        ui.postDelayed({ schedulePreview { _, _ -> } }, 80L)
+    }
+
+    /** Looks for the backdrop in the usual places, newest candidate first. */
+    private fun findBackdrop(): Bitmap? {
+        val candidates = mutableListOf<File>()
+        val roots = buildList {
+            getExternalFilesDir(null)?.parentFile?.parentFile?.let { add(it) }
+            add(File("/storage/emulated/0"))
+        }
+        for (root in roots) {
+            candidates += File(root, "Pictures/QQ/background-a.jpg")
+            candidates += File(root, "Pictures/QQ/background-a.png")
+        }
+        val file = candidates.firstOrNull { it.exists() && it.length() > 0 } ?: return null
+
+        // Two-pass decode: measure first, then sample down to roughly the preview width so the
+        // original never gets fully decoded into a bitmap we immediately throw away.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= PREVIEW_W) sample *= 2
+        val decoded = try {
+            BitmapFactory.decodeFile(
+                file.absolutePath,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            )
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+
+        val cropped = centreCrop(decoded, PREVIEW_W, PREVIEW_H)
+        backdropSource = "真实照片 background-a.jpg"
+        return cropped
+    }
+
+    /** Scales and centre-crops so the preview matches the panel's proportions exactly. */
+    private fun centreCrop(source: Bitmap, targetW: Int, targetH: Int): Bitmap {
+        if (source.width == targetW && source.height == targetH) return source
+        val scale = maxOf(targetW.toFloat() / source.width, targetH.toFloat() / source.height)
+        val matrix = Matrix().apply { postScale(scale, scale) }
+        val scaled = try {
+            Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        } catch (_: Throwable) {
+            source
+        }
+        if (scaled !== source) source.recycle()
+
+        val x = ((scaled.width - targetW) / 2).coerceAtLeast(0)
+        val y = ((scaled.height - targetH) / 2).coerceAtLeast(0)
+        if (x == 0 && y == 0 && scaled.width == targetW && scaled.height == targetH) return scaled
+        val out = try {
+            Bitmap.createBitmap(scaled, x, y, targetW, targetH)
+        } catch (_: Throwable) {
+            scaled
+        }
+        if (out !== scaled) scaled.recycle()
+        return out
+    }
+
+    private fun hasMediaPermission(): Boolean = ContextCompat.checkSelfPermission(
+        this,
+        readMediaPermission(),
+    ) == PackageManager.PERMISSION_GRANTED
+
+    private fun readMediaPermission(): String =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            @Suppress("DEPRECATION")
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+
+    // ---------------------------------------------------------------------------------------
     // Compose UI
     // ---------------------------------------------------------------------------------------
 
@@ -228,6 +252,7 @@ class ConfigActivity : ComponentActivity() {
 
         var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var previewResult by remember { mutableStateOf("") }
+        var writeStatus by remember { mutableStateOf(ConfigStore.lastWriteStatus()) }
         var logText by remember { mutableStateOf("") }
 
         // Config state
@@ -245,7 +270,9 @@ class ConfigActivity : ComponentActivity() {
         var angle by remember { mutableFloatStateOf(ConfigStore.snapshot()[ConfigStore.KEY_ANGLE]?.toFloatOrNull() ?: 45f) }
         var depth by remember { mutableFloatStateOf(ConfigStore.snapshot()[ConfigStore.KEY_DEPTH]?.toFloatOrNull() ?: 1f) }
 
-        fun saveAndRefresh() {
+        // Every mutation goes through here, so no control can change the screen without also
+        // changing the file the camera reads.
+        fun commit() {
             val values = ConfigStore.snapshot()
             values[ConfigStore.KEY_ENABLED] = enabled.toString()
             values[ConfigStore.KEY_ADAPTIVE] = adaptive.toString()
@@ -261,6 +288,7 @@ class ConfigActivity : ComponentActivity() {
             values[ConfigStore.KEY_ANGLE] = angle.toString()
             values[ConfigStore.KEY_DEPTH] = depth.toString()
             ConfigStore.save(values)
+            writeStatus = ConfigStore.lastWriteStatus()
             schedulePreview { bitmap, result ->
                 previewBitmap = bitmap
                 previewResult = result
@@ -279,108 +307,106 @@ class ConfigActivity : ComponentActivity() {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(bgPrimary())
-                .statusBarsPadding()
-                .navigationBarsPadding()
+                .background(bgPrimary()),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp, vertical = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .padding(PaddingValues(start = 16.dp, end = 16.dp, top = 52.dp, bottom = 48.dp)),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // Title
                 Text(
                     "LiquidFrame",
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
-                    color = textPrimary()
+                    color = textPrimary(),
                 )
                 Text(
                     "液态玻璃水印 · iOS-style Liquid Glass",
                     fontSize = 14.sp,
-                    color = textSecondary()
+                    color = textSecondary(),
                 )
 
-                // Preview
-                val bmp = previewBitmap
-                if (bmp != null) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "Preview",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(150.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(androidx.compose.ui.graphics.Color(0xFF1C1C20))
-                    )
-                }
-                if (previewResult.isNotEmpty()) {
+                // ---- preview -------------------------------------------------------------
+                GlassCard {
+                    val bmp = previewBitmap
+                    if (bmp != null) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "液态玻璃水印预览",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(170.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(ComposeColor(0xFF1C1C20)),
+                        )
+                    }
                     Text(
-                        previewResult,
-                        fontSize = 11.sp,
+                        "背景：$backdropSource",
+                        fontSize = 12.sp,
                         color = textSecondary(),
-                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    if (previewResult.isNotEmpty()) {
+                        Text(
+                            previewResult,
+                            fontSize = 11.sp,
+                            color = textSecondary(),
+                        )
+                    }
+                    Text(
+                        writeStatus,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (writeStatus.startsWith("写入失败")) ComposeColor(0xFFFF3B30)
+                        else IOSColors.green,
                     )
                 }
 
-                // Main switches
+                // ---- switches -----------------------------------------------------------
                 GlassCard {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("启用模块", fontSize = 16.sp, color = textPrimary(), fontWeight = FontWeight.Medium)
-                        IOSToggle(checked = enabled, onToggle = { enabled = !enabled; saveAndRefresh() })
-                    }
-                    HorizontalDivider(color = separatorColor())
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("自适应（按画面明暗调整）", fontSize = 16.sp, color = textPrimary())
-                        IOSToggle(checked = adaptive, onToggle = { adaptive = !adaptive; saveAndRefresh() })
-                    }
-                    HorizontalDivider(color = separatorColor())
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("保留相机原有文字", fontSize = 16.sp, color = textPrimary())
-                        IOSToggle(checked = preserveContent, onToggle = { preserveContent = !preserveContent; saveAndRefresh() })
-                    }
-                    HorizontalDivider(color = separatorColor())
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("色散（边缘彩边）", fontSize = 16.sp, color = textPrimary())
-                        IOSToggle(checked = dispersion, onToggle = { dispersion = !dispersion; saveAndRefresh() })
-                    }
+                    IOSToggleRow(
+                        label = "启用模块",
+                        subtitle = "关闭后相机完全不处理水印",
+                        checked = enabled,
+                        onToggle = { enabled = !enabled; commit() },
+                    )
+                    IOSToggleRow(
+                        label = "自适应（按画面明暗调整）",
+                        subtitle = "亮场景变薄、暗场景变浓",
+                        checked = adaptive,
+                        onToggle = { adaptive = !adaptive; commit() },
+                    )
+                    IOSToggleRow(
+                        label = "保留相机原有文字",
+                        checked = preserveContent,
+                        onToggle = { preserveContent = !preserveContent; commit() },
+                    )
+                    IOSToggleRow(
+                        label = "色散（边缘彩边）",
+                        subtitle = "七段光谱折射",
+                        checked = dispersion,
+                        onToggle = { dispersion = !dispersion; commit() },
+                    )
                 }
 
-                // Sliders
+                // ---- sliders ------------------------------------------------------------
                 GlassCard {
-                    IOSSettingSliderRow("折射带高度", band, 0f..0.45f, "", onValueChange = { band = it; saveAndRefresh() })
-                    IOSSettingSliderRow("折射强度", amount, 0f..5f, "", onValueChange = { amount = it; saveAndRefresh() })
-                    IOSSettingSliderRow("背景模糊", blur, 0f..1.5f, "", onValueChange = { blur = it; saveAndRefresh() })
-                    IOSSettingSliderRow("内部提亮", lift, 0f..48f, "", onValueChange = { lift = it; saveAndRefresh() })
-                    IOSSettingSliderRow("着色", tint, 0f..0.6f, "", onValueChange = { tint = it; saveAndRefresh() })
-                    IOSSettingSliderRow("边缘高光", rim, 0f..1.2f, "", onValueChange = { rim = it; saveAndRefresh() })
-                    IOSSettingSliderRow("内阴影", shadow, 0f..0.6f, "", onValueChange = { shadow = it; saveAndRefresh() })
-                    IOSSettingSliderRow("高光方向", angle, 0f..360f, "°", onValueChange = { angle = it; saveAndRefresh() })
-                    IOSSettingSliderRow("立体感", depth, 0f..1f, "", onValueChange = { depth = it; saveAndRefresh() })
+                    IOSSettingSliderRow("折射带高度", band, 0f..0.45f, "", onValueChange = { band = it; commit() })
+                    IOSSettingSliderRow("折射强度", amount, 0f..5f, "", onValueChange = { amount = it; commit() })
+                    IOSSettingSliderRow("背景模糊", blur, 0f..1.5f, "", onValueChange = { blur = it; commit() })
+                    IOSSettingSliderRow("内部提亮", lift, 0f..48f, "", onValueChange = { lift = it; commit() })
+                    IOSSettingSliderRow("着色", tint, 0f..0.6f, "", onValueChange = { tint = it; commit() })
+                    IOSSettingSliderRow("边缘高光", rim, 0f..1.2f, "", onValueChange = { rim = it; commit() })
+                    IOSSettingSliderRow("内阴影", shadow, 0f..0.6f, "", onValueChange = { shadow = it; commit() })
+                    IOSSettingSliderRow("高光方向", angle, 0f..360f, "°", onValueChange = { angle = it; commit() })
+                    IOSSettingSliderRow("立体感", depth, 0f..1f, "", onValueChange = { depth = it; commit() })
                 }
 
-                // Buttons
+                // ---- actions ------------------------------------------------------------
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Button(
                         onClick = {
@@ -390,44 +416,49 @@ class ConfigActivity : ComponentActivity() {
                             amount = d.refractionAmountFraction; blur = d.blurFraction; lift = d.interiorLift
                             tint = d.tintAlpha; rim = d.rimAlpha; shadow = d.innerShadowAlpha
                             angle = d.highlightAngleDeg; depth = d.depthEffect
-                            saveAndRefresh()
+                            commit()
                         },
                         modifier = Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(14.dp)),
-                        colors = ButtonDefaults.buttonColors(containerColor = IOSColors.blue.copy(alpha = 0.15f))
+                        colors = ButtonDefaults.buttonColors(containerColor = IOSColors.blue.copy(alpha = 0.15f)),
                     ) {
                         Text("恢复默认", color = IOSColors.blue, fontWeight = FontWeight.SemiBold)
                     }
                     Button(
                         onClick = {
                             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("LiquidFrame Log", LogHelper.readLog()))
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText(
+                                    "LiquidFrame Log",
+                                    "write: $writeStatus\nbackdrop: $backdropSource\n\n${LogHelper.readLog()}",
+                                ),
+                            )
                             Toast.makeText(context, "日志已复制", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(14.dp)),
-                        colors = ButtonDefaults.buttonColors(containerColor = IOSColors.blue.copy(alpha = 0.15f))
+                        colors = ButtonDefaults.buttonColors(containerColor = IOSColors.blue.copy(alpha = 0.15f)),
                     ) {
                         Text("复制日志", color = IOSColors.blue, fontWeight = FontWeight.SemiBold)
                     }
                 }
 
-                // Log
+                // ---- log ----------------------------------------------------------------
                 GlassCard {
                     Text("运行日志", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = textPrimary())
                     Box(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                            .background(if (isDark()) androidx.compose.ui.graphics.Color(0xFF0F0F10) else androidx.compose.ui.graphics.Color(0xFFF4F4F6))
-                            .padding(8.dp)
+                            .background(if (isDark()) ComposeColor(0xFF0F0F10) else ComposeColor(0xFFF4F4F6))
+                            .padding(8.dp),
                     ) {
                         Text(
                             logText.ifEmpty { "暂无日志\n拍照后此处会显示处理信息" },
                             fontSize = 11.sp,
-                            color = if (isDark()) androidx.compose.ui.graphics.Color(0xFFCCCCCC) else androidx.compose.ui.graphics.Color(0xFF1C1C1E),
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            color = if (isDark()) ComposeColor(0xFFCCCCCC) else ComposeColor(0xFF1C1C1E),
+                            fontFamily = FontFamily.Monospace,
                         )
                     }
                 }
 
-                Spacer(Modifier.height(40.dp))
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
@@ -480,7 +511,7 @@ class ConfigActivity : ComponentActivity() {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Synthetic test photo (same as before)
+    // Fallback scene, used only when the real photo cannot be read
     // ---------------------------------------------------------------------------------------
 
     private fun buildSamplePhoto(w: Int, h: Int): Bitmap {
@@ -507,29 +538,6 @@ class ConfigActivity : ComponentActivity() {
             else Color.argb(30, 12, 18, 34)
             canvas.drawLine(i.toFloat(), 0f, (i + h).toFloat(), h.toFloat(), paint)
         }
-        for (x in 0 until w step 37) {
-            for (y in 0 until h step 37) {
-                paint.color = when (((x / 37) + (y / 37)) % 3) {
-                    0 -> Color.argb(120, 240, 96, 76)
-                    1 -> Color.argb(110, 36, 122, 226)
-                    else -> Color.argb(96, 246, 206, 72)
-                }
-                canvas.drawCircle(x + 18f, y + 18f, 7.5f, paint)
-            }
-        }
-
-        val ridge = Path().apply {
-            moveTo(0f, h.toFloat())
-            var x = 0f
-            while (x <= w) {
-                lineTo(x, h * 0.72f + (18 * kotlin.math.sin(x / 26.0)).toFloat())
-                x += 4f
-            }
-            lineTo(w.toFloat(), h.toFloat())
-            close()
-        }
-        paint.color = Color.rgb(22, 34, 28)
-        canvas.drawPath(ridge, paint)
 
         val left = PREVIEW_MARGIN
         val top = h - PREVIEW_MARGIN - PREVIEW_PANEL_H
@@ -545,14 +553,6 @@ class ConfigActivity : ComponentActivity() {
         paint.color = Color.rgb(60, 60, 66)
         val baseline = top + PREVIEW_PANEL_H * 0.64f
         canvas.drawText("XIAOMI 15 ULTRA", left + PREVIEW_PANEL_H * 0.42f, baseline, paint)
-        val stamp = "2026-10-02 19:30"
-        val stampWidth = paint.measureText(stamp)
-        canvas.drawText(
-            stamp,
-            w - PREVIEW_MARGIN - PREVIEW_PANEL_H * 0.42f - stampWidth,
-            baseline,
-            paint,
-        )
 
         return bitmap
     }
