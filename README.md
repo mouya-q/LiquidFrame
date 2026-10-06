@@ -76,9 +76,11 @@ as a prism on opposite edges rather than a uniform colour fringe:
 app/                    LSPosed module (the watermark hook)
   src/main/java/com/mouya/LiquidFrame/
     WatermarkHooks.kt     hook installation and the composite pipeline
+    DexKitHelper.kt       drives discovery, waits for the host Application
     ConfigStore.kt        settings shared between the module and the camera process
     GlassConfig.kt        the camera-side view of those settings
-    ConfigActivity.kt     settings UI with a live preview
+    ConfigActivity.kt     settings UI: Compose + iOS-style glass, live preview
+    dex/DexScanner.kt     dependency-free DEX reader used to find the hook targets
     glass/                the optics engine (no Android dependency)
       LiquidGlassOptics.kt  CPU port of the material
       GlassParams.kt        every quantity in the material
@@ -97,8 +99,9 @@ docs/                   reference renders
 
 **Module (`app/`)**
 
-- Android 13+ (API 33) for the material itself. The watermark pipeline is API 26+, but the
-  refraction needs `RuntimeShader`; below API 33 the module leaves the watermark untouched.
+- Android 8.0+ (API 26). The material runs on the CPU over integer pixel buffers, so it has no
+  `RuntimeShader` floor; the settings UI is Jetpack Compose with a hand-drawn glass surface for the
+  same reason.
 - Xiaomi Camera as `com.android.camera` or `com.miui.camera`.
 - LSPosed (or another Xposed API 82+ compatible framework).
 - Root, and a writable `/data/local/tmp` — settings and logs live there.
@@ -252,16 +255,23 @@ Because obfuscated names can change between camera builds, the panel is also rec
 pixels alone: `PanelScan` searches for the camera's opaque background band and measures its bounds
 and corner radius. If a future build renames the hooked classes, the module still finds the panel.
 
-The hook targets are currently discovered with [DexKit](https://github.com/LuckyPray/DexKit) at
-runtime, following the same approach [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler)
-uses for its camera hooks. Rather than hardcoding `Fe.a` and `pe.o`, the module queries by
-signature: the canvas wrapper class by its `Bitmap` constructor, the composite method by its
-`Bitmap` return type and parameter count, and the `drawRect` wrapper by its `void` return type and
-5-parameter shape. HyperCeiler's own note on the matter is that every major camera version
-invalidates hardcoded signatures, which is exactly the fragility this removes. If DexKit cannot
-initialize or find a target, the module falls back to the known obfuscated names from the
-reverse-engineered builds. See `hyperceiler-findings.md` for the analysis and the equivalent
-queries.
+Hook targets are discovered at runtime by **`app/src/main/java/com/mouya/LiquidFrame/dex/`**, a
+dependency-free DEX reader in this repository. Parsing the dex tables of the camera's own APK
+recovers the structure the hook needs — class name, superclass, declared method signatures and
+declared field types — and two shapes are then matched:
+
+- the **canvas wrapper**: a class with a `<init>(Bitmap)`, a `drawRect`-shaped method
+  (`void`, four `float`s and a `Paint`) and a declared `Canvas` field;
+- the **composite**: a static method taking `(Bitmap, ColorSpace, int, int, String, int)` and
+  returning `Bitmap`.
+
+This replaces an earlier attempt to use [DexKit](https://github.com/LuckyPray/DexKit), which could
+not be consumed by AGP 9's built-in Kotlin support and left the module hardcoded to `Fe.a` and
+`pe.o` — names that only exist in one camera build. The scan runs on a background thread (it reads
+the whole APK, so it must never touch the main thread), and installation is not blocked on it: the
+known-good names are hooked first so a shot taken immediately still works, and the discovered
+names are hooked when the scan lands. Panel detection is independent of all of this — see
+`PanelScan` above. See `hyperceiler-findings.md` for the reverse-engineering analysis.
 
 ## Building
 
@@ -281,10 +291,10 @@ gallery/build/outputs/apk/debug/gallery-debug.apk  # the companion app
 Toolchain: Android Gradle Plugin **9.4.1**, Kotlin **2.4.20**, Gradle **9.8.0**. The
 `miuix 0.9.4 / Compose 1.12` dependency chain refuses to be consumed by older tooling (their AAR
 metadata rejects it), which is why these floors are where they are. AGP 9 supplies Kotlin itself,
-so `org.jetbrains.kotlin.android` is deliberately not applied.
+so `org.jetbrains.kotlin.android` is deliberately not applied; the Compose compiler is applied
+separately via `org.jetbrains.kotlin.plugin.compose`.
 
-`gradle.properties` contains HTTP proxy settings for a development machine behind a transparent
-proxy. Delete the `systemProp.*proxyHost` block on a host with direct network access.
+CI builds `:app` only. `gallery/` needs `compileSdk 37`, so it is built locally, not on every push.
 
 ## Troubleshooting
 
@@ -310,15 +320,15 @@ without the material by design rather than crashing.
 
 ## Limitations and known issues
 
-- **Hook targets are discovered at runtime with [DexKit](https://github.com/LuckyPray/DexKit)**, not
-  hardcoded. The module queries for the canvas wrapper class (by its `Bitmap` constructor), the
-  composite method (by its `Bitmap` return type and parameter count), and the `drawRect` wrapper
-  (by its `void` return type and 5-parameter signature). This is the same approach
-  [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler) uses for its camera hooks, and the
-  reason it is worth adopting is their own comment in `UnlockLeica.kt`: *"跨一个大版本就需要改一下特征点"*
-  (every major version needs its signature points changed). If DexKit fails to initialize or find
-  a target, the module falls back to the known obfuscated names from the reverse-engineered builds.
-  See `hyperceiler-findings.md` for the full analysis.
+- **Hook targets are discovered at runtime, not hardcoded.** A small dependency-free DEX reader
+  (`dex/DexScanner.kt`) parses the camera APK's own dex tables and matches two structural shapes:
+  the canvas wrapper (a `<init>(Bitmap)`, a `drawRect`-shaped method, a declared `Canvas` field) and
+  the composite (a static `(Bitmap, ColorSpace, int, int, String, int) -> Bitmap`). This is the same
+  goal as the approach [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler) takes for its camera
+  hooks — their own comment in `UnlockLeica.kt` is *"跨一个大版本就需要改一下特征点"* (every major
+  version needs its signature points changed). If the scan cannot run or finds nothing, the module
+  falls back to the known obfuscated names from the reverse-engineered builds. See
+  `hyperceiler-findings.md` for the full analysis.
 - **Not yet verified on a physical device end to end.** The optics are verified off-device by
   rendering to images and inspecting them; the hook's runtime behaviour needs log confirmation on
   the target phone.
