@@ -1,6 +1,5 @@
 package com.mouya.LiquidFrame
 
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
@@ -85,37 +84,60 @@ object WatermarkHooks {
     @Volatile
     private var current: Frame? = null
 
+    /** Classes already hooked, so the late discovery pass cannot double-hook a fallback target. */
+    private val hookedClasses = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** Composite methods already hooked, keyed by `class#method`. */
+    private val hookedComposites = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** How long the late pass is willing to wait for the background dex scan, in ms. */
+    private const val DISCOVERY_WAIT_MS = 45_000L
+
     fun install(param: XC_LoadPackage.LoadPackageParam) {
-        val context = try {
-            XposedHelpers.callStaticMethod(
-                XposedHelpers.findClass("android.app.ActivityThread", param.classLoader),
-                "currentApplication"
-            ) as? Context
-        } catch (e: Throwable) { null }
+        DexKitHelper.setClassLoader(param.classLoader)
 
-        if (context != null) {
-            DexKitHelper.init(context)
-            DexKitHelper.setClassLoader(param.classLoader)
-        }
+        // handleLoadPackage usually runs before the host Application exists, so the scan waits for
+        // it in the background rather than requiring a context right here.
+        DexKitHelper.initDeferred()
 
-        val canvasWrapperClass = DexKitHelper.findCanvasWrapper()
-        val compositeMethod = DexKitHelper.findCompositeMethod(param.classLoader)
+        // The dex scan is asynchronous (it reads the whole camera APK), so it is almost never
+        // finished this early. Install the known-good names first so a shot taken immediately
+        // still works, then upgrade to discovered names when the scan lands.
+        installFallback(param.classLoader)
+        startLateDiscovery(param.classLoader)
+    }
 
-        if (canvasWrapperClass != null) {
-            hookCanvasWrapper(canvasWrapperClass)
-            hookDrawRect(canvasWrapperClass)
-        } else {
-            log("DexKit failed to find canvas wrapper; falling back to hardcoded names")
-            hookCanvasWrapperFallback(param.classLoader)
-            hookDrawRectFallback(param.classLoader)
-        }
+    /**
+     * Re-runs installation once the background scan resolves the obfuscated names, so the module
+     * keeps working after a camera update even though the hardcoded fallback names changed.
+     */
+    private fun startLateDiscovery(loader: ClassLoader) {
+        val thread = Thread({
+            val found = DexKitHelper.awaitDiscovery(DISCOVERY_WAIT_MS)
+            if (!found) {
+                log("dex discovery unavailable; staying on fallback hook names")
+                return@Thread
+            }
+            try {
+                DexKitHelper.findCanvasWrapper()?.let { cls ->
+                    hookCanvasWrapper(cls)
+                    hookDrawRect(cls)
+                }
+                DexKitHelper.findCompositeMethod(loader)?.let { hookComposite(it) }
+            } catch (t: Throwable) {
+                log("late discovery hooking failed: ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }, "LiquidFrame-LateHook")
+        thread.isDaemon = true
+        thread.start()
+    }
 
-        if (compositeMethod != null) {
-            hookComposite(compositeMethod)
-        } else {
-            log("DexKit failed to find composite method; falling back to hardcoded names")
-            hookCompositeFallback(param.classLoader)
-        }
+    /** Hardcoded names known to exist in the targeted camera builds. */
+    private fun installFallback(loader: ClassLoader) {
+        log("installing fallback hooks (pe.o / Fe.a->j)")
+        hookCanvasWrapperFallback(loader)
+        hookDrawRectFallback(loader)
+        hookCompositeFallback(loader)
     }
 
     // ---------------------------------------------------------------------------------------
@@ -123,6 +145,7 @@ object WatermarkHooks {
     // ---------------------------------------------------------------------------------------
 
     private fun hookCanvasWrapper(cls: Class<*>) {
+        if (!hookedClasses.add(cls.name + "#ctor")) return
         val ctor = cls.declaredConstructors.firstOrNull { c ->
             c.parameterTypes.size == 1 && Bitmap::class.java.isAssignableFrom(c.parameterTypes[0])
         } ?: return
@@ -140,6 +163,7 @@ object WatermarkHooks {
     }
 
     private fun hookDrawRect(cls: Class<*>) {
+        if (!hookedClasses.add(cls.name + "#drawRect")) return
         val target = DexKitHelper.findDrawRectMethod(cls) ?: return
 
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
@@ -174,6 +198,7 @@ object WatermarkHooks {
     }
 
     private fun hookComposite(method: Method) {
+        if (!hookedComposites.add(method.declaringClass.name + "#" + method.name)) return
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(p: MethodHookParam) {
                 val out = p.result as? Bitmap ?: return
@@ -194,95 +219,57 @@ object WatermarkHooks {
         })
         log("hooked composite method via DexKit")
     }
+    // ---------------------------------------------------------------------------------------
+    // Fallback Hardcoded Hooks (used until the dex scan resolves the real names)
+    // ---------------------------------------------------------------------------------------
 
-    // ---------------------------------------------------------------------------------------
-    // Fallback Hardcoded Hooks (for when DexKit fails or isn't initialized)
-    // ---------------------------------------------------------------------------------------
+    /** Class name of the canvas wrapper in the targeted camera builds. */
+    private const val FALLBACK_WRAPPER = "pe.o"
+
+    /** Class name of the composite holder in the targeted camera builds. */
+    private const val FALLBACK_COMPOSITE = "Fe.a"
+
+    /** Method name of the composite in the targeted camera builds. */
+    private const val FALLBACK_COMPOSITE_METHOD = "j"
 
     private fun hookCanvasWrapperFallback(classLoader: ClassLoader) {
-        val cls = runCatching { XposedHelpers.findClass("pe.o", classLoader) }.getOrNull() ?: return
-        val ctor = cls.declaredConstructors.firstOrNull { c ->
-            c.parameterTypes.size == 1 && Bitmap::class.java.isAssignableFrom(c.parameterTypes[0])
-        } ?: return
-
-        XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-            override fun afterHookedMethod(p: MethodHookParam) {
-                val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
-                val frame = Frame()
-                frame.destination = bitmap
-                frames[this] = frame
-                current = frame
-            }
-        })
+        val cls = findClass(FALLBACK_WRAPPER, classLoader) ?: return
+        hookCanvasWrapper(cls)
     }
 
     private fun hookDrawRectFallback(classLoader: ClassLoader) {
-        val cls = runCatching { XposedHelpers.findClass("pe.o", classLoader) }.getOrNull() ?: return
-        val floatType = Float::class.javaPrimitiveType
-        val target = cls.declaredMethods.firstOrNull { method ->
-            method.name == "h" &&
-                    method.parameterTypes.size == 5 &&
-                    method.parameterTypes[0] == floatType &&
-                    method.parameterTypes[1] == floatType &&
-                    method.parameterTypes[2] == floatType &&
-                    method.parameterTypes[3] == floatType &&
-                    Paint::class.java.isAssignableFrom(method.parameterTypes[4])
-        } ?: return
-
-        XposedBridge.hookMethod(target, object : XC_MethodHook() {
-            override fun beforeHookedMethod(p: MethodHookParam) {
-                val frame = current ?: return
-                val paint = p.args?.getOrNull(4) as? Paint ?: return
-                val shader = paint.shader ?: return
-                val x0 = p.args[0] as? Float ?: return
-                val y0 = p.args[1] as? Float ?: return
-                val x1 = p.args[2] as? Float ?: return
-                val y1 = p.args[3] as? Float ?: return
-                val w = x1 - x0
-                val h = y1 - y0
-                if (w < MIN_PANEL_WIDTH || h < 4f) return
-
-                val radiusHint = shaderRadius(shader, w, h)
-                val rect = absoluteRect(this, frame, x0, y0, x1, y1)
-                if (frame.panels.size < MAX_PANELS) {
-                    frame.panels.add(
-                        PanelRect(
-                            left = rect.left,
-                            top = rect.top,
-                            width = rect.width(),
-                            height = rect.height(),
-                            cornerRadiusPx = radiusHint,
-                        )
-                    )
-                }
-            }
-        })
+        val cls = findClass(FALLBACK_WRAPPER, classLoader) ?: return
+        hookDrawRect(cls)
     }
 
     private fun hookCompositeFallback(classLoader: ClassLoader) {
-        val cls = runCatching { XposedHelpers.findClass("Fe.a", classLoader) }.getOrNull() ?: return
+        val cls = findClass(FALLBACK_COMPOSITE, classLoader) ?: run {
+            log("class $FALLBACK_COMPOSITE not found")
+            return
+        }
         val target = cls.declaredMethods.firstOrNull { method ->
-            method.name == "j" &&
+            method.name == FALLBACK_COMPOSITE_METHOD &&
                     method.parameterTypes.size == 6 &&
                     Bitmap::class.java.isAssignableFrom(method.parameterTypes[0])
-        } ?: return
-
-        XposedBridge.hookMethod(target, object : XC_MethodHook() {
-            override fun afterHookedMethod(p: MethodHookParam) {
-                val out = p.result as? Bitmap ?: return
-                val frame = current
-                current = null
-                if (!GlassConfig.masterEnabled) return
-                if (out.isRecycled) return
-                if (!out.isMutable) return
-                try {
-                    process(out, frame)
-                } catch (t: Throwable) {
-                    log("process failed: ${t.javaClass.simpleName}: ${t.message}")
-                }
-            }
-        })
+        }
+        if (target == null) {
+            log(
+                "$FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD not found; candidates=" +
+                        cls.declaredMethods.joinToString { "${it.name}/${it.parameterTypes.size}" }
+            )
+            return
+        }
+        hookComposite(target)
+        log("hooked $FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD")
     }
+
+    private fun findClass(name: String, loader: ClassLoader): Class<*>? =
+        try {
+            XposedHelpers.findClass(name, loader)
+        } catch (_: Throwable) {
+            null
+        }
+
 
     /**
      * Maps an element-local rectangle into destination-bitmap pixels.
@@ -335,49 +322,6 @@ object WatermarkHooks {
         // reference size, so the WebP is fitted to the rectangle. Its baked radius therefore
         // scales with the rectangle.
         return (shortSide * 0.34f).coerceIn(0f, shortSide * 0.5f)
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Hook 3: the composite. Gives us the finished bitmap to post-process.
-    // ---------------------------------------------------------------------------------------
-
-    private fun hookComposite(classLoader: ClassLoader) {
-        val cls = runCatching { XposedHelpers.findClass("Fe.a", classLoader) }.getOrNull()
-        if (cls == null) {
-            log("class Fe.a not found")
-            return
-        }
-
-        val target = cls.declaredMethods.firstOrNull { method ->
-            method.name == "j" &&
-                    method.parameterTypes.size == 6 &&
-                    Bitmap::class.java.isAssignableFrom(method.parameterTypes[0])
-        }
-        if (target == null) {
-            log("Fe/a->j not found; candidates=" +
-                    cls.declaredMethods.joinToString { "${it.name}/${it.parameterTypes.size}" })
-            return
-        }
-
-        XposedBridge.hookMethod(target, object : XC_MethodHook() {
-            override fun afterHookedMethod(p: MethodHookParam) {
-                val out = p.result as? Bitmap ?: return
-                val frame = current
-                current = null
-                if (!GlassConfig.masterEnabled) return
-                if (out.isRecycled) return
-                if (!out.isMutable) {
-                    log("skip: composite bitmap not mutable (${out.width}x${out.height})")
-                    return
-                }
-                try {
-                    process(out, frame)
-                } catch (t: Throwable) {
-                    log("process failed: ${t.javaClass.simpleName}: ${t.message}")
-                }
-            }
-        })
-        log("hooked Fe/a->j")
     }
 
     // ---------------------------------------------------------------------------------------
