@@ -178,10 +178,16 @@ object ConfigStore {
         for (binary in candidates) {
             try {
                 val process = ProcessBuilder(binary, "-c", script).redirectErrorStream(true).start()
+                // Drain stdout/stderr before waiting, otherwise a full pipe can deadlock the process.
+                val output = process.inputStream.readBytes()
                 process.outputStream.close()
-                process.inputStream.close()
-                return process.waitFor()
-            } catch (_: Throwable) {
+                val code = process.waitFor()
+                if (code == 0) return 0
+                // Non-zero exit: try next binary.
+                val preview = String(output, Charsets.UTF_8).take(200)
+                LogHelper.log(TAG, "su exit=$code: $preview")
+            } catch (t: Throwable) {
+                LogHelper.log(TAG, "su failed: ${t.javaClass.simpleName}: ${t.message}")
                 // Try the next binary.
             }
         }

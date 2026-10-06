@@ -79,9 +79,10 @@ object LogHelper {
         for (binary in listOf("su", "/system/bin/su", "/system/xbin/su")) {
             try {
                 val process = ProcessBuilder(binary, "-c", script).redirectErrorStream(true).start()
+                val output = process.inputStream.readBytes()
                 process.outputStream.close()
-                process.inputStream.close()
-                return process.waitFor()
+                val code = process.waitFor()
+                if (code == 0) return 0
             } catch (_: Throwable) {
                 // Try the next binary.
             }

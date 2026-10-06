@@ -495,11 +495,36 @@ class ConfigActivity : ComponentActivity() {
         return try {
             assets.open("background-a.jpg").use { stream ->
                 val decoded = BitmapFactory.decodeStream(stream)
-                if (decoded != null) centreCrop(decoded, PREVIEW_W, PREVIEW_H) else null
+                if (decoded != null) {
+                    val cropped = centreCrop(decoded, PREVIEW_W, PREVIEW_H)
+                    if (decoded !== cropped) decoded.recycle()
+                    drawWatermarkPanel(cropped)
+                    cropped
+                } else null
             }
         } catch (_: Throwable) {
             null
         }
+    }
+
+    /**
+     * Draws the synthetic watermark panel (white rounded rect + label text) on top of a photo,
+     * so the glass renderer has a real flat panel to replace — exactly what the camera does.
+     */
+    private fun drawWatermarkPanel(bitmap: Bitmap) {
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val left = PREVIEW_MARGIN
+        val top = bitmap.height - PREVIEW_MARGIN - PREVIEW_PANEL_H
+        val right = bitmap.width - PREVIEW_MARGIN
+        val bottom = top + PREVIEW_PANEL_H
+        val radius = PREVIEW_PANEL_H * 0.32f
+        paint.color = Color.argb(255, 244, 245, 249)
+        canvas.drawRoundRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), radius, radius, paint)
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textSize = PREVIEW_PANEL_H * 0.30f
+        paint.color = Color.rgb(60, 60, 66)
+        canvas.drawText("XIAOMI 15 ULTRA", left + PREVIEW_PANEL_H * 0.42f, top + PREVIEW_PANEL_H * 0.64f, paint)
     }
 
     // ---------------------------------------------------------------------------------------
