@@ -192,8 +192,8 @@ fun IOSSettingSliderRow(
     value: Float,
     range: ClosedFloatingPointRange<Float>,
     unit: String,
-    onValueChange: (Float) -> Unit,
     valueLabel: String = String.format(Locale.ROOT, "%.2f", value) + if (unit.isEmpty()) "" else " $unit",
+    onValueChange: (Float) -> Unit,
 ) {
     Column(
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
