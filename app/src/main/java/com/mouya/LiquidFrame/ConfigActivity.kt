@@ -87,7 +87,7 @@ private object IOSColors {
 // ---------------------------------------------------------------------------------------
 
 @Composable
-fun IOSToggle(checked: Boolean, onToggle: () -> Unit) {
+private fun IOSToggle(checked: Boolean, onToggle: () -> Unit) {
     val animatedBg by animateColorAsState(
         targetValue = if (checked) IOSColors.green else if (isDark()) IOSColors.toggleOffDark else IOSColors.toggleOffLight,
         animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
@@ -195,9 +195,12 @@ class ConfigActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        val darkUi = (resources.configuration.uiMode and
+                android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
         WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = !isSystemInDarkTheme()
-            isAppearanceLightNavigationBars = !isSystemInDarkTheme()
+            isAppearanceLightStatusBars = !darkUi
+            isAppearanceLightNavigationBars = !darkUi
         }
 
         setContent {
@@ -301,9 +304,10 @@ class ConfigActivity : ComponentActivity() {
                 )
 
                 // Preview
-                previewBitmap?.let { bmp ->
+                val bmp = previewBitmap
+                if (bmp != null) {
                     Image(
-                        bitmap = androidx.compose.ui.graphics.asImageBitmap(bmp),
+                        bitmap = bmp.asImageBitmap(),
                         contentDescription = "Preview",
                         modifier = Modifier
                             .fillMaxWidth()
