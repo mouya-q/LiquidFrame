@@ -66,6 +66,31 @@ object WatermarkHooks {
     /** Smallest believable panel, in output pixels. */
     private const val MIN_PANEL_WIDTH = 32
 
+    /**
+     * Largest share of the frame one watermark element may cover, as a fraction of its width.
+     *
+     * The Leica-style watermarks stack several elements — a logo block, a line of text, a
+     * capsule — instead of the single full-width strip Xiaomi draws. Those pieces are narrow,
+     * and the old width test (`>= MIN_PANEL_WIDTH` only) happily accepted any of them. Picking
+     * whichever came first then meant the module could attach itself to the logo box, or to a
+     * scene highlight that happened to be wide enough, and re-render it as glass. That is the
+     * "到处乱飘 / 渲染异常" the user reported on Leica: the glass was on a moving target because
+     * the chosen element was not the watermark panel.
+     *
+     * An element must therefore be both a plausible size and, when several candidates exist,
+     * the one that best explains the strip. See [pickPanel].
+     */
+    private const val MAX_PANEL_WIDTH_FRACTION = 0.92f
+
+    /**
+     * Minimum share of the frame a *watermark* element spans, as a fraction of the frame width.
+     *
+     * Deliberately low. A Leica watermark's capsule is roughly a third of the frame; a plain
+     * Xiaomi strip is nearly all of it. Anything narrower than this is a logo, a date stamp or
+     * a piece of scene, never the plate the glass belongs on.
+     */
+    private const val MIN_PANEL_WIDTH_FRACTION = 0.12f
+
     /** Bounded work: keep at most this many bitmap locations per composite. */
     private const val MAX_PANELS = 8
 
@@ -349,11 +374,13 @@ object WatermarkHooks {
             return
         }
 
-        val reported = frame?.panels?.firstOrNull { it.width >= MIN_PANEL_WIDTH }
-        val panel = reported?.takeIf { plausible(it, w, h) }
+        // The app-reported rectangles are ranked rather than taken first-wins, so a multi-element
+        // watermark (Leica) resolves to the same plate on every frame instead of whichever
+        // element happened to be drawn first.
+        val reported = frame?.panels?.takeIf { it.isNotEmpty() }
+        val panel = pickPanel(reported.orEmpty(), w, h)
         if (panel == null && reported != null) {
-            log("app rect rejected (${f(reported.left)},${f(reported.top)} " +
-                    "${f(reported.width)}x${f(reported.height)} in ${w}x$h); scanning pixels")
+            log("app rects rejected (${reported.size} candidates in ${w}x$h); scanning pixels")
         }
         val resolved = panel ?: scanPanel(out, w, h)
         if (resolved == null) {
@@ -395,6 +422,45 @@ object WatermarkHooks {
                 "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} -> $result")
     }
 
+/**
+     * Chooses the one element the glass should be applied to.
+     *
+     * The camera's watermark is not always one rectangle. A Leica-style watermark is a small
+     * composition — a logo block, a caption line, a capsule — drawn as several elements, and the
+     * hook records all of them. The old code took `firstOrNull { width >= 32 }`, so which
+     * element got the glass depended on draw order: on Leica the module regularly landed on the
+     * logo box or on a wide piece of scene instead of the watermark plate. Since the element it
+     * picked could differ between two frames of the same shot, the glass appeared to wander —
+     * the "到处乱飘" the user reported.
+     *
+     * Ranking is by how much of the frame the element explains, which is stable frame to frame:
+     *
+     *  - width first, because a watermark plate is the widest thing in the group and a logo is
+     *    not;
+     *  - then the topmost, because a watermark composition is anchored to one edge, and a
+     *    top-anchored plate is the common case;
+     *  - then the largest area, purely to break an exact tie deterministically.
+     *
+     * Elements that fail [plausible], or that are too narrow to be a plate at all, are dropped
+     * before ranking. Ties therefore resolve to the same element on every frame of a shot,
+     * which is what stops the glass from moving.
+     */
+    private fun pickPanel(candidates: List<PanelRect>, w: Int, h: Int): PanelRect? {
+        val eligible = candidates.filter { rect ->
+            rect.width >= MIN_PANEL_WIDTH &&
+                    rect.width >= w * MIN_PANEL_WIDTH_FRACTION &&
+                    rect.width <= w * MAX_PANEL_WIDTH_FRACTION &&
+                    plausible(rect, w, h)
+        }
+        if (eligible.isEmpty()) return null
+        if (eligible.size == 1) return eligible[0]
+        return eligible.maxWithOrNull(
+            compareBy<PanelRect> { it.width }
+                .thenBy { -it.top }
+                .thenBy { it.width * it.height }
+        )
+    }
+
     /** A reported rectangle is only trusted when it could plausibly be a watermark panel. */
     private fun plausible(rect: PanelRect, w: Int, h: Int): Boolean {
         if (rect.left < -2f || rect.top < -2f) return false
@@ -407,12 +473,29 @@ object WatermarkHooks {
     /**
      * Picks the material variant for the scene behind the panel.
      *
+     * The user's own settings are the base and are never discarded: `GlassConfig.params()`
+     * carries everything the settings screen writes, and this function only decides whether to
+     * additionally scale the tint/veil for the local brightness.
+     *
+     * The earlier revision returned `GlassParams.DarkScene` / `.BrightScene` outright. Those are
+     * hardcoded presets, so every slider the user moved — refraction band, blur, interior lift,
+     * rim strength — was thrown away the moment a photo was taken. That is exactly the "I
+     * changed it and the shot looks identical" symptom, and it was invisible because the
+     * settings screen happily reported a successful write.
+     *
+     * Now: take the user's parameters verbatim, and scale only the three veil-like terms that
+     * genuinely depend on scene brightness (tint, surface veil, rim) so white labels stay
+     * legible on a bright photo. Every other knob is the user's, unmodified.
+     *
      * Measured on the crop only, over the panel's own rectangle, because that is the backdrop
      * the material has to cope with — averaging the whole photo would let a bright sky decide
      * how dense a shadow strip at the bottom of the frame is rendered.
      */
     private fun resolveParams(pixels: IntArray, w: Int, h: Int, panel: PanelRect): GlassParams {
-        if (!GlassConfig.adaptiveGlass) return GlassParams.Default.copy(adaptive = false)
+        // The user's settings, exactly as written by the settings screen.
+        val user = GlassConfig.params()
+        if (!user.adaptive) return user
+
         val left = panel.left.toInt().coerceIn(0, w - 1)
         val top = panel.top.toInt().coerceIn(0, h - 1)
         val right = panel.right.toInt().coerceIn(left + 1, w)
@@ -431,9 +514,21 @@ object WatermarkHooks {
                 x += 2
             }
         }
-        if (count == 0) return GlassParams.Default
+        if (count == 0) return user
         val mean = total / count / 255.0
-        return if (mean < 0.42) GlassParams.DarkScene else GlassParams.BrightScene
+
+        // A bright backdrop needs a denser veil for the white labels; a dark one needs less.
+        // The ratios match what BrightScene/DarkScene used to hardcode, but they are applied as
+        // multipliers on the user's own values rather than as replacements for them.
+        val veilGain = if (mean < 0.42) 0.62f else 1.75f
+        val rimGain = if (mean < 0.42) 0.80f else 1.12f
+        return user.copy(
+            tintAlpha = (user.tintAlpha * veilGain).coerceIn(0f, 1f),
+            surfaceAlpha = (user.surfaceAlpha * veilGain).coerceIn(0f, 1f),
+            rimAlpha = (user.rimAlpha * rimGain).coerceIn(0f, 1.5f),
+            // Brightness adaptation is already folded into the multipliers above.
+            adaptive = false,
+        )
     }
 
     /**

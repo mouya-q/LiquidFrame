@@ -11,6 +11,7 @@ package com.mouya.LiquidFrame.glass
  *   lens(12.dp, 24.dp)        -> refraction height and amount; amount is sent negated
  *   HighlightStyle.Default    -> white stroke 0.5.dp, blur width/2, angle 45 deg,
  *                                falloff 1, BlendMode.Plus
+ *   InnerShadow.Default       -> black 0.15, radius 24.dp, offset (0, +radius)
  *
  * Where a value is given as a fraction rather than in dp it is because a photo watermark has
  * no density to resolve against: the panel is only ~40 px tall on a 4000 px frame, so the
@@ -118,18 +119,10 @@ data class GlassParams(
      */
     val rimAmbient: Float = 0.45f,
 
-    // ---- inner shadow (removed) ---------------------------------------------------------
+    // ---- inner shadow -------------------------------------------------------------------
 
-    /**
-     * Inner shadow parameters, retained only so that a configuration file written by an older
-     * build still loads without error.
-     *
-     * They have no effect. The shadow was rendered by both `renderPanel()` and `render()`, and
-     * on a flat capsule it read as a grey slab across the lower half rather than as depth. Both
-     * render sites are gone, along with the settings slider that drove them. Nothing reads these
-     * fields, and nothing writes them; they exist purely as forward/backward compatibility for
-     * `inner_shadow_alpha` in the shared config.
-     */
+    /** Disabled: the inner shadow produced a dark band that read as a grey slab on
+     *  flat capsules. Removed per user request. */
     val innerShadowAlpha: Float = 0f,
     val innerShadowRadiusFraction: Float = 0.10f,
     val innerShadowOffsetXFraction: Float = 0f,
@@ -141,9 +134,6 @@ data class GlassParams(
      * Scale tint, veil and rim against the backdrop's mean luminance. Apple's material
      * thins out over a bright backdrop and densifies over a dark one, which is also what
      * keeps white watermark text legible on both.
-     *
-     * This scales the user's own values. An earlier revision selected between two hardcoded
-     * presets instead, which silently discarded every setting the user had changed.
      */
     val adaptive: Boolean = true,
 ) {

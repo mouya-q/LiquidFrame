@@ -214,15 +214,15 @@ object LiquidGlassOptics {
         val surfaceAlpha = (params.surfaceAlpha * adapt).coerceIn(0f, 1f)
         val interiorLift = params.interiorLift * adapt
         val highlightGain = (params.highlightGain / adapt).coerceIn(0.4f, 2.2f)
-        val shadowRadius = (params.innerShadowRadiusFraction * shortSide)
-            .coerceIn(MIN_SHADOW_RADIUS_PX, shortSide * 0.5f)
-        val shadowOffX = params.innerShadowOffsetXFraction * shortSide * 0.25f
-        val shadowOffY = params.innerShadowOffsetYFraction * shortSide * 0.25f
-        val shadowAlpha =
-            (params.innerShadowAlpha * params.innerShadowAdaptiveGain(adapt)).coerceIn(0f, 1f)
+        // The inner shadow was removed: on a flat capsule it read as a grey slab in the lower
+        // half, and the camera's own baked plate plus the rim highlight already give the
+        // capsule its depth. Its parameters are still carried so an old config file that still
+        // sets `inner_shadow_alpha` loads without error, but they no longer affect rendering.
         val gradRadius = minOf(radius * 1.5f, shortSide * 0.5f)
 
         var written = 0
+        // Pixels of the camera's plate erased from the four corners outside the capsule.
+        var erasedCorners = 0
         for (y in 0 until ch) {
             val gy = cropTop + y
             val py = gy + 0.5f
@@ -325,17 +325,6 @@ object LiquidGlassOptics {
                     }
                 }
 
-                if (shadowAlpha > 0.001f) {
-                    val sdOff = sdRoundedRect(px - shadowOffX, py - shadowOffY, panel, radius)
-                    val outward = minOf(sdOff / shadowRadius, 1f)
-                    val a = (1f - smoothStep(-1f, 0f, outward)) * shadowAlpha
-                    if (a > 0.001f) {
-                        cr = lerp(cr, 0f, a)
-                        cg = lerp(cg, 0f, a)
-                        cb = lerp(cb, 0f, a)
-                    }
-                }
-
                 val glass = pack(255, cr, cg, cb)
                 val dst = gy * width + gx
                 pixels[dst] = if (coverage >= 0.999f) glass else blend(pixels[dst], glass, coverage)
@@ -343,8 +332,47 @@ object LiquidGlassOptics {
             }
         }
 
+        // THE WHITE RING, second half of the fix.
+        //
+        // The loop above skips every pixel whose coverage is zero — i.e. the four corners
+        // *outside* the rounded silhouette. Those pixels are inside the panel rectangle, so they
+        // still hold whatever the camera baked there: a near-white plate. They are also inside
+        // the crop, and `mirrorInteriorFromAbove` has just replaced them with real scene content
+        // in `backdrop` — but nothing ever copied `backdrop` back into `pixels`. So the glass
+        // capsule sat on a clean scene, surrounded by four white corner wedges of the original
+        // plate. That is the ring the user reported as "液态玻璃还是叠加在原来的白色背景上的".
+        //
+        // Writing the mirrored scene back over the whole panel rectangle removes the plate
+        // completely: inside the silhouette the loop above already composited glass over exactly
+        // this content, and outside it the corners now carry scene instead of baked white. The
+        // result is that nothing of the camera's own background survives, while its labels —
+        // which are drawn into `pixels` by the camera and skipped by the `content` mask — are
+        // still exactly where the camera put them.
+        if (panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY) {
+            var cleared = 0
+            for (y in 0 until ch) {
+                val gy = cropTop + y
+                if (gy < 0 || gy >= height) continue
+                val row = gy * width
+                for (x in 0 until cw) {
+                    val gx = cropLeft + x
+                    if (gx < 0 || gx >= width) continue
+                    val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
+                    if (sd <= 0.5f) continue  // inside the capsule: already glass
+                    val index = row + gx
+                    // Never touch the camera's own labels, wherever they are.
+                    if (content != null && content[index]) continue
+                    val scene = backdrop[y * cw + x]
+                    pixels[index] = scene
+                    cleared++
+                }
+            }
+            erasedCorners = cleared
+        }
+
         return "ok: panel=${panel.width.toInt()}x${panel.height.toInt()} " +
                 "r=${radius.toInt()} band=${band.toInt()} px=$written " +
+                "corner=$erasedCorners " +
                 "content=$preserved flat=$preserveContent " +
                 "u=${fmt(tone.uniformity)} tone=${tone.tone.toInt()} adapt=${fmt(adapt)}"
     }
@@ -487,16 +515,25 @@ object LiquidGlassOptics {
     }
 
     /**
-     * Re-sources the panel's interior from the photograph above it, so the glass refracts the
-     * scene instead of the plate the camera baked into the panel.
+     * Erases the camera's baked plate, replacing it with real photograph content.
      *
-     * The camera draws its watermark background as an opaque pre-rendered sheet. When the module
-     * runs the lens over that sheet, the "backdrop" it magnifies is the sheet itself — which is
-     * exactly why the panel came out as a flat pale wash with a white base showing through.
-     * The scene behind the panel is not recoverable (the camera has already overwritten it), so
-     * the nearest real photograph content is used instead: the rows immediately above the
-     * panel's top edge, mirrored downwards. The mirror is continuous across that edge, which
-     * keeps the glass from showing a seam at the top of the capsule.
+     * The camera draws its watermark background as an opaque **rectangular** pre-rendered
+     * sheet — the corner radius lives in the WebP's alpha and in `rect_radius`, but the draw
+     * call itself is `drawRect`. When the module ran the lens over that sheet two things went
+     * wrong, and the user saw both:
+     *
+     *  1. The lens magnified the plate, not the world, so the capsule read as a pale wash.
+     *  2. The glass is composited through a rounded-rect mask, so the four corners *outside*
+     *     that mask were never touched — the white sheet stayed visible there as a ring around
+     *     the capsule, and the rim highlight was computed against that white instead of against
+     *     the scene. This is the "白色背景 / 后面还有一圈白的" the user reported.
+     *
+     * Both are fixed by clearing the **entire panel rectangle**, corners included, before the
+     * lens runs. The scene behind the panel is not recoverable (the camera already overwrote
+     * it), so the nearest real photograph content is used: the rows immediately above the
+     * panel's top edge, mirrored downwards as a triangle wave. The mirror is continuous across
+     * the top edge, so there is no seam where the capsule meets the photo, and one row of
+     * source per row of output means the scene is never stretched.
      *
      * Only applied when the panel really is a flat baked background ([flat]); a panel the camera
      * filled with a blurred copy of the scene is already photographic and is left alone.
@@ -535,12 +572,13 @@ object LiquidGlassOptics {
             val sourceY = if (m < topInCrop) topInCrop - 1 - m else m - topInCrop
             val src = sourceY.coerceIn(0, topInCrop - 1) * cw
             val dst = y * cw
+            // NOTE: deliberately no `sdRoundedRect` test here. An earlier revision skipped every
+            // pixel outside the rounded silhouette "so the capsule stays honest" — but those are
+            // exactly the pixels holding the camera's white plate, so skipping them is what left
+            // the white ring around the capsule. Clearing the full rectangle is the fix; the
+            // corners then carry scene content instead of baked white, and the glass silhouette
+            // is still produced by the coverage mask further down.
             for (x in left until right) {
-                // Keep the rounded silhouette honest: pixels outside the capsule are not part of
-                // the panel and must stay as the photo has them.
-                val gx = (cropLeft + x + 0.5f)
-                val gy = (cropTop + y + 0.5f)
-                if (sdRoundedRect(gx, gy, panel, radius) > 0.5f) continue
                 backdrop[dst + x] = backdrop[src + x]
             }
         }
@@ -736,11 +774,11 @@ object LiquidGlassOptics {
             adaptiveScale(blurred, srcW, srcH, srcLeft, srcTop, srcPanelW, srcPanelH, panel)
         } else 1f
 
-        val shadowRadius = (params.innerShadowRadiusFraction * shortSide)
-            .coerceIn(MIN_SHADOW_RADIUS_PX, shortSide * 0.5f)
-        val shadowOffX = params.innerShadowOffsetXFraction * shortSide * 0.25f
-        val shadowOffY = params.innerShadowOffsetYFraction * shortSide * 0.25f
-        val shadowAlpha = (params.innerShadowAlpha * params.innerShadowAdaptiveGain(adapt)).coerceIn(0f, 1f)
+        // The inner shadow was removed here as well: `render()` is the path the Leica-style
+        // multi-element watermarks take, and it had a second, independent copy of the inner
+        // shadow. Removing only the `renderPanel()` one would have left the grey slab alive for
+        // exactly the watermarks the user reported as broken. The parameters are still read by
+        // `ConfigStore` so an older config file still loads, but nothing renders them.
 
         // Rim highlight: the reference's blurred 0.5.dp white stroke with BlendMode.Plus.
         val rimWidth = (params.rimWidthFraction * band).coerceIn(0.5f, band)
@@ -851,22 +889,8 @@ object LiquidGlassOptics {
                     }
                 }
 
-                // Inner shadow: shape filled, offset shape cleared, blurred, clipped.
-                if (shadowAlpha > 0.001f) {
-                    // Inner shadow = shape minus an offset copy of itself. The offset shape is
-                    // the one that has to be *cleared*, so it is subtracted first; `shadowOffY`
-                    // is +1 (top edge) by default, which is `InnerShadow.Default`'s offset.
-                    val sdOffset = sdRoundedRect(
-                        px - shadowOffX, py - shadowOffY, panel, radius
-                    )
-                    val cleared = (1f - smoothStep(-1f, 0f, minOf(sdOffset / shadowRadius, 1f)))
-                    val density = (cleared * shadowAlpha).coerceIn(0f, 1f)
-                    if (density > 0.001f) {
-                        cr = lerp(cr, 0f, density)
-                        cg = lerp(cg, 0f, density)
-                        cb = lerp(cb, 0f, density)
-                    }
-                }
+                // Inner shadow removed. The camera's baked plate plus the rim highlight already give the
+                // capsule its depth, and on a flat capsule the shadow read as a grey slab.
 
                 rendered[i] = pack(255, cr, cg, cb)
             }

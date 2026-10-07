@@ -535,8 +535,9 @@ class ConfigActivity : ComponentActivity() {
 
     /**
      * Fallback scene used only when the bundled preview asset cannot be decoded. It contains no
-     * panel and no text on purpose: the glass must sample the photograph itself. Painting a
-     * white plate here was precisely what made the preview come out grey instead of glassy.
+     * panel and no text on purpose: the glass must sample the photograph itself, and the label is
+     * drawn afterwards from whatever the installed camera reports. Painting a white plate here was
+     * precisely what made the preview come out grey instead of glassy.
      */
     private fun buildSamplePhoto(w: Int, h: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
