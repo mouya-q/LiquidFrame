@@ -334,7 +334,7 @@ object WatermarkHooks {
         // The shader's local matrix is min(elementW, elementH) / 1080, the panel WebP's own
         // reference size, so the WebP is fitted to the rectangle. Its baked radius therefore
         // scales with the rectangle.
-        return (shortSide * 0.34f).coerceIn(0f, shortSide * 0.5f)
+        return (shortSide * 0.5f).coerceIn(0f, shortSide * 0.5f)
     }
 
     // ---------------------------------------------------------------------------------------

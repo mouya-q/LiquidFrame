@@ -298,7 +298,6 @@ class ConfigActivity : ComponentActivity() {
                 ) {
                     Column {
                         Text("LiquidFrame", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = textPrimary())
-                        Text("把水印背景做得像真的玻璃。", fontSize = 14.sp, color = textSecondary(), modifier = Modifier.padding(top = 4.dp))
                     }
                     Box(
                         Modifier
@@ -468,22 +467,67 @@ class ConfigActivity : ComponentActivity() {
     }
 
     private fun renderPreview(bitmap: Bitmap, params: GlassParams): String {
+        // Geometry measured from the iPhone liquid-glass reference (832x624 working copy):
+        // capsule top=533 bottom=615 -> h=82 = 0.0986 x width, bottom margin 8 = 0.013 x
+        // height, full capsule radius = h/2. No white is ever drawn: the glass is rendered
+        // straight onto the photo, so no white can remain underneath it.
+        val panelH = (bitmap.width * PREVIEW_PANEL_H_FRACTION).toInt().coerceAtLeast(48)
+        val side = (bitmap.width * PREVIEW_SIDE_FRACTION).toInt()
+        val bottomMargin = (bitmap.height * PREVIEW_BOTTOM_FRACTION).toInt()
         val panel = PanelRect(
-            left = PREVIEW_MARGIN.toFloat(),
-            top = (bitmap.height - PREVIEW_MARGIN - PREVIEW_PANEL_H).toFloat(),
-            width = (bitmap.width - PREVIEW_MARGIN * 2).toFloat(),
-            height = PREVIEW_PANEL_H.toFloat(),
-            cornerRadiusPx = PREVIEW_PANEL_H * 0.32f,
+            left = side.toFloat(),
+            top = (bitmap.height - bottomMargin - panelH).toFloat(),
+            width = (bitmap.width - side * 2).toFloat(),
+            height = panelH.toFloat(),
+            cornerRadiusPx = panelH * 0.5f,
         )
-        return try {
+        val result = try {
             val pixels = IntArray(bitmap.width * bitmap.height)
             bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            val result = LiquidGlassOptics.renderPanel(pixels, bitmap.width, bitmap.height, panel, params)
-            if (!result.startsWith("skip")) bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            result
+            val r = LiquidGlassOptics.renderPanel(
+                pixels, bitmap.width, bitmap.height, panel, params,
+                // The preview photo is untouched: there is no camera-baked plate inside the
+                // panel, the panel's pixels *are* the scene. So the glass samples them directly.
+                panelIsOpaquePlate = false,
+            )
+            if (!r.startsWith("skip")) bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            r
         } catch (t: Throwable) {
             "预览失败：${t.javaClass.simpleName}"
         }
+        // The label comes from the camera itself (HyperCeiler-style), drawn over the glass.
+        val label = try {
+            drawPreviewLabel(bitmap, panel)
+        } catch (t: Throwable) {
+            "label=skip:${t.javaClass.simpleName}"
+        }
+        return "$result $label"
+    }
+
+    /**
+     * Draws the camera's own watermark text over the rendered glass, centred the way the
+     * reference capsule does. The text is resolved from the installed camera / device at
+     * runtime — nothing is hardcoded.
+     */
+    private fun drawPreviewLabel(bitmap: Bitmap, panel: PanelRect): String {
+        val watermark = try {
+            CameraWatermarkResolver.resolve(this)
+        } catch (_: Throwable) {
+            null
+        }
+        val line = watermark?.badgeLine?.trim().orEmpty().ifEmpty { "SHOT ON PHONE" }
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textSize = panel.height * 0.26f
+            color = Color.rgb(52, 52, 58)
+            textAlign = Paint.Align.CENTER
+            setShadowLayer(panel.height * 0.06f, 0f, panel.height * 0.02f, Color.argb(90, 255, 255, 255))
+        }
+        val cx = panel.left + panel.width * 0.5f
+        val cy = panel.top + panel.height * 0.5f - (paint.descent() + paint.ascent()) / 2f
+        canvas.drawText(line, cx, cy, paint)
+        return "label=$line"
     }
 
     // ---------------------------------------------------------------------------------------
@@ -498,7 +542,8 @@ class ConfigActivity : ComponentActivity() {
                 if (decoded != null) {
                     val cropped = centreCrop(decoded, PREVIEW_W, PREVIEW_H)
                     if (decoded !== cropped) decoded.recycle()
-                    drawWatermarkPanel(cropped)
+                    // NOTE: no white panel is drawn here. The photo stays pure; the glass is
+                    // rendered directly onto it in renderPreview, so no white can remain.
                     cropped
                 } else null
             }
@@ -507,30 +552,16 @@ class ConfigActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Draws the synthetic watermark panel (white rounded rect + label text) on top of a photo,
-     * so the glass renderer has a real flat panel to replace — exactly what the camera does.
-     */
-    private fun drawWatermarkPanel(bitmap: Bitmap) {
-        val canvas = Canvas(bitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val left = PREVIEW_MARGIN
-        val top = bitmap.height - PREVIEW_MARGIN - PREVIEW_PANEL_H
-        val right = bitmap.width - PREVIEW_MARGIN
-        val bottom = top + PREVIEW_PANEL_H
-        val radius = PREVIEW_PANEL_H * 0.32f
-        paint.color = Color.argb(255, 244, 245, 249)
-        canvas.drawRoundRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), radius, radius, paint)
-        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        paint.textSize = PREVIEW_PANEL_H * 0.30f
-        paint.color = Color.rgb(60, 60, 66)
-        canvas.drawText("XIAOMI 15 ULTRA", left + PREVIEW_PANEL_H * 0.42f, top + PREVIEW_PANEL_H * 0.64f, paint)
-    }
-
     // ---------------------------------------------------------------------------------------
     // Synthetic sample
     // ---------------------------------------------------------------------------------------
 
+    /**
+     * Fallback scene used only when the bundled preview asset cannot be decoded. It contains no
+     * panel and no text on purpose: the glass must sample the photograph itself, and the label is
+     * drawn afterwards from whatever the installed camera reports. Painting a white plate here was
+     * precisely what made the preview come out grey instead of glassy.
+     */
     private fun buildSamplePhoto(w: Int, h: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -547,22 +578,21 @@ class ConfigActivity : ComponentActivity() {
             paint.color = if ((i / 11) % 2 == 0) Color.argb(46, 255, 255, 255) else Color.argb(30, 12, 18, 34)
             canvas.drawLine(i.toFloat(), 0f, (i + h).toFloat(), h.toFloat(), paint)
         }
-        val left = PREVIEW_MARGIN
-        val top = h - PREVIEW_MARGIN - PREVIEW_PANEL_H
-        val radius = PREVIEW_PANEL_H * 0.32f
-        paint.color = Color.argb(255, 244, 245, 249)
-        canvas.drawRoundRect(left.toFloat(), top.toFloat(), (w - PREVIEW_MARGIN).toFloat(), (top + PREVIEW_PANEL_H).toFloat(), radius, radius, paint)
-        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        paint.textSize = PREVIEW_PANEL_H * 0.30f
-        paint.color = Color.rgb(60, 60, 66)
-        canvas.drawText("XIAOMI 15 ULTRA", left + PREVIEW_PANEL_H * 0.42f, top + PREVIEW_PANEL_H * 0.64f, paint)
         return bitmap
     }
 
     private companion object {
         const val PREVIEW_W = 900
         const val PREVIEW_H = 420
-        const val PREVIEW_MARGIN = 34
-        const val PREVIEW_PANEL_H = 62
+
+        // Geometry measured from the iPhone liquid-glass reference photo the user supplied
+        // (3326 px wide original, 832x624 working copy):
+        //   capsule top=533, bottom=615  -> height 82 px = 0.0986 x width
+        //   bottom margin 8 px           -> 0.0128 x height
+        //   side margin ~3 px            -> 0.004 x width (the capsule runs almost edge to edge)
+        //   corner radius = height / 2   -> full capsule
+        const val PREVIEW_PANEL_H_FRACTION = 0.0986f
+        const val PREVIEW_SIDE_FRACTION = 0.004f
+        const val PREVIEW_BOTTOM_FRACTION = 0.0128f
     }
 }

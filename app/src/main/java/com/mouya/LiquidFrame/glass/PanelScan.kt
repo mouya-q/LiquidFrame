@@ -191,7 +191,7 @@ object PanelScan {
         val panelH = rows * step
         if (panelW < 32 || panelH < 6) return null
 
-        val radius = (minOf(panelW, panelH) * 0.34f)
+        val radius = (minOf(panelW, panelH) * 0.5f)
             .coerceIn(0f, minOf(panelW, panelH) * 0.5f)
         return PanelRect(
             left = (left * step).toFloat(),

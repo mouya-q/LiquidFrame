@@ -41,7 +41,7 @@ data class GlassParams(
     val refractionAmountFraction: Float = 3.0f,
 
     /** Corner radius as a fraction of the panel's short side, when it cannot be measured. */
-    val cornerRadiusFraction: Float = 0.34f,
+    val cornerRadiusFraction: Float = 0.5f,
 
     // ---- backdrop -----------------------------------------------------------------------
 

@@ -85,6 +85,12 @@ object LiquidGlassOptics {
      *
      * @param pixels straight ARGB, width * height, modified in place
      * @param panel  panel geometry in bitmap pixels
+     * @param panelIsOpaquePlate true when the pixels inside the panel are the camera's own baked
+     *        background sheet rather than the photograph. When true and the panel turns out to be
+     *        flat, the interior is re-sourced from the photo above it so the glass refracts the
+     *        scene instead of the plate. Callers that draw the glass straight onto an unmodified
+     *        photograph (the in-app preview) pass false, because there the panel's pixels already
+     *        are the scene.
      * @return a short outcome description for the module log
      */
     fun renderPanel(
@@ -93,12 +99,21 @@ object LiquidGlassOptics {
         height: Int,
         panel: PanelRect,
         params: GlassParams = GlassParams.Default,
+        panelIsOpaquePlate: Boolean = true,
     ): String {
         if (width < 8 || height < 8) return "skip: bitmap too small (${width}x$height)"
         if (pixels.size < width * height) return "skip: pixel buffer too small"
 
         val shortSide = minOf(panel.width, panel.height)
-        val radius = measureCornerRadius(pixels, width, height, panel)
+        // The caller's radius wins. A finished camera JPEG is fully opaque, so a silhouette
+        // measurement can never see a corner in it — `measureCornerRadius` would silently fall
+        // back to 0.3 x shortSide and round the capsule off. Measurement is kept only for the
+        // case where no radius was supplied at all.
+        val radius = if (panel.cornerRadiusPx > 0f) {
+            panel.cornerRadiusPx.coerceIn(0f, shortSide * 0.5f)
+        } else {
+            measureCornerRadius(pixels, width, height, panel)
+        }
         val band = (params.refractionHeightFraction * shortSide)
             .coerceIn(MIN_BAND_PX, shortSide * 0.55f)
         val amount = band * params.refractionAmountFraction
@@ -108,7 +123,8 @@ object LiquidGlassOptics {
         // kept; a photographic panel has no flat tone to compare against, and its own texture
         // is what makes the lens readable, so nothing is preserved and nothing needs to be.
         val tone = measurePanelTone(pixels, width, panel)
-        val preserveContent = params.preserveContent && tone.uniformity >= FLAT_PANEL_UNIFORMITY
+        val preserveContent =
+            panelIsOpaquePlate && params.preserveContent && tone.uniformity >= FLAT_PANEL_UNIFORMITY
 
         // The camera's own labels are found once, from the pixels the camera produced, and then
         // left completely alone while the material is drawn around them. Without an explicit
@@ -142,11 +158,24 @@ object LiquidGlassOptics {
         val cw = cropRight - cropLeft
         val ch = cropBottom - cropTop
         if (cw <= 0 || ch <= 0) return "skip: empty crop"
-
         val backdrop = IntArray(cw * ch)
         for (y in 0 until ch) {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
         }
+
+        // THE WHITE BASE. The pixels the camera left inside the panel are not the photo: they are
+        // the opaque plate the camera itself baked in (a flat near-white sheet, or a blurred copy
+        // of the scene). Refracting that plate produces a grey wash and the pale rectangle the
+        // user saw — the glass was magnifying the plate, not the world. So the panel's interior is
+        // re-sourced from the photograph directly above it (a vertical mirror across the top edge,
+        // continuous at that edge and always backed by real scene pixels), and only then is the
+        // lens run over it. Labels are unaffected: they are still drawn from the untouched original
+        // through the `content` mask below.
+        mirrorInteriorFromAbove(
+            backdrop, cw, ch, cropLeft, cropTop, panel, radius,
+            panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
+        )
+
 
         // NOTE ON BLUR. The camera's own watermark background is already a blurred layer — the
         // assets are literally named `icon_background_light_blur` / `_dark_blur`, and the
@@ -157,17 +186,10 @@ object LiquidGlassOptics {
         // layer a little blur is what sells the glass.
         val blurRadius = params.blurFraction * band
         if (blurRadius >= 0.5f) {
-            // Blur the panel interior only, leaving the lens margin sharp: sampling across the
-            // silhouette would pull the panel's own flat colour into the backdrop.
-            val interior = IntArray(cw * ch)
-            for (y in 0 until ch) {
-                for (x in 0 until cw) {
-                    val gx = cropLeft + x
-                    val gy = cropTop + y
-                    val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
-                    interior[y * cw + x] = if (-sd >= band) backdrop[y * cw + x] else pixels[gy * width + gx]
-                }
-            }
+            // Blur the panel interior only, leaving the lens margin sharp. The source is
+            // `backdrop` (already re-sourced from the photo above the panel), never the raw
+            // `pixels`, which still hold the camera's own plate and would leak it back in.
+            val interior = backdrop.copyOf()
             val blurred = blurInPlace(interior, cw, ch, blurRadius)
             for (y in 0 until ch) {
                 for (x in 0 until cw) {
@@ -462,6 +484,66 @@ object LiquidGlassOptics {
         val ix = (x.toInt() - cropLeft).coerceIn(0, cw - 1)
         val iy = (y.toInt() - cropTop).coerceIn(0, ch - 1)
         return region[iy * cw + ix]
+    }
+
+    /**
+     * Re-sources the panel's interior from the photograph above it, so the glass refracts the
+     * scene instead of the plate the camera baked into the panel.
+     *
+     * The camera draws its watermark background as an opaque pre-rendered sheet. When the module
+     * runs the lens over that sheet, the "backdrop" it magnifies is the sheet itself — which is
+     * exactly why the panel came out as a flat pale wash with a white base showing through.
+     * The scene behind the panel is not recoverable (the camera has already overwritten it), so
+     * the nearest real photograph content is used instead: the rows immediately above the
+     * panel's top edge, mirrored downwards. The mirror is continuous across that edge, which
+     * keeps the glass from showing a seam at the top of the capsule.
+     *
+     * Only applied when the panel really is a flat baked background ([flat]); a panel the camera
+     * filled with a blurred copy of the scene is already photographic and is left alone.
+     *
+     * @param backdrop crop-local buffer, width [cw], height [ch], modified in place
+     */
+    private fun mirrorInteriorFromAbove(
+        backdrop: IntArray,
+        cw: Int,
+        ch: Int,
+        cropLeft: Int,
+        cropTop: Int,
+        panel: PanelRect,
+        radius: Float,
+        flat: Boolean,
+    ) {
+        if (!flat) return
+        if (cw <= 0 || ch <= 0) return
+
+        val topInCrop = panel.top.toInt() - cropTop
+        // Nothing above the panel inside this crop means there is no photograph to borrow from.
+        if (topInCrop <= 0) return
+
+        val left = (panel.left.toInt() - cropLeft).coerceIn(0, cw)
+        val right = (panel.right.toInt() - cropLeft).coerceIn(left, cw)
+        val bottom = (panel.bottom.toInt() - cropTop).coerceIn(topInCrop, ch)
+        if (right <= left || bottom <= topInCrop) return
+
+        // One row of source pixels per row needed, so the mirror does not stretch the scene.
+        // The reflection is a triangle wave over the rows available above the panel: clamping
+        // instead would smear the single row nearest the edge down the whole capsule, and the
+        // crop's padding is usually much shorter than the panel itself.
+        val period = topInCrop * 2
+        for (y in topInCrop until bottom) {
+            val m = (y - topInCrop) % period
+            val sourceY = if (m < topInCrop) topInCrop - 1 - m else m - topInCrop
+            val src = sourceY.coerceIn(0, topInCrop - 1) * cw
+            val dst = y * cw
+            for (x in left until right) {
+                // Keep the rounded silhouette honest: pixels outside the capsule are not part of
+                // the panel and must stay as the photo has them.
+                val gx = (cropLeft + x + 0.5f)
+                val gy = (cropTop + y + 0.5f)
+                if (sdRoundedRect(gx, gy, panel, radius) > 0.5f) continue
+                backdrop[dst + x] = backdrop[src + x]
+            }
+        }
     }
 
     /** Reference dispersion, sampled from a crop-local buffer. */
@@ -1177,5 +1259,3 @@ object LiquidGlassOptics {
         return "${scaled / 100}.${(scaled % 100).toString().padStart(2, '0')}"
     }
 }
-
-

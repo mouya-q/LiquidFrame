@@ -4,6 +4,25 @@
 
 This pass focuses on turning LiquidFrame from a tuning prototype into a small, system-like product.
 
+### Material
+
+- **The white base under the glass is gone.** The camera bakes an opaque background sheet into its
+  watermark panel, and the optics were refracting *that sheet* instead of the photograph — which is
+  why the panel read as a flat pale wash. The panel interior is now re-sourced from the real
+  photograph directly above it before the lens runs, so the glass magnifies the scene.
+- Corner radius now comes from the capsule geometry (full radius, height / 2). Previously a
+  silhouette measurement ran on the finished JPEG, could never find a corner in fully opaque pixels,
+  and silently fell back to 0.3 × short side — rounding the capsule off.
+- Preview and capture now share the same geometry rules.
+
+### Watermark text
+
+- The preview no longer hardcodes a device name. The label is resolved at runtime from the installed
+  camera package and the device itself, following the same principle as HyperCeiler's watermark rule
+  (locate the camera's own watermark provider instead of embedding a string). Nothing is hardcoded.
+- Removed the synthetic fallback scene's baked panel and fake label; the fallback is now a plain
+  photographic gradient so the glass always samples real content.
+
 ### UI
 
 - Rebuilt the module settings screen around a clear hierarchy: preview → core switch → display → material → detail → maintenance.
