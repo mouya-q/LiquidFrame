@@ -11,7 +11,6 @@ package com.mouya.LiquidFrame.glass
  *   lens(12.dp, 24.dp)        -> refraction height and amount; amount is sent negated
  *   HighlightStyle.Default    -> white stroke 0.5.dp, blur width/2, angle 45 deg,
  *                                falloff 1, BlendMode.Plus
- *   InnerShadow.Default       -> black 0.15, radius 24.dp, offset (0, +radius)
  *
  * Where a value is given as a fraction rather than in dp it is because a photo watermark has
  * no density to resolve against: the panel is only ~40 px tall on a 4000 px frame, so the
@@ -119,13 +118,21 @@ data class GlassParams(
      */
     val rimAmbient: Float = 0.45f,
 
-    // ---- inner shadow -------------------------------------------------------------------
+    // ---- inner shadow (removed) ---------------------------------------------------------
 
-    val innerShadowAlpha: Float = 0.15f,
+    /**
+     * Inner shadow parameters, retained only so that a configuration file written by an older
+     * build still loads without error.
+     *
+     * They have no effect. The shadow was rendered by both `renderPanel()` and `render()`, and
+     * on a flat capsule it read as a grey slab across the lower half rather than as depth. Both
+     * render sites are gone, along with the settings slider that drove them. Nothing reads these
+     * fields, and nothing writes them; they exist purely as forward/backward compatibility for
+     * `inner_shadow_alpha` in the shared config.
+     */
+    val innerShadowAlpha: Float = 0f,
     val innerShadowRadiusFraction: Float = 0.10f,
     val innerShadowOffsetXFraction: Float = 0f,
-
-    /** +1 puts the shadow along the top edge, matching `InnerShadow.Default`'s offset. */
     val innerShadowOffsetYFraction: Float = 1f,
 
     // ---- adaptive -----------------------------------------------------------------------
@@ -134,37 +141,22 @@ data class GlassParams(
      * Scale tint, veil and rim against the backdrop's mean luminance. Apple's material
      * thins out over a bright backdrop and densifies over a dark one, which is also what
      * keeps white watermark text legible on both.
+     *
+     * This scales the user's own values. An earlier revision selected between two hardcoded
+     * presets instead, which silently discarded every setting the user had changed.
      */
     val adaptive: Boolean = true,
 ) {
-
-    /**
-     * The inner shadow grows on bright scenes, where a light panel needs the anchor, and
-     * eases off on dark ones, where it would only muddy the glass.
-     */
-    fun innerShadowAdaptiveGain(adaptiveScale: Float): Float =
-        (0.75f + 0.45f * adaptiveScale).coerceIn(0.6f, 1.5f)
 
     companion object {
 
         val Default = GlassParams()
 
-        /** Bright scene: a thinner, brighter, more transparent material. */
-        val BrightScene = Default.copy(
-            tintAlpha = 0.14f,
-            surfaceAlpha = 0.09f,
-            rimAlpha = 0.56f,
-            innerShadowAlpha = 0.12f,
-            adaptive = false,
-        )
-
-        /** Dark scene: denser glass, softer rim, stronger anchor. */
-        val DarkScene = Default.copy(
-            tintAlpha = 0.05f,
-            surfaceAlpha = 0.03f,
-            rimAlpha = 0.40f,
-            innerShadowAlpha = 0.22f,
-            adaptive = false,
-        )
+        // `BrightScene` and `DarkScene` were removed. They used to be what
+        // `WatermarkHooks.resolveParams()` returned whenever adaptive mode was on, which meant
+        // every user setting was discarded for every shot. Adaptive mode now scales the user's
+        // own tint/surface/rim by the measured brightness, so a preset has nothing left to do.
+        // They are removed rather than left as dead constants so the next preset cannot quietly
+        // reintroduce that bug.
     }
 }
