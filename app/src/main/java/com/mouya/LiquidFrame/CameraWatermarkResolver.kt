@@ -61,8 +61,11 @@ object CameraWatermarkResolver {
     }
 
     private fun resolveDevice(context: Context, manufacturer: String): String {
-        // Strip a duplicated manufacturer prefix ("Xiaomi 15 Ultra" -> "15 ULTRA").
-        var model = Build.MODEL.trim()
+        // Prefer the marketing name ("15 Ultra") over the device code ("25010PN30C").
+        // Build.MODEL on Xiaomi hardware is the internal code, not what the camera badge
+        // prints. ro.product.marketname holds the human-readable name.
+        val market = getSystemProperty("ro.product.marketname", "").trim()
+        var model = market.ifEmpty { Build.MODEL.trim() }
         if (model.uppercase(Locale.ROOT).startsWith(manufacturer)) {
             model = model.substring(manufacturer.length).trim()
         }
@@ -97,5 +100,15 @@ object CameraWatermarkResolver {
             }
         }
         return null
+    }
+
+    private fun getSystemProperty(key: String, def: String): String {
+        return try {
+            val c = Class.forName("android.os.SystemProperties")
+            val m = c.getMethod("get", String::class.java, String::class.java)
+            (m.invoke(null, key, def) as? String) ?: def
+        } catch (_: Throwable) {
+            def
+        }
     }
 }

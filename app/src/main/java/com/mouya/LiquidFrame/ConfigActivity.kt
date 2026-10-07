@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -67,9 +68,9 @@ import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.PanelRect
 import com.mouya.LiquidFrame.ui.GlassCard
-import com.mouya.LiquidFrame.ui.IOSToggleRow
-import com.mouya.LiquidFrame.ui.IOSColors
-import com.mouya.LiquidFrame.ui.IOSSettingSliderRow
+import com.mouya.LiquidFrame.ui.GlassToggleRow
+import com.mouya.LiquidFrame.ui.MeloXColors
+import com.mouya.LiquidFrame.ui.GlassSliderRow
 import com.mouya.LiquidFrame.ui.SettingDivider
 import com.mouya.LiquidFrame.ui.SettingRow
 import com.mouya.LiquidFrame.ui.SettingSection
@@ -117,17 +118,17 @@ class ConfigActivity : ComponentActivity() {
         basePhoto = loadAssetBackdrop() ?: buildSamplePhoto(PREVIEW_W, PREVIEW_H)
         setContent {
             val colors = if (isDark()) darkColorScheme(
-                primary = IOSColors.blue,
-                background = IOSColors.darkBg,
-                surface = IOSColors.darkSurface,
-                onBackground = IOSColors.darkTextPrimary,
-                onSurface = IOSColors.darkTextPrimary,
+                primary = MeloXColors.blue,
+                background = MeloXColors.darkBg,
+                surface = MeloXColors.darkSurface,
+                onBackground = MeloXColors.darkTextPrimary,
+                onSurface = MeloXColors.darkTextPrimary,
             ) else lightColorScheme(
-                primary = IOSColors.blue,
-                background = IOSColors.lightBg,
-                surface = IOSColors.lightSurface,
-                onBackground = IOSColors.lightTextPrimary,
-                onSurface = IOSColors.lightTextPrimary,
+                primary = MeloXColors.blue,
+                background = MeloXColors.lightBg,
+                surface = MeloXColors.lightSurface,
+                onBackground = MeloXColors.lightTextPrimary,
+                onSurface = MeloXColors.lightTextPrimary,
             )
             MaterialTheme(colorScheme = colors) { LiquidFrameDashboard() }
         }
@@ -302,10 +303,10 @@ class ConfigActivity : ComponentActivity() {
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .background(if (enabled) IOSColors.success.copy(alpha = 0.14f) else IOSColors.warning.copy(alpha = 0.14f))
+                            .background(if (enabled) MeloXColors.success.copy(alpha = 0.14f) else MeloXColors.warning.copy(alpha = 0.14f))
                             .padding(horizontal = 11.dp, vertical = 7.dp),
                     ) {
-                        Text(if (enabled) "已启用" else "已停用", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) IOSColors.success else IOSColors.warning)
+                        Text(if (enabled) "已启用" else "已停用", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) MeloXColors.success else MeloXColors.warning)
                     }
                 }
 
@@ -313,7 +314,7 @@ class ConfigActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(190.dp)
+                            .aspectRatio(PREVIEW_W.toFloat() / PREVIEW_H.toFloat())
                             .clip(RoundedCornerShape(16.dp)),
                     ) {
                         val bmp = previewBitmap
@@ -353,7 +354,7 @@ class ConfigActivity : ComponentActivity() {
                 }
 
                 SettingSection("核心") {
-                    IOSToggleRow(
+                    GlassToggleRow(
                         "启用 LiquidFrame",
                         enabled,
                         { enabled = !enabled },
@@ -362,41 +363,41 @@ class ConfigActivity : ComponentActivity() {
                 }
 
                 SettingSection("显示") {
-                    IOSToggleRow("自适应明暗", adaptive, { adaptive = !adaptive }, "按画面亮度自动调整玻璃存在感")
+                    GlassToggleRow("自适应明暗", adaptive, { adaptive = !adaptive }, "按画面亮度自动调整玻璃存在感")
                     SettingDivider()
-                    IOSToggleRow("保留原有文字", preserveContent, { preserveContent = !preserveContent }, "只替换背景，不改相机自己的字与 Logo")
+                    GlassToggleRow("保留原有文字", preserveContent, { preserveContent = !preserveContent }, "只替换背景，不改相机自己的字与 Logo")
                     SettingDivider()
-                    IOSToggleRow("色散", dispersion, { dispersion = !dispersion }, "开启边缘的轻微彩色折射")
+                    GlassToggleRow("色散", dispersion, { dispersion = !dispersion }, "开启边缘的轻微彩色折射")
                 }
 
                 SettingSection("材质") {
-                    IOSSettingSliderRow("折射带", band, 0f..0.45f, "")
+                    GlassSliderRow("折射带", band, 0f..0.45f, "")
                         { band = it }
                     SettingDivider()
-                    IOSSettingSliderRow("折射强度", amount, 0f..5f, "", valueLabel = String.format(java.util.Locale.ROOT, "%.1f×", amount))
+                    GlassSliderRow("折射强度", amount, 0f..5f, "", valueLabel = String.format(java.util.Locale.ROOT, "%.1f×", amount))
                         { amount = it }
                     SettingDivider()
-                    IOSSettingSliderRow("背景模糊", blur, 0f..1.5f, "")
+                    GlassSliderRow("背景模糊", blur, 0f..1.5f, "")
                         { blur = it }
                     SettingDivider()
-                    IOSSettingSliderRow("内部提亮", lift, 0f..48f, "")
+                    GlassSliderRow("内部提亮", lift, 0f..48f, "")
                         { lift = it }
                     SettingDivider()
-                    IOSSettingSliderRow("着色", tint, 0f..0.6f, "")
+                    GlassSliderRow("着色", tint, 0f..0.6f, "")
                         { tint = it }
                     SettingDivider()
-                    IOSSettingSliderRow("边缘高光", rim, 0f..1.2f, "")
+                    GlassSliderRow("边缘高光", rim, 0f..1.2f, "")
                         { rim = it }
                 }
 
                 SettingSection("细节") {
-                    IOSSettingSliderRow("内阴影", shadow, 0f..0.6f, "")
+                    GlassSliderRow("内阴影", shadow, 0f..0.6f, "")
                         { shadow = it }
                     SettingDivider()
-                    IOSSettingSliderRow("高光方向", angle, 0f..360f, "°", valueLabel = "${angle.roundToInt()}°")
+                    GlassSliderRow("高光方向", angle, 0f..360f, "°", valueLabel = "${angle.roundToInt()}°")
                         { angle = it }
                     SettingDivider()
-                    IOSSettingSliderRow("立体感", depth, 0f..1f, "")
+                    GlassSliderRow("立体感", depth, 0f..1f, "")
                         { depth = it }
                 }
 
@@ -405,7 +406,7 @@ class ConfigActivity : ComponentActivity() {
                         title = "恢复默认参数",
                         subtitle = "回到项目出厂的材质比例",
                         trailing = {
-                            Icon(Icons.Outlined.Refresh, contentDescription = null, tint = IOSColors.blue, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Outlined.Refresh, contentDescription = null, tint = MeloXColors.blue, modifier = Modifier.size(20.dp))
                         },
                         onClick = ::resetDefaults,
                     )
@@ -414,7 +415,7 @@ class ConfigActivity : ComponentActivity() {
                         title = "复制诊断日志",
                         subtitle = "包含最近一次检测到的面板与渲染结果",
                         trailing = {
-                            Icon(Icons.Outlined.ContentCopy, contentDescription = null, tint = IOSColors.blue, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Outlined.ContentCopy, contentDescription = null, tint = MeloXColors.blue, modifier = Modifier.size(20.dp))
                         },
                         onClick = {
                             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -432,7 +433,7 @@ class ConfigActivity : ComponentActivity() {
                 Text(
                     "配置写入：$writeStatus",
                     fontSize = 11.sp,
-                    color = if (writeStatus.startsWith("写入失败")) IOSColors.error else textSecondary(),
+                    color = if (writeStatus.startsWith("写入失败")) MeloXColors.error else textSecondary(),
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
                 Spacer(Modifier.height(12.dp))
@@ -522,7 +523,10 @@ class ConfigActivity : ComponentActivity() {
             textSize = panel.height * 0.26f
             color = Color.rgb(52, 52, 58)
             textAlign = Paint.Align.CENTER
-            setShadowLayer(panel.height * 0.06f, 0f, panel.height * 0.02f, Color.argb(90, 255, 255, 255))
+            // White glow centred on the glyph (dx=dy=0): the previous dy=+0.02H
+            // dragged a pale smear into the lower half of the capsule, which read
+            // as the grey blob under the text.
+            setShadowLayer(panel.height * 0.06f, 0f, 0f, Color.argb(90, 255, 255, 255))
         }
         val cx = panel.left + panel.width * 0.5f
         val cy = panel.top + panel.height * 0.5f - (paint.descent() + paint.ascent()) / 2f

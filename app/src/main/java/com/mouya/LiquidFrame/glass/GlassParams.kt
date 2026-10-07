@@ -68,10 +68,10 @@ data class GlassParams(
     val tintHueWeight: Float = 0.75f,
 
     /** Alpha of the tint's normal-blend pass. */
-    val tintAlpha: Float = 0.10f,
+    val tintAlpha: Float = 0.08f,
 
     /** Additional flat white veil; the reference's `surfaceColor`. */
-    val surfaceAlpha: Float = 0.06f,
+    val surfaceAlpha: Float = 0.04f,
 
     /**
      * Additive frosted lift applied across the whole panel, in 0-255 units.
@@ -79,8 +79,11 @@ data class GlassParams(
      * Apple's material is not transparent glass: it keeps a faint luminous frost so white
      * labels stay legible over any photo. Without this the same photo content that makes the
      * refraction convincing also swallows the labels.
+     *
+     * 10 -> 6: the stacked veil (tint + surface + lift ~= 19%) read as a grey slab on
+     * the lower half of a flat capsule, where there is no top highlight to balance it.
      */
-    val interiorLift: Float = 10f,
+    val interiorLift: Float = 6f,
 
     /**
      * Keep the camera's own labels on top of the material.
