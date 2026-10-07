@@ -9,7 +9,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -219,7 +218,6 @@ class ConfigActivity : ComponentActivity() {
         var lift by remember { mutableFloatStateOf(initial.interiorLift) }
         var tint by remember { mutableFloatStateOf(initial.tintAlpha) }
         var rim by remember { mutableFloatStateOf(initial.rimAlpha) }
-        var shadow by remember { mutableFloatStateOf(initial.innerShadowAlpha) }
         var angle by remember { mutableFloatStateOf(initial.highlightAngleDeg) }
         var depth by remember { mutableFloatStateOf(initial.depthEffect) }
 
@@ -237,7 +235,7 @@ class ConfigActivity : ComponentActivity() {
         // rewrites the shared configuration file dozens of times per second.
         LaunchedEffect(
             enabled, adaptive, preserveContent, dispersion,
-            band, amount, blur, lift, tint, rim, shadow, angle, depth,
+            band, amount, blur, lift, tint, rim, angle, depth,
         ) {
             kotlinx.coroutines.delay(180)
             val values = ConfigStore.snapshot().apply {
@@ -251,7 +249,9 @@ class ConfigActivity : ComponentActivity() {
                 this[ConfigStore.KEY_LIFT] = lift.toString()
                 this[ConfigStore.KEY_TINT] = tint.toString()
                 this[ConfigStore.KEY_RIM] = rim.toString()
-                this[ConfigStore.KEY_SHADOW] = shadow.toString()
+                // The inner shadow is gone from the UI. `KEY_SHADOW` is deliberately no longer
+                // written, so a stale `inner_shadow_alpha` in the shared file is simply ignored
+                // by the renderer instead of being re-saved on every unrelated slider change.
                 this[ConfigStore.KEY_ANGLE] = angle.toString()
                 this[ConfigStore.KEY_DEPTH] = depth.toString()
             }
@@ -279,7 +279,6 @@ class ConfigActivity : ComponentActivity() {
             lift = d.interiorLift
             tint = d.tintAlpha
             rim = d.rimAlpha
-            shadow = d.innerShadowAlpha
             angle = d.highlightAngleDeg
             depth = d.depthEffect
         }
@@ -391,9 +390,6 @@ class ConfigActivity : ComponentActivity() {
                 }
 
                 SettingSection("细节") {
-                    GlassSliderRow("内阴影", shadow, 0f..0.6f, "")
-                        { shadow = it }
-                    SettingDivider()
                     GlassSliderRow("高光方向", angle, 0f..360f, "°", valueLabel = "${angle.roundToInt()}°")
                         { angle = it }
                     SettingDivider()
@@ -496,42 +492,19 @@ class ConfigActivity : ComponentActivity() {
         } catch (t: Throwable) {
             "预览失败：${t.javaClass.simpleName}"
         }
-        // The label comes from the camera itself (HyperCeiler-style), drawn over the glass.
-        val label = try {
-            drawPreviewLabel(bitmap, panel)
-        } catch (t: Throwable) {
-            "label=skip:${t.javaClass.simpleName}"
-        }
-        return "$result $label"
-    }
-
-    /**
-     * Draws the camera's own watermark text over the rendered glass, centred the way the
-     * reference capsule does. The text is resolved from the installed camera / device at
-     * runtime — nothing is hardcoded.
-     */
-    private fun drawPreviewLabel(bitmap: Bitmap, panel: PanelRect): String {
-        val watermark = try {
-            CameraWatermarkResolver.resolve(this)
-        } catch (_: Throwable) {
-            null
-        }
-        val line = watermark?.badgeLine?.trim().orEmpty().ifEmpty { "SHOT ON PHONE" }
-        val canvas = Canvas(bitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            textSize = panel.height * 0.26f
-            color = Color.rgb(52, 52, 58)
-            textAlign = Paint.Align.CENTER
-            // White glow centred on the glyph (dx=dy=0): the previous dy=+0.02H
-            // dragged a pale smear into the lower half of the capsule, which read
-            // as the grey blob under the text.
-            setShadowLayer(panel.height * 0.06f, 0f, 0f, Color.argb(90, 255, 255, 255))
-        }
-        val cx = panel.left + panel.width * 0.5f
-        val cy = panel.top + panel.height * 0.5f - (paint.descent() + paint.ascent()) / 2f
-        canvas.drawText(line, cx, cy, paint)
-        return "label=$line"
+        // No watermark text is drawn here on purpose.
+        //
+        // The camera draws its own labels into the photo, and the renderer already keeps them
+        // (that is the `preserveContent` mask). Faking a label on top of a synthetic photo made
+        // the settings screen look faithful while being nothing like the real thing: the model
+        // string came from the device, not from the watermark actually selected, its position was
+        // a guess, and it was a hardcoded dark grey rather than the camera's own ink. So a
+        // preview with text and a photo without it could disagree in wording, placement, colour
+        // and size at the same time — which is exactly the "预览和实际拍出来不一致" report.
+        //
+        // The preview now shows the material and nothing else, so what it shows about the glass
+        // is true; the labels are the camera's, and only the camera can show them.
+        return result
     }
 
     // ---------------------------------------------------------------------------------------
@@ -562,9 +535,8 @@ class ConfigActivity : ComponentActivity() {
 
     /**
      * Fallback scene used only when the bundled preview asset cannot be decoded. It contains no
-     * panel and no text on purpose: the glass must sample the photograph itself, and the label is
-     * drawn afterwards from whatever the installed camera reports. Painting a white plate here was
-     * precisely what made the preview come out grey instead of glassy.
+     * panel and no text on purpose: the glass must sample the photograph itself. Painting a
+     * white plate here was precisely what made the preview come out grey instead of glassy.
      */
     private fun buildSamplePhoto(w: Int, h: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
