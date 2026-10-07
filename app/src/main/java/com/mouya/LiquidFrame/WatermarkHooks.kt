@@ -261,8 +261,8 @@ object WatermarkHooks {
         }
         val target = cls.declaredMethods.firstOrNull { method ->
             method.name == FALLBACK_COMPOSITE_METHOD &&
-                    method.parameterTypes.size == 6 &&
-                    Bitmap::class.java.isAssignableFrom(method.parameterTypes[0])
+                    Bitmap::class.java.isAssignableFrom(method.returnType) &&
+                    method.parameterTypes.any { Bitmap::class.java.isAssignableFrom(it) }
         }
         if (target == null) {
             log(
@@ -272,7 +272,8 @@ object WatermarkHooks {
             return
         }
         hookComposite(target)
-        log("hooked $FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD")
+        log("hooked $FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD " +
+                "(${target.parameterTypes.size} params)")
     }
 
     private fun findClass(name: String, loader: ClassLoader): Class<*>? =

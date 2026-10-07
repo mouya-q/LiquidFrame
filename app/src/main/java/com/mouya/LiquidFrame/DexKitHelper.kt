@@ -206,9 +206,8 @@ object DexKitHelper {
     }
 
     private fun findCompositeMethodIn(cls: Class<*>): Method? = cls.declaredMethods.firstOrNull { method ->
-        method.parameterTypes.size == 6 &&
-                android.graphics.Bitmap::class.java.isAssignableFrom(method.parameterTypes[0]) &&
-                android.graphics.Bitmap::class.java.isAssignableFrom(method.returnType)
+        android.graphics.Bitmap::class.java.isAssignableFrom(method.returnType) &&
+                method.parameterTypes.any { android.graphics.Bitmap::class.java.isAssignableFrom(it) }
     }
 
     private fun log(message: String) {
