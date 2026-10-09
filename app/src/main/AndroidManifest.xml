@@ -5,9 +5,7 @@
         android:allowBackup="true"
         android:label="LiquidFrame"
         android:supportsRtl="true"
-        android:icon="@drawable/ic_liquidframe"
-        android:roundIcon="@drawable/ic_liquidframe"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@android:style/Theme.Material.Light">
 
         <meta-data
             android:name="xposedmodule"

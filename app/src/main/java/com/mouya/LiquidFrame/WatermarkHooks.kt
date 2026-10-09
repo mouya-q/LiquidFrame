@@ -2,603 +2,217 @@ package com.mouya.LiquidFrame
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Matrix
+import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
+import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.Shader
-import com.mouya.LiquidFrame.glass.PanelScan
-import com.mouya.LiquidFrame.glass.GlassParams
-import com.mouya.LiquidFrame.glass.LiquidGlassOptics
-import com.mouya.LiquidFrame.glass.PanelRect
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import java.lang.reflect.Method
-import java.util.Locale
 
-/**
- * Installs the liquid glass watermark.
- *
- * Xiaomi's watermark pipeline, reconstructed by disassembling `com.android.camera`
- * `1+6.4.000250.2` (the HyperOS 4 port this module targets) and cross-checked against
- * `6.4.000370.0`:
- *
- * ```
- *   LE5/b->h(Lla/a, Z, I)Lla/f;            app side "processWatermark": lifts the I420 frame
- *                                          into a full-size photo Bitmap
- *   watermark/b->b(Application, Bitmap, Dc/b, I) -> Bitmap
- *   watermark/b->c(b, Context, Bitmap, Dc/b, I, String, I) -> Bitmap
- *   watermark/c->c(Context, Bitmap, Dc/b, I, Cc/a, String, Z,
- *                  PorterDuff$Mode, String, o9/O) -> Bitmap
- *   Fe/a->j(Fe/a, Bitmap src, ColorSpace, I wHint, I hHint, String, I) -> Bitmap
- * ```
- *
- * `Fe/a->j` is the composite. It resolves the element tree's size, creates ONE output bitmap,
- * wraps it in `Lpe/o`, and draws the tree into it in painter order. Critically, the photo is
- * blitted into that same bitmap by `Fe/a->b` (via `Lpe/o->g` == `Canvas.drawBitmap`), and the
- * bitmap `Fe/a->j` returns is encoded one-to-one as the final image. So the output bitmap is
- * the full photo with the watermark already composited, and the pixels behind the panel are
- * the scene itself.
- *
- * The background panel is not a solid colour: it is a pre-rendered WebP
- * (`assets/watermarks/<style>/<id>/icon_background_{light,dark}_blur.webp`) drawn as a
- * `BitmapShader`-filled rectangle, with its corner radius baked into the WebP alpha plus
- * `rect_params.rect_radius` in the per-style `config.json`.
- *
- * Two facts decide the hook design:
- *
- *  1. **The rectangle passed to `Lpe/o->h` is element-local, always `(0, 0, w, h)`.** Absolute
- *     placement lives in `Canvas.translate` calls made by the parent group, so the rectangle
- *     must be mapped through the canvas's own matrix — see [absoluteRect].
- *  2. **There is no canvas-level scale factor.** dp values in `config.json` are multiplied by
- *     `min(photoW, photoH) / 1080` once at layout time, after which every element is already
- *     in absolute output pixels. The 1080 constant that appears next to the panel is only the
- *     `BitmapShader`'s local matrix, which fits the WebP into the panel rectangle.
- *
- * The material is therefore applied by post-processing the finished composite, with the panel
- * located from the app's own draw call where possible and from the pixels otherwise.
- */
 object WatermarkHooks {
 
     private const val TAG = "LiquidFrame"
 
-    /** Smallest believable panel, in output pixels. */
-    private const val MIN_PANEL_WIDTH = 32
-
-    /**
-     * Largest share of the frame one watermark element may cover, as a fraction of its width.
-     *
-     * The Leica-style watermarks stack several elements — a logo block, a line of text, a
-     * capsule — instead of the single full-width strip Xiaomi draws. Those pieces are narrow,
-     * and the old width test (`>= MIN_PANEL_WIDTH` only) happily accepted any of them. Picking
-     * whichever came first then meant the module could attach itself to the logo box, or to a
-     * scene highlight that happened to be wide enough, and re-render it as glass. That is the
-     * "到处乱飘 / 渲染异常" the user reported on Leica: the glass was on a moving target because
-     * the chosen element was not the watermark panel.
-     *
-     * An element must therefore be both a plausible size and, when several candidates exist,
-     * the one that best explains the strip. See [pickPanel].
-     */
-    private const val MAX_PANEL_WIDTH_FRACTION = 0.92f
-
-    /**
-     * Minimum share of the frame a *watermark* element spans, as a fraction of the frame width.
-     *
-     * Deliberately low. A Leica watermark's capsule is roughly a third of the frame; a plain
-     * Xiaomi strip is nearly all of it. Anything narrower than this is a logo, a date stamp or
-     * a piece of scene, never the plate the glass belongs on.
-     */
-    private const val MIN_PANEL_WIDTH_FRACTION = 0.12f
-
-    /** Bounded work: keep at most this many bitmap locations per composite. */
-    private const val MAX_PANELS = 8
-
-    /** Working width for the pixel fallback, in pixels. Structure survives this comfortably. */
-    private const val SCAN_WORK_WIDTH = 192
-
-    /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
-    private const val PANEL_CROP_PAD_FRACTION = 0.55f
-
-    /** Per-composite panel observations. No strong reference to the destination bitmap is kept. */
-    private class Frame {
-        val panels = ArrayList<PanelRect>(MAX_PANELS)
-    }
-
-    /** Keyed by the `Lpe/o` canvas wrapper, which is created once per composite. */
-    private val frames = java.util.Collections.synchronizedMap(
-        java.util.WeakHashMap<Any, Frame>()
-    )
-
-    /** Secondary lookup by destination Bitmap, so the composite callback cannot mix captures. */
-    private val framesByBitmap = java.util.Collections.synchronizedMap(
-        java.util.WeakHashMap<Bitmap, Frame>()
-    )
-
-    /** Classes already hooked, so the late discovery pass cannot double-hook a fallback target. */
-    private val hookedClasses = java.util.Collections.synchronizedSet(HashSet<String>())
-
-    /** Composite methods already hooked, keyed by `class#method`. */
-    private val hookedComposites = java.util.Collections.synchronizedSet(HashSet<String>())
-
-    /** How long the late pass is willing to wait for the background dex scan, in ms. */
-    private const val DISCOVERY_WAIT_MS = 45_000L
-
     fun install(param: XC_LoadPackage.LoadPackageParam) {
-        DexKitHelper.setClassLoader(param.classLoader)
-
-        // handleLoadPackage usually runs before the host Application exists, so the scan waits for
-        // it in the background rather than requiring a context right here.
-        DexKitHelper.initDeferred()
-
-        // The dex scan is asynchronous (it reads the whole camera APK), so it is almost never
-        // finished this early. Install the known-good names first so a shot taken immediately
-        // still works, then upgrade to discovered names when the scan lands.
-        installFallback(param.classLoader)
-        startLateDiscovery(param.classLoader)
+        hookWatermarkGeneration(param)
     }
 
     /**
-     * Re-runs installation once the background scan resolves the obfuscated names, so the module
-     * keeps working after a camera update even though the hardcoded fallback names changed.
+     * Precision hook: com.xiaomi.cam.watermark.a.F() generates the watermark Bitmap.
+     * We post-process the returned Bitmap to replace its background with Liquid Glass
+     * while preserving text/metadata pixels.
      */
-    private fun startLateDiscovery(loader: ClassLoader) {
-        val thread = Thread({
-            val found = DexKitHelper.awaitDiscovery(DISCOVERY_WAIT_MS)
-            if (!found) {
-                log("dex discovery unavailable; staying on fallback hook names")
-                return@Thread
-            }
-            try {
-                DexKitHelper.findCanvasWrapper()?.let { cls ->
-                    hookCanvasWrapper(cls)
-                    hookDrawRect(cls)
-                }
-                DexKitHelper.findCompositeMethod(loader)?.let { hookComposite(it) }
-            } catch (t: Throwable) {
-                log("late discovery hooking failed: ${t.javaClass.simpleName}: ${t.message}")
-            }
-        }, "LiquidFrame-LateHook")
-        thread.isDaemon = true
-        thread.start()
-    }
-
-    /** Hardcoded names known to exist in the targeted camera builds. */
-    private fun installFallback(loader: ClassLoader) {
-        log("installing fallback hooks (pe.o / Fe.a->j)")
-        hookCanvasWrapperFallback(loader)
-        hookDrawRectFallback(loader)
-        hookCompositeFallback(loader)
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // DexKit-based Hooks
-    // ---------------------------------------------------------------------------------------
-
-    private fun hookCanvasWrapper(cls: Class<*>) {
-        if (!hookedClasses.add(cls.name + "#ctor")) return
-        val ctor = cls.declaredConstructors.firstOrNull { c ->
-            c.parameterTypes.size == 1 && Bitmap::class.java.isAssignableFrom(c.parameterTypes[0])
-        } ?: return
-
-        XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-            override fun afterHookedMethod(p: MethodHookParam) {
-                val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
-                val self = p.thisObject ?: return
-                val frame = Frame()
-                // Keyed by the wrapper *instance*, not by this hook object: the wrapper is
-                // created once per composite, so concurrent composites no longer overwrite each
-                // other's state and the drawRect hook can find its own canvas.
-                frames[self] = frame
-                framesByBitmap[bitmap] = frame
-            }
-        })
-        log("hooked canvas wrapper via DexKit")
-    }
-
-    private fun hookDrawRect(cls: Class<*>) {
-        if (!hookedClasses.add(cls.name + "#drawRect")) return
-        val target = DexKitHelper.findDrawRectMethod(cls) ?: return
-
-        XposedBridge.hookMethod(target, object : XC_MethodHook() {
-            override fun beforeHookedMethod(p: MethodHookParam) {
-                // The receiver is the `Lpe/o` wrapper this draw is issued on. Both the frame and
-                // the canvas come from it, so a draw belonging to composite B can never be
-                // recorded against composite A's panel list.
-                val self = p.thisObject ?: return
-                val frame = frames[self] ?: return
-                val paint = p.args?.getOrNull(4) as? Paint ?: return
-                val shader = paint.shader ?: return
-                val x0 = p.args[0] as? Float ?: return
-                val y0 = p.args[1] as? Float ?: return
-                val x1 = p.args[2] as? Float ?: return
-                val y1 = p.args[3] as? Float ?: return
-                val w = x1 - x0
-                val h = y1 - y0
-                if (w < MIN_PANEL_WIDTH || h < 4f) return
-
-                val radiusHint = shaderRadius(shader, w, h)
-                val rect = absoluteRect(canvasOf(self), x0, y0, x1, y1)
-                if (frame.panels.size < MAX_PANELS) {
-                    frame.panels.add(
-                        PanelRect(
-                            left = rect.left,
-                            top = rect.top,
-                            width = rect.width(),
-                            height = rect.height(),
-                            cornerRadiusPx = radiusHint,
-                        )
-                    )
-                }
-            }
-        })
-        log("hooked drawRect via DexKit")
-    }
-
-    private fun hookComposite(method: Method) {
-        if (!hookedComposites.add(method.declaringClass.name + "#" + method.name)) return
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(p: MethodHookParam) {
-                val out = p.result as? Bitmap ?: return
-                val frame = framesByBitmap.remove(out)
-                if (!GlassConfig.masterEnabled) return
-                if (out.isRecycled) return
-                if (!out.isMutable) {
-                    log("skip: composite bitmap not mutable (${out.width}x${out.height})")
-                    return
-                }
-                try {
-                    process(out, frame)
-                } catch (t: Throwable) {
-                    log("process failed: ${t.javaClass.simpleName}: ${t.message}")
-                }
-            }
-        })
-        log("hooked composite method via DexKit")
-    }
-    // ---------------------------------------------------------------------------------------
-    // Fallback Hardcoded Hooks (used until the dex scan resolves the real names)
-    // ---------------------------------------------------------------------------------------
-
-    /** Class name of the canvas wrapper in the targeted camera builds. */
-    private const val FALLBACK_WRAPPER = "pe.o"
-
-    /** Class name of the composite holder in the targeted camera builds. */
-    private const val FALLBACK_COMPOSITE = "Fe.a"
-
-    /** Method name of the composite in the targeted camera builds. */
-    private const val FALLBACK_COMPOSITE_METHOD = "j"
-
-    private fun hookCanvasWrapperFallback(classLoader: ClassLoader) {
-        val cls = findClass(FALLBACK_WRAPPER, classLoader) ?: return
-        hookCanvasWrapper(cls)
-    }
-
-    private fun hookDrawRectFallback(classLoader: ClassLoader) {
-        val cls = findClass(FALLBACK_WRAPPER, classLoader) ?: return
-        hookDrawRect(cls)
-    }
-
-    private fun hookCompositeFallback(classLoader: ClassLoader) {
-        val cls = findClass(FALLBACK_COMPOSITE, classLoader) ?: run {
-            log("class $FALLBACK_COMPOSITE not found")
-            return
-        }
-        val target = cls.declaredMethods.firstOrNull { method ->
-            method.name == FALLBACK_COMPOSITE_METHOD &&
-                    Bitmap::class.java.isAssignableFrom(method.returnType) &&
-                    method.parameterTypes.any { Bitmap::class.java.isAssignableFrom(it) }
-        }
-        if (target == null) {
-            log(
-                "$FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD not found; candidates=" +
-                        cls.declaredMethods.joinToString { "${it.name}/${it.parameterTypes.size}" }
-            )
-            return
-        }
-        hookComposite(target)
-        log("hooked $FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD " +
-                "(${target.parameterTypes.size} params)")
-    }
-
-    private fun findClass(name: String, loader: ClassLoader): Class<*>? =
+    private fun hookWatermarkGeneration(param: XC_LoadPackage.LoadPackageParam) {
         try {
-            XposedHelpers.findClass(name, loader)
-        } catch (_: Throwable) {
-            null
-        }
-
-
-    /**
-     * Maps an element-local rectangle into destination-bitmap pixels.
-     *
-     * The rectangle is in the canvas's current user space, so the canvas matrix is what carries
-     * it to absolute coordinates. Because the panel may be rotated by its own element, the
-     * mapped rectangle is taken as the axis-aligned bounding box.
-     */
-    private fun absoluteRect(
-        canvas: Canvas?, x0: Float, y0: Float, x1: Float, y1: Float,
-    ): RectF {
-        val local = RectF(x0, y0, x1, y1)
-        if (canvas == null) return local
-        return try {
-            val out = RectF()
-            val matrix = Matrix()
-            // Canvas.getMatrix is deprecated in favour of getMatrix(Matrix), but the
-            // replacement only exists from API 30 and this module supports 26.
-            @Suppress("DEPRECATION")
-            canvas.getMatrix(matrix)
-            matrix.mapRect(out, local)
-            if (out.width() <= 0f || out.height() <= 0f) local else out
-        } catch (_: Throwable) {
-            local
-        }
-    }
-
-    /**
-     * `Lpe/o` is a thin wrapper: its `a` field holds a real `android.graphics.Canvas`. Reading
-     * it reflectively avoids having to resolve the obfuscated interface it implements.
-     */
-    private fun canvasOf(wrapper: Any): Canvas? {
-        return try {
-            val field = wrapper.javaClass.getDeclaredField("a")
-            field.isAccessible = true
-            field.get(wrapper) as? Canvas
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    /**
-     * A starting hint for the panel's corner radius. The real value is measured from the
-     * panel's own silhouette while rendering, because the radius is baked into the background
-     * WebP's alpha and into `rect_params.rect_radius` rather than being a constant in code.
-     */
-    private fun shaderRadius(shader: Shader, width: Float, height: Float): Float {
-        val shortSide = minOf(width, height)
-        // The shader's local matrix is min(elementW, elementH) / 1080, the panel WebP's own
-        // reference size, so the WebP is fitted to the rectangle. Its baked radius therefore
-        // scales with the rectangle.
-        return (shortSide * 0.5f).coerceIn(0f, shortSide * 0.5f)
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Rendering
-    // ---------------------------------------------------------------------------------------
-
-    private fun process(out: Bitmap, frame: Frame?) {
-        val w = out.width
-        val h = out.height
-        if (w < MIN_PANEL_WIDTH || h < 16) {
-            log("skip: composite too small (${w}x$h)")
-            return
-        }
-
-        // The app-reported rectangles are ranked rather than taken first-wins, so a multi-element
-        // watermark (Leica) resolves to the same plate on every frame instead of whichever
-        // element happened to be drawn first.
-        val reported = frame?.panels?.takeIf { it.isNotEmpty() }
-        val panel = pickPanel(reported.orEmpty(), w, h)
-        if (panel == null && reported != null) {
-            log("app rects rejected (${reported.size} candidates in ${w}x$h); scanning pixels")
-        }
-        val resolved = panel ?: scanPanel(out, w, h)
-        if (resolved == null) {
-            log("skip: no watermark panel found in ${w}x$h")
-            return
-        }
-
-        // Read only the crop the material touches. The panel is a few percent of the frame, so
-        // this is the difference between a ~48 MB buffer and a few hundred KB. It also keeps
-        // the full-resolution pass off the critical path of a capture.
-        val padPx = maxOf(24f, PANEL_CROP_PAD_FRACTION * minOf(resolved.width, resolved.height))
-        val left = (resolved.left - padPx).toInt().coerceIn(0, w - 1)
-        val top = (resolved.top - padPx).toInt().coerceIn(0, h - 1)
-        val right = (resolved.right + padPx).toInt().coerceIn(left + 1, w)
-        val bottom = (resolved.bottom + padPx).toInt().coerceIn(top + 1, h)
-        val cw = right - left
-        val ch = bottom - top
-
-        val pixels = IntArray(cw * ch)
-        out.getPixels(pixels, 0, cw, left, top, cw, ch)
-
-        // The optics index in crop-local coordinates, so the panel is shifted with the crop.
-        val localPanel = PanelRect(
-            left = resolved.left - left,
-            top = resolved.top - top,
-            width = resolved.width,
-            height = resolved.height,
-            cornerRadiusPx = resolved.cornerRadiusPx,
-        )
-
-        val params = resolveParams(pixels, cw, ch, localPanel)
-        val result = LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
-        if (!result.startsWith("skip")) {
-            out.setPixels(pixels, 0, cw, left, top, cw, ch)
-        }
-
-        log("panel=${f(resolved.left)},${f(resolved.top)} " +
-                "${f(resolved.width)}x${f(resolved.height)} " +
-                "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} -> $result")
-    }
-
-/**
-     * Chooses the one element the glass should be applied to.
-     *
-     * The camera's watermark is not always one rectangle. A Leica-style watermark is a small
-     * composition — a logo block, a caption line, a capsule — drawn as several elements, and the
-     * hook records all of them. The old code took `firstOrNull { width >= 32 }`, so which
-     * element got the glass depended on draw order: on Leica the module regularly landed on the
-     * logo box or on a wide piece of scene instead of the watermark plate. Since the element it
-     * picked could differ between two frames of the same shot, the glass appeared to wander —
-     * the "到处乱飘" the user reported.
-     *
-     * Ranking is by how much of the frame the element explains, which is stable frame to frame:
-     *
-     *  - width first, because a watermark plate is the widest thing in the group and a logo is
-     *    not;
-     *  - then the topmost, because a watermark composition is anchored to one edge, and a
-     *    top-anchored plate is the common case;
-     *  - then the largest area, purely to break an exact tie deterministically.
-     *
-     * Elements that fail [plausible], or that are too narrow to be a plate at all, are dropped
-     * before ranking. Ties therefore resolve to the same element on every frame of a shot,
-     * which is what stops the glass from moving.
-     */
-    private fun pickPanel(candidates: List<PanelRect>, w: Int, h: Int): PanelRect? {
-        val eligible = candidates.filter { rect ->
-            rect.width >= MIN_PANEL_WIDTH &&
-                    rect.width >= w * MIN_PANEL_WIDTH_FRACTION &&
-                    rect.width <= w * MAX_PANEL_WIDTH_FRACTION &&
-                    plausible(rect, w, h)
-        }
-        if (eligible.isEmpty()) return null
-        if (eligible.size == 1) return eligible[0]
-        return eligible.maxWithOrNull(
-            compareBy<PanelRect> { it.width }
-                .thenBy { -it.top }
-                .thenBy { it.width * it.height }
-        )
-    }
-
-    /** A reported rectangle is only trusted when it could plausibly be a watermark panel. */
-    private fun plausible(rect: PanelRect, w: Int, h: Int): Boolean {
-        if (rect.left < -2f || rect.top < -2f) return false
-        if (rect.width > w || rect.height > h) return false
-        if (rect.right > w + 2f || rect.bottom > h + 2f) return false
-        // The panel carries labels, so it cannot be a hairline or a full-frame wash.
-        return rect.height >= 6f && rect.height <= h * 0.6f
-    }
-
-    /**
-     * Picks the material variant for the scene behind the panel.
-     *
-     * The user's own settings are the base and are never discarded: `GlassConfig.params()`
-     * carries everything the settings screen writes, and this function only decides whether to
-     * additionally scale the tint/veil for the local brightness.
-     *
-     * The earlier revision returned `GlassParams.DarkScene` / `.BrightScene` outright. Those are
-     * hardcoded presets, so every slider the user moved — refraction band, blur, interior lift,
-     * rim strength — was thrown away the moment a photo was taken. That is exactly the "I
-     * changed it and the shot looks identical" symptom, and it was invisible because the
-     * settings screen happily reported a successful write.
-     *
-     * Now: take the user's parameters verbatim, and scale only the three veil-like terms that
-     * genuinely depend on scene brightness (tint, surface veil, rim) so white labels stay
-     * legible on a bright photo. Every other knob is the user's, unmodified.
-     *
-     * Measured on the crop only, over the panel's own rectangle, because that is the backdrop
-     * the material has to cope with — averaging the whole photo would let a bright sky decide
-     * how dense a shadow strip at the bottom of the frame is rendered.
-     */
-    private fun resolveParams(pixels: IntArray, w: Int, h: Int, panel: PanelRect): GlassParams {
-        // The user's settings, exactly as written by the settings screen.
-        val user = GlassConfig.params()
-        if (!user.adaptive) return user
-
-        val left = panel.left.toInt().coerceIn(0, w - 1)
-        val top = panel.top.toInt().coerceIn(0, h - 1)
-        val right = panel.right.toInt().coerceIn(left + 1, w)
-        val bottom = panel.bottom.toInt().coerceIn(top + 1, h)
-        var total = 0.0
-        var count = 0
-        for (y in top until bottom) {
-            val row = y * w
-            var x = left
-            while (x < right) {
-                val p = pixels[row + x]
-                total += 0.213 * ((p shr 16) and 0xFF) +
-                        0.715 * ((p shr 8) and 0xFF) +
-                        0.072 * (p and 0xFF)
-                count++
-                x += 2
-            }
-        }
-        if (count == 0) return user
-        val mean = total / count / 255.0
-
-        // A bright backdrop needs a denser veil for the white labels; a dark one needs less.
-        // The ratios match what BrightScene/DarkScene used to hardcode, but they are applied as
-        // multipliers on the user's own values rather than as replacements for them.
-        val veilGain = if (mean < 0.42) 0.62f else 1.75f
-        val rimGain = if (mean < 0.42) 0.80f else 1.12f
-        return user.copy(
-            tintAlpha = (user.tintAlpha * veilGain).coerceIn(0f, 1f),
-            surfaceAlpha = (user.surfaceAlpha * veilGain).coerceIn(0f, 1f),
-            rimAlpha = (user.rimAlpha * rimGain).coerceIn(0f, 1.5f),
-            // Brightness adaptation is already folded into the multipliers above.
-            adaptive = false,
-        )
-    }
-
-    /**
-     * The pixel fallback, run on a downscaled copy.
-     *
-     * The scan needs structure, not colour accuracy, so it runs at roughly a tenth of the
-     * frame's width. That turns a 48 MB full-resolution read into a sub-megabyte one, and the
-     * returned rectangle is scaled back up to output pixels.
-     */
-    private fun scanPanel(out: Bitmap, w: Int, h: Int): PanelRect? {
-        val step = maxOf(1, w / SCAN_WORK_WIDTH)
-        val sw = w / step
-        val sh = h / step
-        if (sw < 8 || sh < 8) return null
-        return try {
-            // Bitmap.getPixels cannot stride, so the coarse grid is gathered pixel by pixel.
-            // At 192 px wide that is a few thousand reads, which is nothing next to a 12 MP
-            // buffer copy, and it needs no large allocation at all.
-            val grid = IntArray(sw * sh)
-            for (sy in 0 until sh) {
-                val y = sy * step
-                for (sx in 0 until sw) grid[sy * sw + sx] = out.getPixel(sx * step, y)
-            }
-            val rect = PanelScan.find(grid, sw, sh) ?: return null
-
-            // Scale back to output pixels, then confirm on the full-resolution buffer. The
-            // coarse grid can find a flat bar with hard edges, but it cannot tell a watermark
-            // panel from a strip of blown-out sky — only a *labelled* bar is a watermark. This
-            // reads the candidate strip alone, so it costs a few percent of the frame rather
-            // than another whole-image copy.
-            val scaled = PanelRect(
-                left = rect.left * step,
-                top = rect.top * step,
-                width = rect.width * step,
-                height = rect.height * step,
-                cornerRadiusPx = rect.cornerRadiusPx * step,
+            val watermarkClass = XposedHelpers.findClass(
+                "com.xiaomi.cam.watermark.a",
+                param.classLoader
             )
-            val stripW = scaled.width.toInt()
-            val stripH = scaled.height.toInt()
-            val sx0 = scaled.left.toInt().coerceIn(0, (w - 1).coerceAtLeast(0))
-            val sy0 = scaled.top.toInt().coerceIn(0, (h - 1).coerceAtLeast(0))
-            val cw = stripW.coerceAtMost(w - sx0)
-            val ch = stripH.coerceAtMost(h - sy0)
-            if (cw < 16 || ch < 6) return null
 
-            val strip = IntArray(cw * ch)
-            out.getPixels(strip, 0, cw, sx0, sy0, cw, ch)
-            val local = PanelRect(
-                left = 0f, top = 0f,
-                width = cw.toFloat(), height = ch.toFloat(),
-                cornerRadiusPx = scaled.cornerRadiusPx,
+            XposedHelpers.findAndHookMethod(
+                watermarkClass,
+                "F",
+                watermarkClass,
+                android.content.Context::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val bitmap = param.result as? Bitmap ?: return
+                        if (bitmap.isRecycled) return
+                        if (!GlassConfig.masterEnabled) {
+                            LogHelper.log(TAG, "Module disabled, skipping")
+                            return
+                        }
+                        LogHelper.log(TAG, "Hook triggered, bitmap ${bitmap.width}x${bitmap.height}")
+                        val result = processWatermarkBackground(bitmap)
+                        LogHelper.log(TAG, "Processing result: $result")
+                    }
+                }
             )
-            if (PanelScan.hasLabelDetail(strip, cw, ch, local)) {
-                scaled
-            } else {
-                log("pixel scan: flat bar at ${f(scaled.left)},${f(scaled.top)} " +
-                        "${f(scaled.width)}x${f(scaled.height)} carries no label; " +
-                        "declining (most likely plain scene)")
-                null
-            }
-        } catch (t: Throwable) {
-            log("pixel scan failed: ${t.javaClass.simpleName}: ${t.message}")
-            null
+            XposedBridge.log("$TAG: com.xiaomi.cam.watermark.a.F() hooked")
+            LogHelper.log(TAG, "Hook installed: com.xiaomi.cam.watermark.a.F()")
+        } catch (e: Throwable) {
+            XposedBridge.log("$TAG: watermark hook failed: ${e.message}")
         }
     }
 
-    private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
+    /**
+     * Detect and replace watermark background with glass effect.
+     * Preserves text/metadata pixels by analyzing alpha and brightness.
+     */
+    private fun processWatermarkBackground(bitmap: Bitmap): String {
+        try {
+            val width = bitmap.width
+            val height = bitmap.height
 
-    private fun log(message: String) {
-        XposedBridge.log("$TAG: $message")
-        LogHelper.log(TAG, message)
+            // Watermark must be wide and short
+            val aspectRatio = width.toFloat() / height.toFloat()
+            if (aspectRatio < 3f || aspectRatio > 15f || width < 200) {
+                return "skipped: not watermark size (${width}x${height}, ratio=$aspectRatio)"
+            }
+
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+            val backgroundMask = BooleanArray(width * height)
+            var bgCount = 0
+
+            for (i in pixels.indices) {
+                val pixel = pixels[i]
+                val alpha = pixel ushr 24
+                val red = (pixel shr 16) and 0xFF
+                val green = (pixel shr 8) and 0xFF
+                val blue = pixel and 0xFF
+
+                val maxC = maxOf(red, green, blue)
+                val minC = minOf(red, green, blue)
+                val saturation = if (maxC == 0) 0 else (maxC - minC)
+
+                if (alpha in 10..200 && maxC > 150 && saturation < 40) {
+                    backgroundMask[i] = true
+                    bgCount++
+                }
+            }
+
+            val bgRatio = bgCount.toFloat() / pixels.size
+            if (bgRatio < 0.15f || bgRatio > 0.75f) {
+                return "skipped: bg ratio $bgRatio out of range"
+            }
+
+            renderGlassBackground(bitmap, backgroundMask, width, height)
+            return "success: replaced $bgCount bg pixels (${(bgRatio * 100).toInt()}%)"
+
+        } catch (e: Throwable) {
+            return "error: ${e.message}"
+        }
+    }
+
+    private fun renderGlassBackground(
+        bitmap: Bitmap,
+        backgroundMask: BooleanArray,
+        width: Int,
+        height: Int
+    ) {
+        val glassBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(glassBitmap)
+        
+        // iOS 液态玻璃核心参数
+        val glassBaseColor = Color.argb(35, 220, 230, 255) // 冷调半透明白
+        val glassHighlight = Color.argb(60, 255, 255, 255)
+        val glassShadow = Color.argb(40, 0, 0, 50)
+        
+        // 1. 底层颜色填充（带冷色调）
+        val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = glassBaseColor
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), basePaint)
+        
+        // 2. 多层高光（模拟液态玻璃折射）
+        val highlight1 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                width * 0.25f, height * 0.25f,
+                width * 0.4f,
+                intArrayOf(glassHighlight, Color.TRANSPARENT),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), highlight1)
+        
+        val highlight2 = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                width * 0.7f, height * 0.6f,
+                width * 0.3f,
+                intArrayOf(glassHighlight, Color.TRANSPARENT),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), highlight2)
+        
+        // 3. 边缘光（圆角描边 + 内发光）
+        val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.argb(100, 255, 255, 255)
+            setShadowLayer(3f, 0f, 1f, Color.argb(50, 255, 255, 255))
+        }
+        val rimPath = Path().apply {
+            addRoundRect(
+                1.5f, 1.5f, width - 1.5f, height - 1.5f,
+                height * 0.12f, height * 0.12f,
+                Path.Direction.CW
+            )
+        }
+        canvas.drawPath(rimPath, rimPaint)
+        
+        // 4. 阴影层（增加立体感）
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = glassShadow
+        }
+        canvas.drawRect(2f, height - 2f, width - 2f, height + 1f, shadowPaint)
+        canvas.drawRect(2f, 2f, width - 2f, 1f, shadowPaint)
+        canvas.drawRect(2f, 2f, width - 1f, height - 2f, shadowPaint)
+        canvas.drawRect(1f, 2f, width - 2f, height - 2f, shadowPaint)
+        
+        // 5. 获取像素并混合
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        val glassPixels = IntArray(width * height)
+        glassBitmap.getPixels(glassPixels, 0, width, 0, 0, width, height)
+        
+        for (i in pixels.indices) {
+            if (backgroundMask[i]) {
+                // 液态玻璃效果：背景像素 + 玻璃层混合
+                pixels[i] = mixLiquidGlass(pixels[i], glassPixels[i], 0.3f)
+            }
+        }
+        
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        glassBitmap.recycle()
+    }
+    
+    // 混合液态玻璃效果（简单模拟折射）
+    private fun mixLiquidGlass(bg: Int, glass: Int, alpha: Float): Int {
+        val bgA = (bg shr 24) and 0xFF
+        val bgR = (bg shr 16) and 0xFF
+        val bgG = (bg shr 8) and 0xFF
+        val bgB = bg and 0xFF
+        
+        val glassA = (glass shr 24) and 0xFF
+        val glassR = (glass shr 16) and 0xFF
+        val glassG = (glass shr 8) and 0xFF
+        val glassB = glass and 0xFF
+        
+        val finalA = (bgA * (1 - alpha) + glassA * alpha).toInt().coerceIn(0, 255)
+        val finalR = (bgR * (1 - alpha) + glassR * alpha).toInt().coerceIn(0, 255)
+        val finalG = (bgG * (1 - alpha) + glassG * alpha).toInt().coerceIn(0, 255)
+        val finalB = (bgB * (1 - alpha) + glassB * alpha).toInt().coerceIn(0, 255)
+        
+        return (finalA shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
     }
 }
