@@ -46,7 +46,7 @@ data class GlassParams(
     // ---- backdrop -----------------------------------------------------------------------
 
     /** Gaussian blur before the lens, as a fraction of the refraction band. */
-    val blurFraction: Float = 0.09f,
+    val blurFraction: Float = 0.25f,
 
     /** `vibrancy()`. */
     val vibrancy: Float = 1.5f,

@@ -1,273 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
-
+<!-- Liquid glass style launcher icon, drawn entirely in XML vector. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-
     android:width="512dp"
     android:height="512dp"
-
     android:viewportWidth="512"
     android:viewportHeight="512">
 
-
-    <!-- ========================= -->
-    <!-- Background Glass Gradient -->
-    <!-- ========================= -->
-
-    <path
-        android:pathData="
-        M0,0
-        H512
-        V512
-        H0
-        Z"
-        android:fillColor="#F7FAFF"/>
-
-
-    <!-- soft blue glass tint -->
-
-    <path
-        android:pathData="
-        M0,260
-        C120,180 260,190 512,80
-        V512
-        H0
-        Z"
-        android:fillColor="#55DCEBFF"/>
-
-
-
-    <!-- purple refraction -->
-
-    <path
-        android:pathData="
-        M0,420
-        C180,330 300,460 512,350
-        V512
-        H0
-        Z"
-        android:fillColor="#55C8B6FF"/>
-
-
-
-    <!-- pink light -->
-
-    <path
-        android:pathData="
-        M0,0
-        H512
-        V100
-        C300,160 120,120 0,220
-        Z"
-        android:fillColor="#33FFD8E8"/>
-
-
-
-
-    <!-- ========================= -->
-    <!-- Glass Main Panel -->
-    <!-- ========================= -->
-
-
-    <path
-        android:pathData="
-        M72,96
-        H440
-        V416
-        H72
-        Z"
-
-        android:fillColor="#35FFFFFF"/>
-
-
-
-    <!-- Inner glass layer -->
-
-    <path
-        android:pathData="
-        M96,120
-        H416
-        V392
-        H96
-        Z"
-
-        android:fillColor="#22FFFFFF"/>
-
-
-
-
-    <!-- ========================= -->
-    <!-- Glass Edge Highlight -->
-    <!-- ========================= -->
-
-
-    <path
-        android:pathData="
-        M72,96
-        H440
-        V416
-        H72
-        Z"
-
-        android:strokeColor="#BFFFFFFF"
-        android:strokeWidth="5"
-        android:fillColor="@android:color/transparent"/>
-
-
-
-    <!-- secondary reflection -->
-
-    <path
-        android:pathData="
-        M90,115
-        H420"
-
-        android:strokeColor="#66FFFFFF"
-        android:strokeWidth="8"
-        android:fillColor="@android:color/transparent"/>
-
-
-
-    <!-- ========================= -->
-    <!-- Liquid Wave -->
-    <!-- ========================= -->
-
-
-    <path
-        android:pathData="
-        M0,360
-
-        C90,310
-        170,330
-        250,360
-
-        C340,400
-        420,300
-        512,320
-
-        V512
-
-        H0
-
-        Z"
-
-        android:fillColor="#558EBFFF"/>
-
-
-
-    <!-- wave highlight -->
-
-    <path
-        android:pathData="
-        M0,360
-
-        C90,310
-        170,330
-        250,360
-
-        C340,400
-        420,300
-        512,320"
-
-        android:strokeColor="#99FFFFFF"
-        android:strokeWidth="4"
-        android:fillColor="@android:color/transparent"/>
-
-
-
-
-    <!-- ========================= -->
-    <!-- LiquidFrame Logo -->
-    <!-- ========================= -->
-
-
-    <!-- L -->
-
-    <path
-        android:pathData="
-        M190,170
-
-        V310
-
-        C190,330
-        205,345
-        225,345
-
-        H330"
-
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="22"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:fillColor="@android:color/transparent"/>
-
-
-
-    <!-- glass shadow inside L -->
-
-    <path
-        android:pathData="
-        M190,170
-
-        V310"
-
-        android:strokeColor="#66FFFFFF"
-        android:strokeWidth="30"
-        android:strokeLineCap="round"
-        android:fillColor="@android:color/transparent"/>
-
-
-
-    <!-- Dot -->
-
-
-    <path
-        android:pathData="
-        M370,320
-
-        m-18,0
-
-        a18,18 0 1,0 36,0
-
-        a18,18 0 1,0 -36,0"
-
-        android:fillColor="#FFFFFFFF"/>
-
-
-
-
-    <!-- ========================= -->
-    <!-- Final Glass Shine -->
-    <!-- ========================= -->
-
-
-    <path
-        android:pathData="
-        M110,150
-
-        C180,120
-        260,130
-        400,150"
-
-        android:strokeColor="#55FFFFFF"
-        android:strokeWidth="12"
-        android:strokeLineCap="round"
-        android:fillColor="@android:color/transparent"/>
-
-
-
-    <path
-        android:pathData="
-        M120,390
-
-        C220,420
-        320,410
-        410,380"
-
-        android:strokeColor="#44FFFFFF"
-        android:strokeWidth="8"
-        android:strokeLineCap="round"
-        android:fillColor="@android:color/transparent"/>
-
-
+    <!-- Base squircle background -->
+    <path android:pathData="M128,0 L384,0 C461,0 512,51 512,128 L512,384 C512,461 461,512 384,512 L128,512 C51,512 0,461 0,384 L0,128 C0,51 51,0 128,0 Z"
+          android:fillColor="#0A0A0E" />
+
+    <!-- Glass capsule: a rounded-rect that reads as a frosted glass pill -->
+    <path android:pathData="M96,316 C96,280 124,256 158,256 L354,256 C388,256 416,280 416,316 C416,352 388,376 354,376 L158,376 C124,376 96,352 96,316 Z"
+          android:fillColor="#1A1A2E" />
+
+    <!-- Inner glass highlight (top half of capsule) -->
+    <path android:pathData="M112,316 C112,290 134,272 160,272 L352,272 C378,272 400,290 400,316 L112,316 Z"
+          android:fillColor="#3D3D5C" android:fillAlpha="0.5" />
+
+    <!-- Specular highlight band -->
+    <path android:pathData="M128,300 C140,288 380,288 384,296 C388,304 384,312 372,316 L140,316 C128,312 120,308 128,300 Z"
+          android:fillColor="#FFFFFF" android:fillAlpha="0.12" />
+
+    <!-- Rim light: thin bright stroke along the top edge of the capsule -->
+    <path android:pathData="M108,314 C112,282 136,262 158,262 L354,262 C376,262 400,282 404,314"
+          android:strokeColor="#7AC4FF" android:strokeWidth="3" android:strokeLineCap="round"
+          android:fillColor="@android:color/transparent" />
+
+    <!-- Refraction glow at left edge -->
+    <path android:pathData="M100,320 C100,296 114,278 132,270"
+          android:strokeColor="#A8D8FF" android:strokeWidth="6" android:strokeLineCap="round"
+          android:fillColor="@android:color/transparent" android:strokeAlpha="0.3" />
+
+    <!-- Chromatic aberration hint: subtle color split at right edge -->
+    <path android:pathData="M412,320 C412,296 398,278 380,270"
+          android:strokeColor="#FF6B6B" android:strokeWidth="2" android:strokeLineCap="round"
+          android:fillColor="@android:color/transparent" android:strokeAlpha="0.15" />
+
+    <!-- Center content dot (the "shutter" of the glass capsule) -->
+    <path android:pathData="M246,310 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0"
+          android:fillColor="#4A9FFF" android:fillAlpha="0.8" />
+    <path android:pathData="M246,306 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0"
+          android:fillColor="#7AC4FF" android:fillAlpha="0.9" />
+
+    <!-- Outer ambient glow -->
+    <path android:pathData="M128,0 L384,0 C461,0 512,51 512,128 L512,384 C512,461 461,512 384,512 L128,512 C51,512 0,461 0,384 L0,128 C0,51 51,0 128,0 Z"
+          android:strokeColor="#2A2A3E" android:strokeWidth="1"
+          android:fillColor="@android:color/transparent" />
 
 </vector>

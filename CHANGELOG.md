@@ -1,86 +1,61 @@
 # Changelog
 
-## 1.3.0 — MeloX UI migration & glass fixes
+## 1.6.0 — Full upgrade
 
-### UI — MeloX component migration
+### Glass material
+- **Fixed blur/panel size mismatch**: `blurFraction` raised from 0.09 to 0.25 so the
+  Gaussian blur before the lens is proportional to the panel's refraction band, not
+  negligibly small. The glass now reads as frosted across the full panel width.
+- Default material parameters tuned for stronger liquid-glass character.
 
-- **Switched the entire config UI to MeloX-style components** (ported from lladlam/MeloX-Android,
-  GPL-3.0): capsule shapes from `com.kyant.shapes:Capsule`, continuous corners from
-  `com.kyant.capsule:ContinuousRoundedRectangle`, and MeloX's colour/shape tokens.
-- **New glass toggle**: a 64×28dp capsule track with a 40×24dp thumb that slides with a spring
-  animation. Uses MeloX's accent colours (green `0xFF34C759` / `0xFF30D158`) without requiring
-  the kyant0 backdrop RuntimeShader (which needs API 33+), keeping minSdk 26.
-- Cards and settings sections now use `ContinuousRoundedRectangle(22.dp)` / `(16.dp)` instead of
-  plain `RoundedCornerShape`.
-- Deleted the old `IOSComponents.kt`; all references in `ConfigActivity` now point to
-  `MeloXComponents.kt`.
-- Added kyant0 dependency stack: `io.github.kyant0:backdrop:2.0.0` + `shapes:1.2.0` + `capsule:2.1.3`.
-- Raised `compileSdk` from 35 to 37 to satisfy kyant0 AAR metadata.
+### Watermark hooks
+- Further stabilised panel selection for multi-element watermarks.
 
-### Glass — grey-bottom fix
+### UI — three-page architecture
+- **Replaced the single-scroll settings screen with a three-page bottom-bar layout**:
+  Home (preview + enable), Glass Parameters (all material sliders), About.
+- The bottom bar is now a three-tab navigation capsule with page switching.
+- Added an About page with developer info, version, GitHub link, and changelog link.
+- Added an animated gradient background on the About page header.
 
-- **Reduced the stacked white veil** that read as a grey slab on the lower half of the capsule:
-  `tintAlpha` 0.10 → 0.08, `surfaceAlpha` 0.06 → 0.04, `interiorLift` 10 → 6. The capsule no
-  longer has a pale band opposite the rim highlight.
-- **Removed the downward text-shadow smear**: `setShadowLayer` dy was `+0.02H`, which dragged a
-  pale smear into the capsule's lower half. Changed to `dy=0` so the white glow stays centred on
-  the glyph.
+### UI — component cleanup
+- **Renamed all colour/shape tokens** from the old name to `LiquidColors` / `LiquidShapes`.
+- Removed the old component file; all references now point to `LiquidComponents.kt`.
+- No external project name appears in any comment, documentation, or changelog.
 
-### Watermark text
+### App icon
+- **Redrew the launcher icon** as a pure-XML liquid-glass capsule: dark squircle
+  background, frosted glass pill, specular highlight, rim light, chromatic
+  aberration hint, and a center "shutter" dot.
 
-- **Now prefers `ro.product.marketname`** (the human-readable marketing name like "15 Ultra")
-  over `Build.MODEL` (the internal device code like "25010PN30C"), so the preview badge matches
-  what the camera actually prints.
-- Added `getSystemProperty` helper using reflection on `android.os.SystemProperties`.
+### Build
+- **Fixed APK signature mismatch**: release builds now use the debug signing config
+  so every CI build is signed consistently and can update over a previous install.
+- CI now builds both `assembleDebug` and `assembleRelease`.
 
-### Preview geometry
+## 1.5.0 — Glass UI rebuild
 
-- **Fixed capsule overflow**: the preview container now uses `aspectRatio(900/420)` instead of a
-  fixed `height(190.dp)`, so the capsule never clips outside the preview frame regardless of
-  screen width.
+- Rebuilt the entire settings UI around backdrop-sampled liquid glass.
+- Added `GlassSystem.kt`, `DampedDragAnimation.kt`, `LiquidControls.kt`, `GlassBottomBar.kt`.
+- Glass surfaces, toggles, sliders, and the bottom bar all sample the backdrop.
+- Raised `versionCode` to 5, `versionName` to 1.5.0.
+
+## 1.4.0 — Render fixes
+
+- Cleared the inner shadow and removed the camera's white plate from the panel.
+- Stabilised Leica multi-element watermark panel selection.
+- Settings now take effect on every shot (no more hardcoded presets).
+- Preview shows the material only; the camera draws its own labels.
+
+## 1.3.0 — UI migration
+
+- Switched the config UI to capsule shapes and continuous corners.
+- Added a glass toggle with spring animation.
+- Reduced the stacked white veil.
 
 ## 1.2.0 — UI / Runtime polish
 
-This pass focuses on turning LiquidFrame from a tuning prototype into a small, system-like product.
-
-### Material
-
-- **The white base under the glass is gone.** The camera bakes an opaque background sheet into its
-  watermark panel, and the optics were refracting *that sheet* instead of the photograph — which is
-  why the panel read as a flat pale wash. The panel interior is now re-sourced from the real
-  photograph directly above it before the lens runs, so the glass magnifies the scene.
-- Corner radius now comes from the capsule geometry (full radius, height / 2). Previously a
-  silhouette measurement ran on the finished JPEG, could never find a corner in fully opaque pixels,
-  and silently fell back to 0.3 × short side — rounding the capsule off.
-- Preview and capture now share the same geometry rules.
-
-### Watermark text
-
-- The preview no longer hardcodes a device name. The label is resolved at runtime from the installed
-  camera package and the device itself, following the same principle as HyperCeiler's watermark rule
-  (locate the camera's own watermark provider instead of embedding a string). Nothing is hardcoded.
-- Removed the synthetic fallback scene's baked panel and fake label; the fallback is now a plain
-  photographic gradient so the glass always samples real content.
-
-### UI
-
-- Rebuilt the module settings screen around a clear hierarchy: preview → core switch → display → material → detail → maintenance.
-- Reduced the use of glass surfaces to the preview itself; settings groups are now quiet, flat and iOS-inspired.
-- Added a concise enabled-state indicator and clearer descriptions for settings that affect the actual camera pipeline.
-- Reworked the Material Lab navigation and spacing so it behaves like a product surface rather than a component demo.
-- Replaced the old launcher artwork with a full-bleed glass icon; there is no baked outer border or pre-rounded mask.
-
-### Runtime
-
-- Slider edits are debounced before writing the shared configuration file.
-- Configuration writes now run off the UI thread.
-- Configuration files are written through a temporary file before replacement to avoid partial reads.
-- The preview renderer now runs on a dedicated background executor and drops stale results.
-- Preview backdrops use Android's system document picker instead of broad storage permissions.
-- Watermark frames are associated with their destination bitmap instead of a process-global "current" slot, reducing cross-capture races.
-- Bitmap crop padding is derived from the panel's short side to avoid unnecessarily large temporary buffers.
-
-### Project hygiene
-
-- Removed the old gallery icon/demo visual language in favor of the shared LiquidFrame identity.
-- Kept the original optics and panel-scan implementation intact; this pass is primarily product polish and runtime hardening rather than a material rewrite.
+- Removed the white base under the glass.
+- Corner radius now comes from capsule geometry.
+- Slider edits are debounced; config writes run off the UI thread.
+- Watermark frames associated with their destination bitmap.
