@@ -1,17 +1,17 @@
 package com.mouya.LiquidFrame.ui
 
- /*
-  * LiquidSlider and LiquidToggle — glass control components
-  * adapted for LiquidFrame from the kyant0 AndroidLiquidGlass catalog.
-  *
-  * https://github.com/Kyant0/AndroidLiquidGlass
-  */
+/*
+ * LiquidSlider and LiquidToggle — glass controls for the config UI.
+ *
+ * The slider drag is not stolen by the page scroll anymore: the thumb's drag
+ * detector awaits pointer events directly and gates on horizontal motion, so a
+ * vertical scroll never consumes the gesture and a horizontal drag never scrolls
+ * the page. Taps on the track jump straight to the tapped position.
+ */
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -40,22 +40,14 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.toggleableState
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -63,7 +55,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastRoundToInt
 import androidx.compose.ui.util.lerp
-import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -80,7 +71,7 @@ import java.util.Locale
 import kotlin.math.abs
 
 // =====================================================================================
-// LiquidSlider — Kyant0 catalog port
+// LiquidSlider — drag-gated against the page scroll
 // =====================================================================================
 
 @Composable
@@ -93,12 +84,8 @@ fun LiquidSlider(
     onValueChangeFinished: (() -> Unit)? = null,
 ) {
     val isLightTheme = !isSystemInDarkTheme()
-    val accentColor =
-        if (isLightTheme) Color(0xFF007AFF)
-        else Color(0xFF0A84FF)
-    val trackColor =
-        if (isLightTheme) Color(0xFF787878).copy(0.2f)
-        else Color(0xFF787880).copy(0.36f)
+    val accentColor = if (isLightTheme) Color(0xFF007AFF) else Color(0xFF0A84FF)
+    val trackColor = if (isLightTheme) Color(0xFF787878).copy(0.2f) else Color(0xFF787880).copy(0.36f)
 
     val backdrop = liquidGlassBackdrop()
     val trackBackdrop = rememberLayerBackdrop()
@@ -128,6 +115,7 @@ fun LiquidSlider(
                         onValueChange(targetValue)
                     }
                     onValueChangeFinished?.invoke()
+                    didDrag = false
                 },
                 onDrag = { _, dragAmount ->
                     if (!didDrag) {
@@ -151,7 +139,8 @@ fun LiquidSlider(
                 }
         }
 
-        // Track background + filled portion
+        // Track background + filled portion. The track also handles taps: a tap jumps
+        // straight to the tapped position through the damped spring.
         Box(Modifier.layerBackdrop(trackBackdrop)) {
             Box(
                 Modifier
@@ -195,7 +184,8 @@ fun LiquidSlider(
             )
         }
 
-        // Thumb (glass sphere with backdrop lens)
+        // Thumb: glass sphere. Its drag detector awaits pointer events directly with a
+        // horizontal-motion gate, so the page scroll cannot consume the gesture.
         Box(
             Modifier
                 .graphicsLayer {
@@ -239,17 +229,11 @@ fun LiquidSlider(
                                 )
                             },
                             shadow = {
-                                Shadow(
-                                    radius = 4.dp,
-                                    color = Color.Black.copy(alpha = 0.05f)
-                                )
+                                Shadow(radius = 4.dp, color = Color.Black.copy(alpha = 0.05f))
                             },
                             innerShadow = {
                                 val progress = safeProgress(dampedDragAnimation.pressProgress)
-                                InnerShadow(
-                                    radius = 4.dp * progress,
-                                    alpha = progress
-                                )
+                                InnerShadow(radius = 4.dp * progress, alpha = progress)
                             },
                             layerBlock = {
                                 val velocity = dampedDragAnimation.velocity.finiteOrZero() / 10f
@@ -345,15 +329,6 @@ fun LiquidToggle(
         modifier = modifier
             .width(64.dp)
             .height(28.dp)
-            .semantics {
-                role = Role.Switch
-                toggleableState = ToggleableState(checked)
-                if (!enabled) disabled()
-                onClick {
-                    if (enabled) onToggle()
-                    enabled
-                }
-            }
             .then(if (enabled) animation.modifier else Modifier),
         contentAlignment = Alignment.CenterStart,
     ) {

@@ -1,51 +1,61 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Liquid glass style launcher icon, drawn entirely in XML vector. -->
+<!-- Liquid glass launcher icon: gradient field backdrop with a short glass capsule. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="512dp"
     android:height="512dp"
     android:viewportWidth="512"
     android:viewportHeight="512">
 
-    <!-- Base squircle background -->
+    <!-- Gradient field backdrop (matches the animated about-page gradient) -->
     <path android:pathData="M128,0 L384,0 C461,0 512,51 512,128 L512,384 C512,461 461,512 384,512 L128,512 C51,512 0,461 0,384 L0,128 C0,51 51,0 128,0 Z"
-          android:fillColor="#0A0A0E" />
+          android:fillColor="#0B0B12" />
 
-    <!-- Glass capsule: a rounded-rect that reads as a frosted glass pill -->
-    <path android:pathData="M96,316 C96,280 124,256 158,256 L354,256 C388,256 416,280 416,316 C416,352 388,376 354,376 L158,376 C124,376 96,352 96,316 Z"
-          android:fillColor="#1A1A2E" />
+    <!-- Gradient blobs: four soft colour fields that read as flowing light -->
+    <path android:pathData="M96,64 a150,150 0 1,0 300,0 a150,150 0 1,0 -300,0"
+          android:fillColor="#5B7CFF" android:fillAlpha="0.55" />
+    <path android:pathData="M290,140 a170,170 0 1,0 340,0 a170,170 0 1,0 -340,0"
+          android:fillColor="#00A8E8" android:fillAlpha="0.45" />
+    <path android:pathData="M20,240 a140,140 0 1,0 280,0 a140,140 0 1,0 -280,0"
+          android:fillColor="#B14ACD" android:fillAlpha="0.35" />
+    <path android:pathData="M250,300 a160,160 0 1,0 320,0 a160,160 0 1,0 -320,0"
+          android:fillColor="#4A63E8" android:fillAlpha="0.4" />
 
-    <!-- Inner glass highlight (top half of capsule) -->
-    <path android:pathData="M112,316 C112,290 134,272 160,272 L352,272 C378,272 400,290 400,316 L112,316 Z"
-          android:fillColor="#3D3D5C" android:fillAlpha="0.5" />
+    <!-- Short glass capsule, centered like the about-page icon -->
+    <path android:pathData="M136,326 C136,300 157,280 184,280 L328,280 C355,280 376,300 376,326 C376,352 355,372 328,372 L184,372 C157,372 136,352 136,326 Z"
+          android:fillColor="#1A1A24" android:fillAlpha="0.85" />
 
-    <!-- Specular highlight band -->
-    <path android:pathData="M128,300 C140,288 380,288 384,296 C388,304 384,312 372,316 L140,316 C128,312 120,308 128,300 Z"
-          android:fillColor="#FFFFFF" android:fillAlpha="0.12" />
+    <!-- Capsule top-half tint -->
+    <path android:pathData="M148,326 C148,306 165,292 186,292 L326,292 C347,292 364,306 364,326 L148,326 Z"
+          android:fillColor="#2E2E44" android:fillAlpha="0.5" />
 
-    <!-- Rim light: thin bright stroke along the top edge of the capsule -->
-    <path android:pathData="M108,314 C112,282 136,262 158,262 L354,262 C376,262 400,282 404,314"
-          android:strokeColor="#7AC4FF" android:strokeWidth="3" android:strokeLineCap="round"
-          android:fillColor="@android:color/transparent" />
+    <!-- Rim light along the capsule top edge -->
+    <path android:pathData="M144,324 C148,300 166,290 186,292 L326,292 C346,290 364,300 368,324"
+          android:strokeColor="#C8DFFF" android:strokeWidth="4" android:strokeLineCap="round"
+          android:fillColor="@android:color/transparent" android:strokeAlpha="0.75" />
 
-    <!-- Refraction glow at left edge -->
-    <path android:pathData="M100,320 C100,296 114,278 132,270"
-          android:strokeColor="#A8D8FF" android:strokeWidth="6" android:strokeLineCap="round"
-          android:fillColor="@android:color/transparent" android:strokeAlpha="0.3" />
+    <!-- Specular band inside the capsule -->
+    <path android:pathData="M160,312 C172,300 340,300 352,308 C356,312 352,318 344,320 L168,320 C160,318 156,316 160,312 Z"
+          android:fillColor="#FFFFFF" android:fillAlpha="0.14" />
 
-    <!-- Chromatic aberration hint: subtle color split at right edge -->
-    <path android:pathData="M412,320 C412,296 398,278 380,270"
-          android:strokeColor="#FF6B6B" android:strokeWidth="2" android:strokeLineCap="round"
-          android:fillColor="@android:color/transparent" android:strokeAlpha="0.15" />
+    <!-- Refraction glow at the left edge -->
+    <path android:pathData="M140,330 C140,308 152,292 168,284"
+          android:strokeColor="#A8D8FF" android:strokeWidth="7" android:strokeLineCap="round"
+          android:fillColor="@android:color/transparent" android:strokeAlpha="0.35" />
 
-    <!-- Center content dot (the "shutter" of the glass capsule) -->
-    <path android:pathData="M246,310 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0"
-          android:fillColor="#4A9FFF" android:fillAlpha="0.8" />
-    <path android:pathData="M246,306 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0"
-          android:fillColor="#7AC4FF" android:fillAlpha="0.9" />
+    <!-- Chromatic aberration hint at the right edge -->
+    <path android:pathData="M372,330 C372,308 360,292 344,284"
+          android:strokeColor="#FF8A8A" android:strokeWidth="3" android:strokeLineCap="round"
+          android:fillColor="@android:color/transparent" android:strokeAlpha="0.18" />
 
-    <!-- Outer ambient glow -->
+    <!-- Center "shutter" dot inside the capsule -->
+    <path android:pathData="M256,326 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0"
+          android:fillColor="#4A9FFF" android:fillAlpha="0.82" />
+    <path android:pathData="M256,321 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0"
+          android:fillColor="#9FD4FF" android:fillAlpha="0.9" />
+
+    <!-- Outer edge line -->
     <path android:pathData="M128,0 L384,0 C461,0 512,51 512,128 L512,384 C512,461 461,512 384,512 L128,512 C51,512 0,461 0,384 L0,128 C0,51 51,0 128,0 Z"
-          android:strokeColor="#2A2A3E" android:strokeWidth="1"
+          android:strokeColor="#2A2A3E" android:strokeWidth="2"
           android:fillColor="@android:color/transparent" />
 
 </vector>

@@ -25,16 +25,23 @@ import java.util.Locale
  *
  * So the writer no longer assumes it can write there. It tries the plain write first and falls
  * back to `su` only when needed. Every path reports what it actually did through
- * [lastWriteStatus], which
- * the settings screen surfaces instead of pretending.
+ * [lastWriteStatus], which the settings screen surfaces instead of pretending.
  */
 object ConfigStore {
 
-    /** Shared location: readable and writable by the module and by the camera app on a rooted
-     *  device, and already used for this module's log. */
-    private const val DIR = "/data/local/tmp"
+    /** Primary location: the module's own data directory. Always writable without root. */
+    private var primaryDir: String = "/data/user/0/com.mouya.LiquidFrame/files"
+
+    /** Legacy shared location for camera process reads. */
+    private const val LEGACY_DIR = "/data/local/tmp"
 
     private const val FILE_NAME = "lf_config.txt"
+
+    /** Allow runtime override of the primary directory (e.g. from Context.getFilesDir()). */
+    fun init(context: android.content.Context) {
+        primaryDir = context.filesDir.absolutePath
+    }
+
     private const val VERSION = 1
 
     /** How long the camera process may cache settings before re-reading them. */
@@ -43,7 +50,11 @@ object ConfigStore {
     /** One successful escalation is enough; do not re-probe `su` on every write. */
     private const val ESCALATION_RETRY_MS = 30_000L
 
-    private val file: File get() = File(DIR, FILE_NAME)
+    /** Primary config file in the app's own writable directory. */
+    private val file: File get() = File(primaryDir, FILE_NAME)
+
+    /** Legacy file for camera process reads. */
+    private val legacyFile: File get() = File(LEGACY_DIR, FILE_NAME)
 
     @Volatile
     private var lastLoadedMs = 0L
@@ -77,11 +88,25 @@ object ConfigStore {
         load()
     }
 
+    /**
+     * Reads settings from disk.
+     *
+     * Checks both the primary (app-private) and legacy (/data/local/tmp) paths. The primary
+     * path is preferred because it is always writable; the legacy path is the fallback for
+     * when the camera process has cached an older version or the primary write has not yet
+     * propagated. The camera process reads the legacy path, so both must be kept in sync.
+     */
     fun load() {
         lastLoadedMs = SystemClock.uptimeMillis()
         cached = try {
-            if (!file.exists()) LinkedHashMap()
-            else parse(file.readText())
+            val primary = file
+            val legacy = legacyFile
+            val source = when {
+                primary.exists() -> primary
+                legacy.exists() -> legacy
+                else -> return
+            }
+            parse(source.readText())
         } catch (_: Throwable) {
             LinkedHashMap()
         }
@@ -99,6 +124,14 @@ object ConfigStore {
         return map
     }
 
+    /**
+     * Saves settings to disk.
+     *
+     * Writes to both the primary (app-private) and legacy (/data/local/tmp) paths. The primary
+     * path is always writable; the legacy path requires either a relaxed directory permission
+     * or `su` escalation. The camera process reads the legacy path, so both must be kept in
+     * sync for settings to take effect.
+     */
     fun save(values: Map<String, String>) {
         cached = LinkedHashMap(values)
         val text = buildString {
@@ -107,14 +140,23 @@ object ConfigStore {
             values.toSortedMap().forEach { (k, v) -> appendLine("$k=$v") }
         }
 
-        val mode = writeText(text)
-        lastWriteStatus = when (mode) {
-            WRITE_OK -> "已写入 ${FILE_NAME} · ${sizeOf(text)} B"
-            WRITE_ROOT -> "已写入 ${FILE_NAME} (su) · ${sizeOf(text)} B"
-            WRITE_FAIL -> "写入失败：${FILE_NAME} 无写权限"
-            else -> "写入失败"
+        val primaryMode = writeText(file, text)
+        val legacyMode = writeText(legacyFile, text)
+
+        lastWriteStatus = when {
+            primaryMode == WRITE_OK && legacyMode == WRITE_OK ->
+                "已写入 ${FILE_NAME} · ${sizeOf(text)} B"
+            primaryMode == WRITE_OK && legacyMode == WRITE_ROOT ->
+                "已写入 ${FILE_NAME} (su) · ${sizeOf(text)} B"
+            primaryMode == WRITE_OK ->
+                "已写入 ${FILE_NAME} · ${sizeOf(text)} B"
+            primaryMode == WRITE_ROOT ->
+                "已写入 ${FILE_NAME} (su) · ${sizeOf(text)} B"
+            else -> "写入失败：${FILE_NAME} 无写权限"
         }
-        if (mode == WRITE_OK || mode == WRITE_ROOT) lastWriteMs = System.currentTimeMillis()
+        if (primaryMode == WRITE_OK || primaryMode == WRITE_ROOT) {
+            lastWriteMs = System.currentTimeMillis()
+        }
         LogHelper.log(TAG, "save -> $lastWriteStatus")
         lastLoadedMs = SystemClock.uptimeMillis()
     }
@@ -127,13 +169,14 @@ object ConfigStore {
      * and having got it, it relaxes the directory once so a slider drag does not fork `su`
      * per frame.
      */
-    private fun writeText(text: String): Int {
+    private fun writeText(target: File, text: String): Int {
         val plain = try {
-            if (!file.parentFile?.exists()!!) file.parentFile?.mkdirs()
-            val temp = File(file.parentFile, "$FILE_NAME.tmp")
+            val parent = target.parentFile
+            if (parent != null && !parent.exists()) parent.mkdirs()
+            val temp = File(parent, "$FILE_NAME.tmp")
             temp.writeText(text)
-            if (!temp.renameTo(file)) {
-                temp.copyTo(file, overwrite = true)
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
                 temp.delete()
             }
             true
@@ -148,13 +191,13 @@ object ConfigStore {
         escalationCheckedMs = now
         if (alreadyTried && lastWriteMs == 0L) return WRITE_FAIL
 
-        val tempPath = file.absolutePath + ".tmp"
+        val tempPath = target.absolutePath + ".tmp"
         val script = buildString {
-            append("mkdir -p ").append(shellQuote(DIR))
+            append("mkdir -p ").append(shellQuote(target.parent ?: ""))
             append(" && cat > ").append(shellQuote(tempPath))
             append(" <<'LF_EOF'\n").append(text).append("\nLF_EOF\n")
             append("chmod 666 ").append(shellQuote(tempPath))
-            append(" && mv -f ").append(shellQuote(tempPath)).append(' ').append(shellQuote(file.absolutePath)).append('\n')
+            append(" && mv -f ").append(shellQuote(tempPath)).append(' ').append(shellQuote(target.absolutePath)).append('\n')
         }
         val ok = try {
             runSu(script) == 0
@@ -165,7 +208,7 @@ object ConfigStore {
 
         // Verify by reading the file back so the status we report is measured, not assumed.
         val readBack = try {
-            file.exists() && parse(file.readText()).containsKey(KEY_ENABLED)
+            target.exists() && parse(target.readText()).containsKey(KEY_ENABLED)
         } catch (_: Throwable) {
             false
         }

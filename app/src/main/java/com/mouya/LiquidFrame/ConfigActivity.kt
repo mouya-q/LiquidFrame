@@ -66,20 +66,20 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.PanelRect
+import com.mouya.LiquidFrame.ui.AboutPage
+import com.mouya.LiquidFrame.ui.GlassBottomBar
 import com.mouya.LiquidFrame.ui.GlassCard
 import com.mouya.LiquidFrame.ui.LiquidBackdropProvider
 import com.mouya.LiquidFrame.ui.LiquidColors
 import com.mouya.LiquidFrame.ui.LiquidPage
-import com.mouya.LiquidFrame.ui.LiquidToggleRow
 import com.mouya.LiquidFrame.ui.LiquidSliderRow
+import com.mouya.LiquidFrame.ui.LiquidToggleRow
 import com.mouya.LiquidFrame.ui.SettingDivider
 import com.mouya.LiquidFrame.ui.SettingRow
 import com.mouya.LiquidFrame.ui.SettingSection
-import com.mouya.LiquidFrame.ui.AboutPage
-import com.mouya.LiquidFrame.ui.GlassBottomBar
+import com.mouya.LiquidFrame.ui.StatusPill
 import com.mouya.LiquidFrame.ui.bgPrimary
 import com.mouya.LiquidFrame.ui.isDark
-import com.mouya.LiquidFrame.ui.liquidGlassSurface
 import com.mouya.LiquidFrame.ui.textPrimary
 import com.mouya.LiquidFrame.ui.textSecondary
 import java.util.concurrent.Executors
@@ -106,6 +106,7 @@ class ConfigActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ConfigStore.init(this)
         ConfigStore.load()
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -212,7 +213,6 @@ class ConfigActivity : ComponentActivity() {
         var previewResult by remember { mutableStateOf("正在准备预览") }
         var previewSource by remember { mutableStateOf(backdropSource) }
         var writeStatus by remember { mutableStateOf(ConfigStore.lastWriteStatus()) }
-        var logText by remember { mutableStateOf(LogHelper.readLog()) }
         val initial = remember { ConfigStore.glassParams() }
 
         var enabled by remember { mutableStateOf(ConfigStore.isEnabled()) }
@@ -234,12 +234,9 @@ class ConfigActivity : ComponentActivity() {
             schedulePreview { bitmap, result ->
                 previewBitmap = bitmap
                 previewResult = result
-                logText = LogHelper.readLog()
             }
         }
 
-        // One debounced write for the whole editor. Dragging a slider no longer forks `su` or
-        // rewrites the shared configuration file dozens of times per second.
         LaunchedEffect(
             enabled, adaptive, preserveContent, dispersion,
             band, amount, blur, lift, tint, rim, angle, depth,
@@ -256,9 +253,6 @@ class ConfigActivity : ComponentActivity() {
                 this[ConfigStore.KEY_LIFT] = lift.toString()
                 this[ConfigStore.KEY_TINT] = tint.toString()
                 this[ConfigStore.KEY_RIM] = rim.toString()
-                // The inner shadow is gone from the UI. `KEY_SHADOW` is deliberately no longer
-                // written, so a stale `inner_shadow_alpha` in the shared file is simply ignored
-                // by the renderer instead of being re-saved on every unrelated slider change.
                 this[ConfigStore.KEY_ANGLE] = angle.toString()
                 this[ConfigStore.KEY_DEPTH] = depth.toString()
             }
@@ -270,7 +264,6 @@ class ConfigActivity : ComponentActivity() {
             schedulePreview { bitmap, result ->
                 previewBitmap = bitmap
                 previewResult = result
-                logText = LogHelper.readLog()
             }
         }
 
@@ -294,11 +287,12 @@ class ConfigActivity : ComponentActivity() {
             LiquidBackdropProvider(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize()) {
                     when (currentPage) {
+                        // ---- Home page: enable toggle, display options, maintenance ----
                         LiquidPage.Home -> Column(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(scroll)
-                                .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 100.dp)),
+                                .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 120.dp)),
                             verticalArrangement = Arrangement.spacedBy(20.dp),
                         ) {
                             Row(
@@ -309,16 +303,101 @@ class ConfigActivity : ComponentActivity() {
                                 Column {
                                     Text("LiquidFrame", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = textPrimary())
                                 }
-                                Box(
-                                    Modifier
-                                        .clip(RoundedCornerShape(20.dp))
-                                        .background(if (enabled) LiquidColors.success.copy(alpha = 0.14f) else LiquidColors.warning.copy(alpha = 0.14f))
-                                        .padding(horizontal = 11.dp, vertical = 7.dp),
-                                ) {
-                                    Text(if (enabled) "已启用" else "已停用", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) LiquidColors.success else LiquidColors.warning)
-                                }
+                                StatusPill(
+                                    text = if (enabled) "已启用" else "已停用",
+                                    color = if (enabled) LiquidColors.success else LiquidColors.warning,
+                                )
                             }
 
+                            SettingSection("核心") {
+                                LiquidToggleRow(
+                                    "启用 LiquidFrame",
+                                    enabled,
+                                    { enabled = !enabled },
+                                    "下一次拍照开始生效",
+                                )
+                            }
+
+                            SettingSection("显示") {
+                                LiquidToggleRow("自适应明暗", adaptive, { adaptive = !adaptive }, "按画面亮度自动调整玻璃存在感")
+                                SettingDivider()
+                                LiquidToggleRow("保留原有文字", preserveContent, { preserveContent = !preserveContent }, "只替换背景，不改相机自己的字与 Logo")
+                                SettingDivider()
+                                LiquidToggleRow("色散", dispersion, { dispersion = !dispersion }, "开启边缘的轻微彩色折射")
+                            }
+
+                            SettingSection("维护") {
+                                SettingRow(
+                                    title = "恢复默认参数",
+                                    subtitle = "回到项目出厂的材质比例",
+                                    trailing = {
+                                        Icon(Icons.Outlined.Refresh, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
+                                    },
+                                    onClick = ::resetDefaults,
+                                )
+                                SettingDivider()
+                                SettingRow(
+                                    title = "复制诊断日志",
+                                    subtitle = "包含写入状态与渲染结果",
+                                    trailing = {
+                                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
+                                    },
+                                    onClick = {
+                                        val diagnostic = buildString {
+                                            appendLine("LiquidFrame Diagnostic Log")
+                                            appendLine("Version: 1.8.0 (8)")
+                                            appendLine("写入状态: $writeStatus")
+                                            appendLine("预览: $previewResult")
+                                            appendLine("背景: $previewSource")
+                                            appendLine()
+                                            appendLine("--- 参数 ---")
+                                            appendLine("enabled=$enabled")
+                                            appendLine("adaptive=$adaptive")
+                                            appendLine("preserveContent=$preserveContent")
+                                            appendLine("band=$band")
+                                            appendLine("amount=$amount")
+                                            appendLine("blur=$blur")
+                                            appendLine("lift=$lift")
+                                            appendLine("tint=$tint")
+                                            appendLine("rim=$rim")
+                                            appendLine("angle=$angle")
+                                            appendLine("depth=$depth")
+                                            appendLine("dispersion=$dispersion")
+                                        }
+                                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        clipboard.setPrimaryClip(
+                                            ClipData.newPlainText("LiquidFrame Log", diagnostic),
+                                        )
+                                        Toast.makeText(context, "诊断日志已复制", Toast.LENGTH_SHORT).show()
+                                    },
+                                )
+                            }
+
+                            Text(
+                                writeStatus,
+                                fontSize = 11.sp,
+                                color = if (writeStatus.startsWith("写入失败")) LiquidColors.error else textSecondary(),
+                                modifier = Modifier.padding(horizontal = 4.dp),
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
+
+                        // ---- Glass params page: preview at top, sliders below ----
+                        LiquidPage.Glass -> Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(scroll)
+                                .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 120.dp)),
+                            verticalArrangement = Arrangement.spacedBy(20.dp),
+                        ) {
+                            Text(
+                                "玻璃参数",
+                                fontSize = 30.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textPrimary(),
+                            )
+
+                            // Preview moved here from the home page
                             GlassCard {
                                 Box(
                                     modifier = Modifier
@@ -362,74 +441,6 @@ class ConfigActivity : ComponentActivity() {
                                 }
                             }
 
-                            SettingSection("核心") {
-                                LiquidToggleRow(
-                                    "启用 LiquidFrame",
-                                    enabled,
-                                    { enabled = !enabled },
-                                    "下一次拍照开始生效",
-                                )
-                            }
-
-                            SettingSection("显示") {
-                                LiquidToggleRow("自适应明暗", adaptive, { adaptive = !adaptive }, "按画面亮度自动调整玻璃存在感")
-                                SettingDivider()
-                                LiquidToggleRow("保留原有文字", preserveContent, { preserveContent = !preserveContent }, "只替换背景，不改相机自己的字与 Logo")
-                                SettingDivider()
-                                LiquidToggleRow("色散", dispersion, { dispersion = !dispersion }, "开启边缘的轻微彩色折射")
-                            }
-
-                            SettingSection("维护") {
-                                SettingRow(
-                                    title = "恢复默认参数",
-                                    subtitle = "回到项目出厂的材质比例",
-                                    trailing = {
-                                        Icon(Icons.Outlined.Refresh, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
-                                    },
-                                    onClick = ::resetDefaults,
-                                )
-                                SettingDivider()
-                                SettingRow(
-                                    title = "复制诊断日志",
-                                    subtitle = "包含最近一次检测到的面板与渲染结果",
-                                    trailing = {
-                                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
-                                    },
-                                    onClick = {
-                                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clipboard.setPrimaryClip(
-                                            ClipData.newPlainText(
-                                                "LiquidFrame Log",
-                                                "write: $writeStatus\nbackdrop: $backdropSource\npreview: $previewResult\n\n$logText",
-                                            ),
-                                        )
-                                        Toast.makeText(context, "诊断日志已复制", Toast.LENGTH_SHORT).show()
-                                    },
-                                )
-                            }
-
-                            Text(
-                                "配置写入：$writeStatus",
-                                fontSize = 11.sp,
-                                color = if (writeStatus.startsWith("写入失败")) LiquidColors.error else textSecondary(),
-                                modifier = Modifier.padding(horizontal = 4.dp),
-                            )
-                            Spacer(Modifier.height(12.dp))
-                        }
-
-                        LiquidPage.Glass -> Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scroll)
-                                .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 100.dp)),
-                            verticalArrangement = Arrangement.spacedBy(20.dp),
-                        ) {
-                            Text(
-                                "玻璃参数",
-                                fontSize = 30.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = textPrimary(),
-                            )
                             SettingSection("材质") {
                                 LiquidSliderRow("折射带", band, 0f..0.45f, "")
                                     { band = it }
@@ -459,12 +470,11 @@ class ConfigActivity : ComponentActivity() {
                         }
 
                         LiquidPage.About -> AboutPage(
-                            versionName = "1.6.0",
-                            versionCode = 6,
+                            versionName = "1.8.0",
+                            versionCode = 8,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
-                    // Three-tab liquid glass bottom bar
                     GlassBottomBar(
                         currentPage = currentPage,
                         onPageSelected = { currentPage = it },
@@ -505,10 +515,6 @@ class ConfigActivity : ComponentActivity() {
     }
 
     private fun renderPreview(bitmap: Bitmap, params: GlassParams): String {
-        // Geometry measured from the iPhone liquid-glass reference (832x624 working copy):
-        // capsule top=533 bottom=615 -> h=82 = 0.0986 x width, bottom margin 8 = 0.013 x
-        // height, full capsule radius = h/2. No white is ever drawn: the glass is rendered
-        // straight onto the photo, so no white can remain underneath it.
         val panelH = (bitmap.width * PREVIEW_PANEL_H_FRACTION).toInt().coerceAtLeast(48)
         val side = (bitmap.width * PREVIEW_SIDE_FRACTION).toInt()
         val bottomMargin = (bitmap.height * PREVIEW_BOTTOM_FRACTION).toInt()
@@ -524,8 +530,6 @@ class ConfigActivity : ComponentActivity() {
             bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
             val r = LiquidGlassOptics.renderPanel(
                 pixels, bitmap.width, bitmap.height, panel, params,
-                // The preview photo is untouched: there is no camera-baked plate inside the
-                // panel, the panel's pixels *are* the scene. So the glass samples them directly.
                 panelIsOpaquePlate = false,
             )
             if (!r.startsWith("skip")) bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
@@ -533,18 +537,6 @@ class ConfigActivity : ComponentActivity() {
         } catch (t: Throwable) {
             "预览失败：${t.javaClass.simpleName}"
         }
-        // No watermark text is drawn here on purpose.
-        //
-        // The camera draws its own labels into the photo, and the renderer already keeps them
-        // (that is the `preserveContent` mask). Faking a label on top of a synthetic photo made
-        // the settings screen look faithful while being nothing like the real thing: the model
-        // string came from the device, not from the watermark actually selected, its position was
-        // a guess, and it was a hardcoded dark grey rather than the camera's own ink. So a
-        // preview with text and a photo without it could disagree in wording, placement, colour
-        // and size at the same time — which is exactly the "预览和实际拍出来不一致" report.
-        //
-        // The preview now shows the material and nothing else, so what it shows about the glass
-        // is true; the labels are the camera's, and only the camera can show them.
         return result
     }
 
@@ -552,7 +544,6 @@ class ConfigActivity : ComponentActivity() {
     // Asset backdrop
     // ---------------------------------------------------------------------------------------
 
-    /** Load the built-in preview background from assets, or null if it cannot be decoded. */
     private fun loadAssetBackdrop(): Bitmap? {
         return try {
             assets.open("background-a.jpg").use { stream ->
@@ -560,8 +551,6 @@ class ConfigActivity : ComponentActivity() {
                 if (decoded != null) {
                     val cropped = centreCrop(decoded, PREVIEW_W, PREVIEW_H)
                     if (decoded !== cropped) decoded.recycle()
-                    // NOTE: no white panel is drawn here. The photo stays pure; the glass is
-                    // rendered directly onto it in renderPreview, so no white can remain.
                     cropped
                 } else null
             }
@@ -574,12 +563,6 @@ class ConfigActivity : ComponentActivity() {
     // Synthetic sample
     // ---------------------------------------------------------------------------------------
 
-    /**
-     * Fallback scene used only when the bundled preview asset cannot be decoded. It contains no
-     * panel and no text on purpose: the glass must sample the photograph itself, and the label is
-     * drawn afterwards from whatever the installed camera reports. Painting a white plate here was
-     * precisely what made the preview come out grey instead of glassy.
-     */
     private fun buildSamplePhoto(w: Int, h: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -603,12 +586,6 @@ class ConfigActivity : ComponentActivity() {
         const val PREVIEW_W = 900
         const val PREVIEW_H = 420
 
-        // Geometry measured from the iPhone liquid-glass reference photo the user supplied
-        // (3326 px wide original, 832x624 working copy):
-        //   capsule top=533, bottom=615  -> height 82 px = 0.0986 x width
-        //   bottom margin 8 px           -> 0.0128 x height
-        //   side margin ~3 px            -> 0.004 x width (the capsule runs almost edge to edge)
-        //   corner radius = height / 2   -> full capsule
         const val PREVIEW_PANEL_H_FRACTION = 0.0986f
         const val PREVIEW_SIDE_FRACTION = 0.004f
         const val PREVIEW_BOTTOM_FRACTION = 0.0128f

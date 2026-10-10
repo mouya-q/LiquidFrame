@@ -1,7 +1,5 @@
 package com.mouya.LiquidFrame.ui
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -13,14 +11,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,18 +31,7 @@ import com.kyant.capsule.ContinuousRoundedRectangle
 import com.kyant.shapes.Capsule
 import java.util.Locale
 
-/**
- * LiquidFrame glass component set.
- *
- * Uses the full kyant0 backdrop RuntimeShader layer (already declared in
- * build.gradle) for real backdrop-sampled glass. The visual language —
- * capsule shapes, continuous corners, frosted translucent surfaces —
- * follows the kyant0 AndroidLiquidGlass catalog.
- *
- * Glass surfaces fall back to solid translucent backgrounds when the
- * window lacks hardware acceleration (API < 33 or software rendering),
- * so the UI remains readable on every device.
- */
+/** Palette, shapes and shared settings-row components for the config UI. */
 object LiquidColors {
     val blue = Color(0xFF007AFF)
     val lightBg = Color(0xFFF2F2F7)
@@ -113,9 +96,7 @@ fun GlassCard(
     )
 }
 
-/**
- * Grouped settings section with a section header and card body.
- */
+/** Grouped settings section with a section header and card body. */
 @Composable
 fun SettingSection(
     title: String,
@@ -198,8 +179,15 @@ fun SettingDivider(modifier: Modifier = Modifier) {
     )
 }
 
-private fun lerpOffset(start: androidx.compose.ui.unit.Dp, end: androidx.compose.ui.unit.Dp, fraction: Float): androidx.compose.ui.unit.Dp {
-    val s = start.value
-    val e = end.value
-    return (s + (e - s) * fraction).dp
+/** Rounded status pill used in the page headers. */
+@Composable
+fun StatusPill(text: String, color: Color) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(color.copy(alpha = 0.14f))
+            .padding(horizontal = 11.dp, vertical = 7.dp),
+    ) {
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = color)
+    }
 }

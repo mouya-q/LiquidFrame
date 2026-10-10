@@ -1,57 +1,114 @@
 package com.mouya.LiquidFrame.ui
 
+/*
+ * About page: animated gradient field with scroll parallax, a hero header whose
+ * icon fades and scales out as the user scrolls, and the developer / project
+ * link sections.
+ *
+ * The gradient field is the hero's own animated backdrop: a linear gradient base
+ * plus four moving radial centers on a 12-second palette interpolation cycle.
+ * The field's colors are saturation-strengthened before drawing so the palette
+ * survives the translucent composite. The whole field fades to transparent
+ * through a vertical gradient mask and scrolls at 0.12x to create depth.
+ *
+ * The header capsule samples the gradient field itself as its backdrop — the
+ * same material the module applies in the camera, so the icon is a live sample
+ * of what the module does.
+ */
+
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.Shadow
+import com.kyant.shapes.Capsule
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
 
+/** Hero region height, as a fraction of the screen height. */
+private const val HERO_HEIGHT_FRACTION = 0.60f
+
+/** Extra height below the hero the background keeps painting into. */
+private val HERO_BACKGROUND_EXTEND = 180.dp
+
+/** Scroll distance over which the background fades out completely. */
+private val BACKGROUND_FADE_DISTANCE = 389.dp
+
+/** Parallax factor: the background scrolls at this fraction of the content. */
+private const val BACKGROUND_PARALLAX = 0.12f
+
 /**
- * About page with animated gradient header, version info, and links.
- *
- * The animated gradient field and hero layout are adapted from common
- * Compose patterns for glass-like about pages.
+ * Logo fade window, as fractions of the hero height. The icon starts fading at
+ * 0.25 and is fully gone at 0.60 of the hero scrolled past.
  */
+private const val LOGO_FADE_START_FRACTION = 0.25f
+private const val LOGO_FADE_DISTANCE_FRACTION = 0.35f
+
+/** The hero logo also shrinks slightly as it fades. */
+private const val LOGO_FADE_SHRINK = 0.1f
+
+/** Palette interpolation period, seconds. */
+private const val COLOR_INTERPOLATION_SECONDS = 12f
+
+/** Motion speed of the radial centers. */
+private const val BACKGROUND_SPEED = 0.12f
+
+/** Radial gradient radius, as a fraction of the field's max dimension. */
+private const val GRADIENT_RADIUS_FRACTION = 0.62f
+
+/** Saturation multiplier and brightness lift applied to every palette color. */
+private const val GRADIENT_SATURATION = 1.18f
+private const val GRADIENT_BRIGHTNESS_OFFSET = 0.015f
+
 @Composable
 fun AboutPage(
     versionName: String,
@@ -59,8 +116,43 @@ fun AboutPage(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val scroll = rememberScrollState()
-    val dark = isSystemInDarkTheme()
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val density = LocalDensity.current
+    val dark = isDark()
+
+    val heroHeight = LocalConfigurationHeight() * HERO_HEIGHT_FRACTION
+    val heroHeightPx = with(density) { heroHeight.toPx() }
+    val backgroundFadeDistance = with(density) { BACKGROUND_FADE_DISTANCE.toPx() }
+    val logoFadeStart = heroHeightPx * LOGO_FADE_START_FRACTION
+    val logoFadeDistance = heroHeightPx * LOGO_FADE_DISTANCE_FRACTION
+
+    val scrollOffset by remember(listState, heroHeightPx) {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) {
+                heroHeightPx
+            } else {
+                listState.firstVisibleItemScrollOffset.toFloat()
+            }
+        }
+    }
+    val reachedListEnd by remember(listState) {
+        derivedStateOf {
+            !listState.canScrollForward &&
+                (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)
+        }
+    }
+    val backgroundAlpha = if (reachedListEnd) {
+        0f
+    } else {
+        1f - (scrollOffset / backgroundFadeDistance).coerceIn(0f, 1f)
+    }
+    val logoProgress = if (reachedListEnd) {
+        1f
+    } else {
+        ((scrollOffset - logoFadeStart) / logoFadeDistance).coerceIn(0f, 1f)
+    }
+    val logoAlpha = 1f - logoProgress
+    val logoScale = 1f - logoProgress * LOGO_FADE_SHRINK
 
     var animationTime by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
@@ -77,125 +169,229 @@ fun AboutPage(
 
     val gradientColors = animatedGradientColors(animationTime, dark)
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(scroll)
-            .padding(
-                start = 18.dp,
-                end = 18.dp,
-                top = 54.dp,
-                bottom = 100.dp,
-            ),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
-    ) {
-        // Animated gradient hero header
-        Box(
+    Box(modifier = modifier.fillMaxSize()) {
+        // Animated background: hero-height field, parallax scrolling, fading out
+        // through the first scroll distance.
+        AnimatedAboutBackground(
+            animationTime = animationTime,
+            colors = gradientColors,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(200.dp)
-                .clip(RoundedCornerShape(24.dp)),
-            contentAlignment = Alignment.Center,
+                .height(heroHeight + HERO_BACKGROUND_EXTEND)
+                .alpha(backgroundAlpha)
+                .graphicsLayer {
+                    compositingStrategy = CompositingStrategy.Offscreen
+                    translationY = -scrollOffset * BACKGROUND_PARALLAX
+                },
+        )
+
+        androidx.compose.foundation.lazy.LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                start = 18.dp,
+                end = 18.dp,
+                top = 0.dp,
+                bottom = 120.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            AnimatedGradientField(
-                animationTime = animationTime,
-                colors = gradientColors,
-                modifier = Modifier.fillMaxSize(),
-            )
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Box(
-                    Modifier
-                        .size(64.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(
-                                    Color(0xFF7AC4FF).copy(alpha = 0.8f),
-                                    Color(0xFF0A0A0E),
-                                ),
-                            ),
-                        ),
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "LiquidFrame",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "$versionName ($versionCode)",
-                    fontSize = 13.sp,
-                    color = Color.White.copy(alpha = 0.7f),
-                )
+            item {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Spacer(Modifier.height(heroHeight + 16.dp))
+                }
+            }
+
+            item {
+                SettingSection("开发者") {
+                    SettingRow(
+                        title = "mouya",
+                        subtitle = "酷安 @muraya",
+                        trailing = {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.OpenInNew,
+                                contentDescription = null,
+                                tint = LiquidColors.blue,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        },
+                        onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q"))
+                            )
+                        },
+                    )
+                }
+            }
+
+            item {
+                SettingSection("项目") {
+                    SettingRow(
+                        title = "GitHub 仓库",
+                        subtitle = "https://github.com/mouya-q/LiquidFrame",
+                        trailing = {
+                            Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
+                        },
+                        onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q/LiquidFrame"))
+                            )
+                        },
+                    )
+                    SettingDivider()
+                    SettingRow(
+                        title = "更新日志",
+                        subtitle = "查看完整版本历史",
+                        trailing = {
+                            Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
+                        },
+                        onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q/LiquidFrame/blob/main/CHANGELOG.md"))
+                            )
+                        },
+                    )
+                }
+            }
+
+            item {
+                SettingSection("关于") {
+                    SettingRow(
+                        title = "模块说明",
+                        subtitle = "LiquidFrame 是一个 LSPosed 模块，为小米相机水印渲染液态玻璃材质。它 hook 相机水印渲染管线，保留原始水印文字，仅替换背景为液态玻璃。",
+                    )
+                    SettingDivider()
+                    SettingRow(
+                        title = "技术栈",
+                        subtitle = "Xposed API 82 · backdrop RuntimeShader · Compose · pure-Kotlin pixel renderer",
+                    )
+                }
             }
         }
 
-        // Developer section
-        SettingSection("开发者") {
-            SettingRow(
-                title = "mouya",
-                subtitle = "酷安 @muraya",
-                trailing = {
-                    Icon(
-                        Icons.Outlined.Info,
-                        contentDescription = null,
-                        tint = LiquidColors.blue,
-                        modifier = Modifier.size(20.dp),
-                    )
-                },
-                onClick = {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q"))
-                    )
-                },
-            )
-        }
+        // Hero: the glass capsule over the gradient field. Fades and shrinks as
+        // the content scrolls past it.
+        AboutHero(
+            animationTime = animationTime,
+            gradientColors = gradientColors,
+            dark = dark,
+            logoAlpha = logoAlpha,
+            logoScale = logoScale,
+            versionName = versionName,
+            versionCode = versionCode,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .height(heroHeight)
+                .padding(horizontal = 18.dp),
+        )
+    }
+}
 
-        // Project links
-        SettingSection("项目") {
-            SettingRow(
-                title = "GitHub 仓库",
-                subtitle = "https://github.com/mouya-q/LiquidFrame",
-                trailing = {
-                    Icon(Icons.Outlined.Info, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
+@Composable
+private fun AboutHero(
+    animationTime: Float,
+    gradientColors: List<Color>,
+    dark: Boolean,
+    logoAlpha: Float,
+    logoScale: Float,
+    versionName: String,
+    versionCode: Int,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .graphicsLayer {
+                    alpha = logoAlpha
+                    scaleX = logoScale
+                    scaleY = logoScale
                 },
-                onClick = {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q/LiquidFrame"))
-                    )
-                },
-            )
-            SettingDivider()
-            SettingRow(
-                title = "更新日志",
-                subtitle = "查看完整版本历史",
-                trailing = {
-                    Icon(Icons.Outlined.Info, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
-                },
-                onClick = {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q/LiquidFrame/blob/main/CHANGELOG.md"))
-                    )
-                },
-            )
-        }
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // The gradient field exports itself as a layer backdrop so the capsule
+            // samples these exact pixels.
+            val fieldBackdrop = rememberLayerBackdrop()
+            Box(Modifier.fillMaxWidth().height(200.dp).layerBackdrop(fieldBackdrop)) {
+                AnimatedGradientField(
+                    animationTime = animationTime,
+                    colors = gradientColors,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
 
-        // About module
-        SettingSection("关于") {
-            SettingRow(
-                title = "模块说明",
-                subtitle = "LiquidFrame 是一个 LSPosed 模块，为小米相机水印渲染液态玻璃材质。它 hook 相机水印渲染管线，保留原始水印文字，仅替换背景为液态玻璃。",
-            )
-            SettingDivider()
-            SettingRow(
-                title = "技术栈",
-                subtitle = "Xposed API 82 · Kyant0 backdrop/shapes/capsule · Compose · pure-Kotlin pixel renderer",
+            Spacer(Modifier.height(18.dp))
+
+            // The short glass capsule, rendered with the same material chain as
+            // the watermark panel: blur, lens refraction, rim highlight.
+            val pageBackdrop = liquidGlassBackdrop()
+            val backdrop = if (pageBackdrop != null) {
+                rememberCombinedBackdrop(pageBackdrop, fieldBackdrop)
+            } else {
+                fieldBackdrop
+            }
+            Box(
+                modifier = Modifier
+                    .size(width = 120.dp, height = 44.dp)
+                    .drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { Capsule() },
+                        effects = {
+                            vibrancy()
+                            blur(3.dp.toPx())
+                            lens(10.dp.toPx(), 14.dp.toPx(), chromaticAberration = true)
+                        },
+                        highlight = {
+                            Highlight.Default.copy(
+                                alpha = if (dark) 0.36f else 0.52f,
+                            )
+                        },
+                        shadow = {
+                            Shadow(radius = 16.dp, color = Color.Black.copy(alpha = 0.18f))
+                        },
+                        onDrawSurface = {
+                            drawRect(Color.White.copy(alpha = if (dark) 0.06f else 0.10f))
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "LiquidFrame",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (dark) Color.White else Color(0xFF111113),
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "$versionName ($versionCode)",
+                fontSize = 13.sp,
+                color = if (dark) Color.White.copy(alpha = 0.75f) else Color(0xFF111113).copy(alpha = 0.75f),
             )
         }
+    }
+}
+
+@Composable
+private fun AnimatedAboutBackground(
+    animationTime: Float,
+    colors: List<Color>,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        drawGradientField(animationTime, colors, size, Offset.Zero)
+        // Vertical white fade: fully opaque through 68% of the field height, then
+        // dissolving to transparent. BlendMode.DstIn turns the gradient into a mask.
+        drawRect(
+            brush = Brush.verticalGradient(
+                colorStops = arrayOf(
+                    0f to Color.White,
+                    0.68f to Color.White,
+                    1f to Color.Transparent,
+                ),
+            ),
+            blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+        )
     }
 }
 
@@ -216,12 +412,24 @@ private fun DrawScope.drawGradientField(
     fieldSize: androidx.compose.ui.geometry.Size,
     sampleOrigin: Offset,
 ) {
-    val radius = fieldSize.maxDimension * 0.6f
-    val motionTime = animationTime * 0.12f
+    // Strengthen the palette first: the translucent composite washes colors out,
+    // so pre-saturating keeps the field vivid.
+    val strengthened = colors.map(::strengthenGradientColor)
+    val translucentPalette = strengthened.any { it.alpha < 0.8f }
+    val radius = fieldSize.maxDimension * GRADIENT_RADIUS_FRACTION
+    val motionTime = animationTime * BACKGROUND_SPEED
 
     drawRect(
         brush = Brush.linearGradient(
-            colors = colors.map { it.copy(alpha = 0.6f) },
+            colors = strengthened.map { color ->
+                color.copy(
+                    alpha = if (translucentPalette) {
+                        color.alpha * 0.72f
+                    } else {
+                        0.58f
+                    },
+                )
+            },
             start = Offset(-sampleOrigin.x, -sampleOrigin.y),
             end = Offset(fieldSize.width - sampleOrigin.x, fieldSize.height - sampleOrigin.y),
         ),
@@ -246,10 +454,19 @@ private fun DrawScope.drawGradientField(
         ),
     )
     centers.forEachIndexed { index, center ->
-        val color = colors[index]
+        val color = strengthened[index % strengthened.size]
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(color.copy(alpha = 0.8f), color.copy(alpha = 0f)),
+                colors = listOf(
+                    color.copy(
+                        alpha = if (translucentPalette) {
+                            color.alpha * 0.96f
+                        } else {
+                            0.88f
+                        },
+                    ),
+                    color.copy(alpha = 0f),
+                ),
                 center = center - sampleOrigin,
                 radius = radius,
             ),
@@ -259,9 +476,19 @@ private fun DrawScope.drawGradientField(
     }
 }
 
+private fun strengthenGradientColor(color: Color): Color {
+    val average = (color.red + color.green + color.blue) / 3f
+    return Color(
+        red = (average + (color.red - average) * GRADIENT_SATURATION - GRADIENT_BRIGHTNESS_OFFSET).coerceIn(0f, 1f),
+        green = (average + (color.green - average) * GRADIENT_SATURATION - GRADIENT_BRIGHTNESS_OFFSET).coerceIn(0f, 1f),
+        blue = (average + (color.blue - average) * GRADIENT_SATURATION - GRADIENT_BRIGHTNESS_OFFSET).coerceIn(0f, 1f),
+        alpha = color.alpha,
+    )
+}
+
 private fun animatedGradientColors(animationTime: Float, dark: Boolean): List<Color> {
     val palettes = if (dark) DarkPalettes else LightPalettes
-    val segmentValue = animationTime / 12f
+    val segmentValue = animationTime / COLOR_INTERPOLATION_SECONDS
     val segment = floor(segmentValue).toInt() % 4
     val rawProgress = segmentValue - floor(segmentValue)
     val progress = rawProgress * rawProgress * (3f - 2f * rawProgress)
@@ -272,8 +499,13 @@ private fun animatedGradientColors(animationTime: Float, dark: Boolean): List<Co
         0 -> palettes[0]; 1 -> palettes[1]; 2 -> palettes[2]; else -> palettes[1]
     }
     return start.indices.map { index ->
-        androidx.compose.ui.graphics.lerp(start[index], end[index], progress)
+        lerp(start[index], end[index], progress)
     }
+}
+
+private fun LocalConfigurationHeight(): androidx.compose.ui.unit.Dp {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    return configuration.screenHeightDp.dp
 }
 
 private val LightPalettes = listOf(
