@@ -120,7 +120,7 @@ fun AboutPage(
     val density = LocalDensity.current
     val dark = isDark()
 
-    val heroHeight = LocalConfigurationHeight() * HERO_HEIGHT_FRACTION
+    val heroHeight = LocalConfiguration.current.screenHeightDp.dp * HERO_HEIGHT_FRACTION
     val heroHeightPx = with(density) { heroHeight.toPx() }
     val backgroundFadeDistance = with(density) { BACKGROUND_FADE_DISTANCE.toPx() }
     val logoFadeStart = heroHeightPx * LOGO_FADE_START_FRACTION
@@ -501,11 +501,6 @@ private fun animatedGradientColors(animationTime: Float, dark: Boolean): List<Co
     return start.indices.map { index ->
         lerp(start[index], end[index], progress)
     }
-}
-
-private fun LocalConfigurationHeight(): androidx.compose.ui.unit.Dp {
-    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
-    return configuration.screenHeightDp.dp
 }
 
 private val LightPalettes = listOf(
