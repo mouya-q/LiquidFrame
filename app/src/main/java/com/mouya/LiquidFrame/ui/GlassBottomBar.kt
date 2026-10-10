@@ -18,8 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -37,7 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.kyant.capsule.ContinuousRoundedRectangle
 
 enum class LiquidPage(val icon: ImageVector, val label: String) {
-    Home(Icons.Outlined.Person, "首页"),
+    Home(Icons.Outlined.Home, "首页"),
     Glass(Icons.Outlined.Tune, "参数"),
     About(Icons.Outlined.Info, "关于"),
 }

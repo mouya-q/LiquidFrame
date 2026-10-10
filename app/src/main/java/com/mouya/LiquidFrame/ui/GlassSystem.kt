@@ -16,14 +16,14 @@ import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtMost
+import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -56,7 +56,10 @@ fun LiquidBackdropProvider(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val backdrop = rememberBackdrop()
+    // rememberLayerBackdrop() is the entry point that creates a fresh recording layer.
+    // rememberBackdrop(backdrop, onDraw) *wraps an existing* Backdrop, so calling it with no
+    // arguments does not compile.
+    val backdrop = rememberLayerBackdrop()
     Box(modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
             Box(Modifier.fillMaxSize().background(bgPrimary()))
@@ -276,6 +279,9 @@ fun Modifier.liquidBottomBar(
         return background(stableSurface, shape)
     }
     val p = safeProgress(pressProgress)
+    // isSystemInDarkTheme() is @Composable: it cannot be called from inside the draw-scope
+    // lambdas below, so resolve it here while we are still in a composable context.
+    val highlightDark = isSystemInDarkTheme()
     return drawBackdrop(
         backdrop = backdrop,
         shape = { shape },
@@ -292,7 +298,7 @@ fun Modifier.liquidBottomBar(
         },
         highlight = {
             Highlight.Default.copy(
-                alpha = (lerp(0.48f, 0.32f, if (isSystemInDarkTheme()) 1f else 0f) + 0.30f * p).coerceAtMost(1f),
+                alpha = (lerp(0.48f, 0.32f, if (highlightDark) 1f else 0f) + 0.30f * p).coerceAtMost(1f),
             )
         },
         shadow = {

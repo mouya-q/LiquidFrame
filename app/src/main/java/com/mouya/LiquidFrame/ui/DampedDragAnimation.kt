@@ -8,6 +8,7 @@ package com.mouya.LiquidFrame.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.MutatorMutex
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -70,7 +71,7 @@ class DampedDragAnimation(
     val velocity: Float get() = velocityAnimation.value
 
     val modifier: Modifier = Modifier.pointerInput(Unit) {
-        androidx.compose.foundation.gestures.detectDragGestures(
+        detectDragGestures(
             onDragStart = { down ->
                 onDragStarted(down.position)
                 press()

@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.layout
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
@@ -315,7 +315,7 @@ fun LiquidToggle(
                     fraction = if (currentChecked) 0f else 1f
                 }
                 onToggle()
-                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
             },
             onDrag = { _, dragAmount ->
                 if (!enabled) return@DampedDragAnimation
