@@ -91,6 +91,16 @@ object WatermarkHooks {
      */
     private const val MIN_PANEL_WIDTH_FRACTION = 0.12f
 
+    /**
+     * Largest share of the frame the *merged* panel may span, as a fraction of the frame
+     * height.
+     *
+     * The union of a watermark group is wide and short; a union that reaches most of the
+     * way down the frame is scene content that survived the element filter, and merging
+     * it would paint glass over the photograph.
+     */
+    private const val MAX_PANEL_HEIGHT_FRACTION = 0.45f
+
     /** Bounded work: keep at most this many bitmap locations per composite. */
     private const val MAX_PANELS = 8
 

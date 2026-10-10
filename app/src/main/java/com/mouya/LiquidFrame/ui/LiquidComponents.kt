@@ -88,8 +88,8 @@ fun GlassCard(
             .fillMaxWidth()
             .liquidGlassSurface(
                 shape = LiquidShapes.card,
-                surfaceColor = if (isDark()) Color(0xFF1C1C1E).copy(alpha = 0.72f)
-                else Color.White.copy(alpha = 0.64f),
+                surfaceColor = if (isDark()) Color(0xFF1C1C1E).copy(alpha = 0.60f)
+                else Color.White.copy(alpha = 0.46f),
             )
             .padding(16.dp),
         content = content,
@@ -117,7 +117,7 @@ fun SettingSection(
                 .fillMaxWidth()
                 .liquidGlassSurface(
                     shape = LiquidShapes.compact,
-                    surfaceColor = surfaceColor().copy(alpha = 0.52f),
+                    surfaceColor = surfaceColor().copy(alpha = 0.42f),
                 ),
             content = content,
         )
