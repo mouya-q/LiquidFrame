@@ -73,7 +73,10 @@ class DampedDragAnimation(
     val modifier: Modifier = Modifier.pointerInput(Unit) {
         detectDragGestures(
             onDragStart = { down ->
-                onDragStarted(down.position)
+                // detectDragGestures hands the start position as an Offset already; the
+                // PointerInputChange form (.position) only exists in the lower-level
+                // awaitPointerEventScope API.
+                onDragStarted(down)
                 press()
             },
             onDragEnd = {
