@@ -129,7 +129,7 @@ object LiquidGlassOptics {
         // The camera's own labels are found once, from the pixels the camera produced, and then
         // left completely alone while the material is drawn around them. Without an explicit
         // mask the replacement would either erase the labels or keep the whole panel.
-        val content = if (preserveContent) BooleanArray(width * height) else null
+        val content = if (preserveContent) FloatArray(width * height) else null
         var preserved = 0
         if (content != null) {
             val left = panel.left.toInt().coerceAtLeast(0)
@@ -140,9 +140,10 @@ object LiquidGlassOptics {
                 val row = gy * width
                 for (gx in left until right) {
                     if (sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius) > 0.5f) continue
-                    if (isPanelContent(pixels[row + gx], tone.tone)) {
-                        content[row + gx] = true
-                        preserved++
+                    val soft = contentSoftness(pixels[row + gx], tone.tone)
+                    if (soft > 0f) {
+                        content[row + gx] = soft
+                        if (soft >= 0.5f) preserved++
                     }
                 }
             }
@@ -186,9 +187,12 @@ object LiquidGlassOptics {
         // layer a little blur is what sells the glass.
         val blurRadius = params.blurFraction * band
         if (blurRadius >= 0.5f) {
-            // Blur the panel interior only, leaving the lens margin sharp. The source is
-            // `backdrop` (already re-sourced from the photo above the panel), never the raw
-            // `pixels`, which still hold the camera's own plate and would leak it back in.
+            // Blur covers the whole panel *including the refraction band*. An earlier
+            // revision stopped the blur at the band's inner boundary, leaving a sharp
+            // ring where the lens magnifies - the blur/no-blur seam was visible as the
+            // glass looking "not covering the whole backdrop". The blur strength now
+            // ramps down linearly across the band instead of switching off at a step,
+            // so the frosted interior blends continuously into the lens edge.
             val interior = backdrop.copyOf()
             val blurred = blurInPlace(interior, cw, ch, blurRadius)
             for (y in 0 until ch) {
@@ -196,7 +200,22 @@ object LiquidGlassOptics {
                     val gx = cropLeft + x
                     val gy = cropTop + y
                     val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
-                    if (-sd >= band) backdrop[y * cw + x] = blurred[y * cw + x]
+                    if (sd < 0f) {
+                        val full = -sd >= band
+                        val mix = if (full) {
+                            1f
+                        } else {
+                            // 0 at the silhouette, 1 at the band's inner boundary.
+                            1f - (-sd / band)
+                        }
+                        val orig = backdrop[y * cw + x]
+                        val blurredPx = blurred[y * cw + x]
+                        backdrop[y * cw + x] = blend(orig, blurredPx, mix)
+                    }
+                    // sd >= 0: outside the silhouette - the photo around the panel stays
+                    // sharp for the rim sampling. The padding zone is only ever seen
+                    // through the lens, and the lens now blends blurred content into it,
+                    // so no sharp/blurry seam can appear inside the visible capsule.
                 }
             }
         }
@@ -237,9 +256,14 @@ object LiquidGlassOptics {
                 val coverage = (0.5f - sd).coerceIn(0f, 1f)
                 if (coverage <= 0.001f) continue
 
-                // The camera's own labels are drawn over the material, untouched.
+                // The camera's own labels are drawn over the material, untouched. A label's
+                // antialiased edge pixel only *partly* belongs to the label, so the glass
+                // shows through by exactly the amount the pixel is not label: a hard mask
+                // here ate the soft edge and the glyphs grew visible jaggies against the
+                // frosted interior.
                 val index = gy * width + gx
-                if (content != null && content[index]) continue
+                val keep = content?.get(index) ?: 0f
+                if (keep >= 0.999f) continue
 
                 val nx = (px - (panel.left + panel.width * 0.5f)) / (panel.width * 0.5f)
                 val ny = (py - (panel.top + panel.height * 0.5f)) / (panel.height * 0.5f)
@@ -274,7 +298,7 @@ object LiquidGlassOptics {
 
                     if (params.chromaticAberration) {
                         val s = sampleSpectrumRegion(
-                            backdrop, cw, ch, cropLeft, cropTop, px + dx, py + dy,
+                            backdrop, cw, ch, panel, radius, cropLeft, cropTop, px + dx, py + dy,
                             dx, dy, nx, ny, params,
                         )
                         cr = s[0]; cg = s[1]; cb = s[2]
@@ -327,7 +351,15 @@ object LiquidGlassOptics {
 
                 val glass = pack(255, cr, cg, cb)
                 val dst = gy * width + gx
-                pixels[dst] = if (coverage >= 0.999f) glass else blend(pixels[dst], glass, coverage)
+                pixels[dst] = if (keep > 0.001f) {
+                    // The pixel is partly the camera's label: keep that share of the
+                    // camera's own pixel and let the material show through the rest.
+                    blend(pixels[dst], glass, coverage * (1f - keep))
+                } else if (coverage >= 0.999f) {
+                    glass
+                } else {
+                    blend(pixels[dst], glass, coverage)
+                }
                 written++
             }
         }
@@ -360,10 +392,13 @@ object LiquidGlassOptics {
                     val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
                     if (sd <= 0.5f) continue  // inside the capsule: already glass
                     val index = row + gx
-                    // Never touch the camera's own labels, wherever they are.
-                    if (content != null && content[index]) continue
+                    // Never touch the camera's own labels, wherever they are. A soft
+                    // mask value means an antialiased edge: clear the plate out from
+                    // under it proportionally, keeping the label's own share.
+                    val keep = content?.get(index) ?: 0f
+                    if (keep >= 0.999f) continue
                     val scene = backdrop[y * cw + x]
-                    pixels[index] = scene
+                    pixels[index] = if (keep > 0.001f) blend(scene, pixels[index], keep) else scene
                     cleared++
                 }
             }
@@ -437,19 +472,35 @@ object LiquidGlassOptics {
     private data class PanelTone(val tone: Float, val uniformity: Float)
 
     /**
-     * Whether a panel pixel is the camera's own content (a label, logo or icon) rather than the
-     * flat background the material is replacing.
+     * How much of a panel pixel belongs to the camera's own content rather than to the flat
+     * background the material is replacing.
+     *
+     * Antialiased glyph edges sit *between* the label colour and the background: a hard
+     * threshold marks them fully background, the material then covers them, and the glyphs
+     * grow visible jaggies. The luma distance is therefore mapped through a feathered band -
+     * fully content beyond [CONTENT_LUMA_DELTA], fully background within
+     * [CONTENT_LUMA_DELTA]/2, and a linear mix between the two.
      */
-    private fun isPanelContent(pixel: Int, tone: Float): Boolean {
+    private fun contentSoftness(pixel: Int, tone: Float): Float {
         val r = (pixel shr 16) and 0xFF
         val g = (pixel shr 8) and 0xFF
         val b = pixel and 0xFF
         val luma = 0.213f * r + 0.715f * g + 0.072f * b
-        if (abs(luma - tone) > CONTENT_LUMA_DELTA) return true
-        // A saturated pixel is content even at the background's brightness: coloured icons and
-        // accents sit on these panels.
+        val delta = abs(luma - tone)
+        val soft = if (delta >= CONTENT_LUMA_DELTA) {
+            1f
+        } else if (delta <= CONTENT_LUMA_DELTA * 0.5f) {
+            0f
+        } else {
+            (delta - CONTENT_LUMA_DELTA * 0.5f) / (CONTENT_LUMA_DELTA * 0.5f)
+        }
+        if (soft >= 1f) return 1f
+        // A saturated pixel is content even at the background's brightness: coloured icons
+        // and accents sit on these panels. Chroma keeps its hard edge - icons have no
+        // intermediate pixels to protect, and a feathered chroma test let mid-alpha veil
+        // pixels through.
         val chroma = maxOf(r, g, b) - minOf(r, g, b)
-        return chroma > CONTENT_CHROMA_MAX
+        return if (chroma > CONTENT_CHROMA_MAX) 1f else soft
     }
 
     /**
@@ -586,7 +637,8 @@ object LiquidGlassOptics {
 
     /** Reference dispersion, sampled from a crop-local buffer. */
     private fun sampleSpectrumRegion(
-        region: IntArray, cw: Int, ch: Int, cropLeft: Int, cropTop: Int,
+        region: IntArray, cw: Int, ch: Int, panel: PanelRect, radius: Float,
+        cropLeft: Int, cropTop: Int,
         x: Float, y: Float, dx: Float, dy: Float, nx: Float, ny: Float, params: GlassParams,
     ): FloatArray {
         val disp = params.dispersionIntensity * nx * ny
@@ -595,8 +647,30 @@ object LiquidGlassOptics {
 
         var r = 0f; var g = 0f; var b = 0f
 
+        // The seven taps fan out along the displacement vector. Without a guard the
+        // outer taps cross the silhouette into the crop padding, which still holds the
+        // camera's baked plate in the source photo - the plate is white, so the
+        // outermost taps read as a white fringe: the rainbow edge. Each tap that would
+        // land outside the silhouette is pulled back along the fan toward the base
+        // point (always inside), so no tap ever samples the plate.
         fun tap(ox: Float, oy: Float, block: (Int) -> Unit) {
-            block(sampleRegion(region, cw, ch, cropLeft, cropTop, x + ox, y + oy))
+            val tx = x + ox
+            val ty = y + oy
+            var fx = tx
+            var fy = ty
+            if (sdRoundedRect(tx, ty, panel, radius) > 0f) {
+                var lo = 0f
+                var hi = 1f
+                repeat(6) {
+                    val mid = (lo + hi) * 0.5f
+                    val mx = x + (tx - x) * mid
+                    val my = y + (ty - y) * mid
+                    if (sdRoundedRect(mx, my, panel, radius) <= 0f) lo = mid else hi = mid
+                }
+                fx = x + (tx - x) * lo
+                fy = y + (ty - y) * lo
+            }
+            block(sampleRegion(region, cw, ch, cropLeft, cropTop, fx, fy))
         }
 
         tap(ex, ey) { r += ((it shr 16) and 0xFF) / 3.5f }

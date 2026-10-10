@@ -243,8 +243,13 @@ fun LiquidSlider(
                                 scaleY = (dampedDragAnimation.scaleY.finiteOrZero() * widenFactor).finiteOrZero()
                             },
                             onDrawSurface = {
+                                // The resting bead keeps only a faint frost. An earlier
+                                // revision painted a fully opaque white here (alpha
+                                // 1f - progress is 1 at rest), which read as a solid
+                                // white mask sitting on the glass; the press now thins
+                                // the frost instead of building it.
                                 val progress = dampedDragAnimation.pressProgress
-                                drawRect(Color.White.copy(alpha = 1f - progress))
+                                drawRect(Color.White.copy(alpha = (1f - progress) * 0.26f))
                             }
                         )
                     } else {
@@ -378,7 +383,11 @@ fun LiquidToggle(
                                 scaleY = (animation.scaleY.finiteOrZero() * widenFactor).finiteOrZero()
                                 alpha = if (enabled) 1f else 0.45f
                             },
-                            onDrawSurface = { drawRect(Color.White.copy(alpha = 1f - safeProgress(animation.pressProgress))) },
+                            onDrawSurface = {
+                                // Same resting-frost fix as the slider thumb: a full
+                                // white at rest read as an opaque mask, not a highlight.
+                                drawRect(Color.White.copy(alpha = (1f - safeProgress(animation.pressProgress)) * 0.26f))
+                            },
                         )
                     } else {
                         Modifier

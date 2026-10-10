@@ -422,28 +422,22 @@ object WatermarkHooks {
                 "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} -> $result")
     }
 
-/**
-     * Chooses the one element the glass should be applied to.
+    /**
+     * Chooses the region the glass should be applied to.
      *
-     * The camera's watermark is not always one rectangle. A Leica-style watermark is a small
-     * composition — a logo block, a caption line, a capsule — drawn as several elements, and the
-     * hook records all of them. The old code took `firstOrNull { width >= 32 }`, so which
-     * element got the glass depended on draw order: on Leica the module regularly landed on the
-     * logo box or on a wide piece of scene instead of the watermark plate. Since the element it
-     * picked could differ between two frames of the same shot, the glass appeared to wander —
-     * the "到处乱飘" the user reported.
+     * The camera's watermark is not always one rectangle. On the Leica style the plate is
+     * composed of several drawn rectangles — the capsule body, plus thin strips that extend
+     * above and below it for the outer glow the WebP carries. Taking only the widest one left
+     * the glow strips as raw white plates around the glass capsule, which is the leftover
+     * backing the user still saw in photos.
      *
-     * Ranking is by how much of the frame the element explains, which is stable frame to frame:
-     *
-     *  - width first, because a watermark plate is the widest thing in the group and a logo is
-     *    not;
-     *  - then the topmost, because a watermark composition is anchored to one edge, and a
-     *    top-anchored plate is the common case;
-     *  - then the largest area, purely to break an exact tie deterministically.
+     * So the reported rectangles are merged into their **union bounding box** before ranking.
+     * A watermark group's elements overlap or vertically stack, so the union is the honest
+     * plate; unrelated scene elements would fail [plausible] individually and are filtered
+     * first.
      *
      * Elements that fail [plausible], or that are too narrow to be a plate at all, are dropped
-     * before ranking. Ties therefore resolve to the same element on every frame of a shot,
-     * which is what stops the glass from moving.
+     * before merging.
      */
     private fun pickPanel(candidates: List<PanelRect>, w: Int, h: Int): PanelRect? {
         val eligible = candidates.filter { rect ->
@@ -454,11 +448,32 @@ object WatermarkHooks {
         }
         if (eligible.isEmpty()) return null
         if (eligible.size == 1) return eligible[0]
-        return eligible.maxWithOrNull(
-            compareBy<PanelRect> { it.width }
-                .thenBy { -it.top }
-                .thenBy { it.width * it.height }
+
+        // Union bounding box of every plausible element. The camera's plate fragments all sit
+        // in one composition; merging them removes the fragment gaps the glass used to leave.
+        val left = eligible.minOf { it.left }
+        val top = eligible.minOf { it.top }
+        val right = eligible.maxOf { it.right }
+        val bottom = eligible.maxOf { it.bottom }
+        val merged = PanelRect(
+            left = left,
+            top = top,
+            width = right - left,
+            height = bottom - top,
+            // The capsule's own radius hint is the largest the group reported; the optics
+            // re-measure from the silhouette when this is outside the valid range.
+            cornerRadiusPx = eligible.maxOf { it.cornerRadiusPx },
         )
+
+        // A union that swallows most of the frame is not a watermark; the filter above let
+        // through a piece of scene and the merge amplified it. Decline the whole group.
+        if (merged.width > w * MAX_PANEL_WIDTH_FRACTION ||
+            merged.height > h * MAX_PANEL_HEIGHT_FRACTION
+        ) {
+            log("panel union too large (${f(merged.width)}x${f(merged.height)} in ${w}x$h); declining")
+            return null
+        }
+        return merged
     }
 
     /** A reported rectangle is only trusted when it could plausibly be a watermark panel. */

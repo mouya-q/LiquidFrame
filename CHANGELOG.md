@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.9.0 — Render quality and interaction overhaul
+
+### Watermark rendering
+- **Panel union selection**: the camera draws a watermark group as several
+  rectangles (the capsule plus glow strips above and below). Picking only the
+  widest single rectangle left the strips as raw white plates. Eligible
+  elements are now merged into their union bounding box before ranking, with
+  a size guard that declines the group when the union swallows the frame.
+- **Blur covers the whole glass**: blur used to stop at the refraction band's
+  inner boundary, leaving a sharp ring inside the lens. Blur strength now
+  ramps linearly across the band, so the frosted interior blends continuously
+  into the lens edge.
+- **Dispersion taps clamped to the silhouette**: the seven spectrum taps could
+  fan out past the panel edge into the camera's baked plate, reading as a
+  white fringe (the rainbow edge). Taps that would land outside the silhouette
+  are pulled back along the fan toward the base point.
+- **Soft content mask**: the camera's labels were kept through a hard
+  threshold, so their antialiased edge pixels were covered by the material and
+  glyphs grew jaggies. The mask is now feathered - fully content beyond the
+  luma threshold, fully background within half of it, a linear mix between -
+  and the material composites through the label's own share of each edge pixel.
+
+### Config UI
+- **Sliders finally drag**: the thumb's detector now races the page scroll at
+  the touch-slop stage and claims the gesture only when horizontal motion
+  wins; a vertical flick scrolls the page, a horizontal one drags the thumb,
+  and the claimed stream is fully consumed so it cannot be stolen mid-drag.
+  The accumulated slop distance feeds the first drag delta, so the thumb
+  tracks the finger from the first frame.
+- **White mask removed from controls**: the slider thumb and toggle painted a
+  fully opaque white veil at rest; only a faint press-thinned frost remains.
+- **Press refraction activated on the bottom bar**: tab press progress now
+  drives the capture layer's lens and the selection droplet's fold - the
+  three-layer architecture's refraction channel had been hard-wired to zero.
+- **About page name capsule**: enlarged to a 190×58 hero-scale capsule with a
+  stronger lens, wider rim light and deeper shadow; the wordmark is 21sp with
+  letter spacing.
+
+### App icon
+- Redrew the launcher icon as pure XML: dark field with flowing light, a
+  full-width glass capsule with rim light, specular band, clipped refraction
+  bands and edge dispersion fringes. The stale bitmap icon was removed.
+
+### Build
+- Fixed keystore committed to the repository; debug and release builds share
+  it, so every CI artifact installs over any previous build without an
+  uninstall.
+- versionCode 9, versionName 1.9.0.
+
 ## 1.8.0 — Reference-aligned glass architecture
 
 ### Bottom bar

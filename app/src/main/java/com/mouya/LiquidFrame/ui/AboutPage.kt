@@ -321,8 +321,9 @@ private fun AboutHero(
 
             Spacer(Modifier.height(18.dp))
 
-            // The short glass capsule, rendered with the same material chain as
-            // the watermark panel: blur, lens refraction, rim highlight.
+            // The name capsule: the same material chain as the watermark panel, at hero
+            // scale. Wider than before so the wordmark reads as part of the material
+            // instead of a caption glued on top.
             val pageBackdrop = liquidGlassBackdrop()
             val backdrop = if (pageBackdrop != null) {
                 rememberCombinedBackdrop(pageBackdrop, fieldBackdrop)
@@ -331,33 +332,40 @@ private fun AboutHero(
             }
             Box(
                 modifier = Modifier
-                    .size(width = 120.dp, height = 44.dp)
+                    .size(width = 190.dp, height = 58.dp)
                     .drawBackdrop(
                         backdrop = backdrop,
                         shape = { Capsule() },
                         effects = {
                             vibrancy()
-                            blur(3.dp.toPx())
-                            lens(10.dp.toPx(), 14.dp.toPx(), chromaticAberration = true)
+                            blur(4.dp.toPx())
+                            lens(16.dp.toPx(), 22.dp.toPx(), chromaticAberration = true)
                         },
                         highlight = {
                             Highlight.Default.copy(
-                                alpha = if (dark) 0.36f else 0.52f,
+                                alpha = if (dark) 0.42f else 0.60f,
+                                width = Highlight.Default.width * 1.25f,
                             )
                         },
                         shadow = {
-                            Shadow(radius = 16.dp, color = Color.Black.copy(alpha = 0.18f))
+                            Shadow(
+                                radius = 20.dp,
+                                color = Color.Black.copy(alpha = if (dark) 0.28f else 0.20f),
+                            )
                         },
                         onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = if (dark) 0.06f else 0.10f))
+                            // A whisper of frost keeps the wordmark legible over bright
+                            // gradients without becoming the old opaque white mask.
+                            drawRect(Color.White.copy(alpha = if (dark) 0.05f else 0.09f))
                         },
                     ),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     "LiquidFrame",
-                    fontSize = 17.sp,
+                    fontSize = 21.sp,
                     fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.6.sp,
                     color = if (dark) Color.White else Color(0xFF111113),
                 )
             }

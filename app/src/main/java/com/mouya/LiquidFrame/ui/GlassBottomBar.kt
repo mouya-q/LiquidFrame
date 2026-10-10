@@ -25,6 +25,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -163,6 +164,16 @@ private fun TabItem(
     onClick: () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    // Press refraction: collecting the press interaction drives the capture layer's
+    // from the pressed tab's lens and the droplet's fold. Until now pressProgress was
+    // hard-wired to 0 and the three-layer architecture's refraction channel never
+    // activated.
+    val pressed by interactionSource.collectIsPressedAsState()
+    val pressProgress by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.9f, stiffness = 700f),
+        label = "tab_press_${page.name}",
+    )
     val contentAlpha by animateFloatAsState(
         targetValue = if (selected) 1f else 0.55f,
         animationSpec = spring(dampingRatio = 0.9f, stiffness = 400f),
@@ -177,7 +188,7 @@ private fun TabItem(
             .liquidCaptureLayer(
                 shape = ContinuousRoundedRectangle(TabGeometry.slotHeight / 2),
                 surfaceColor = Color.Transparent,
-                pressProgress = 0f,
+                pressProgress = pressProgress,
             )
             .clickable(
                 interactionSource = interactionSource,
@@ -196,7 +207,7 @@ private fun TabItem(
                     selected = selected,
                     tint = Color.Black.copy(alpha = 0.10f),
                     panelBackdrop = panelBackdrop,
-                    pressProgress = 0f,
+                    pressProgress = pressProgress,
                     tone = tone,
                 ),
             contentAlignment = Alignment.Center,

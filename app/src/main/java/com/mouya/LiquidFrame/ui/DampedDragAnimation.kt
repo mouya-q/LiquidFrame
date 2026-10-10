@@ -13,13 +13,17 @@ package com.mouya.LiquidFrame.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.MutatorMutex
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChangeIgnore
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.CoroutineScope
@@ -64,23 +68,35 @@ class DampedDragAnimation(
     val scaleY: Float get() = scaleYAnimation.value
     val velocity: Float get() = velocityAnimation.value
 
-    /** Horizontal drag detector wired to the animation. Attached by the thumb. */
+    /**
+     * Horizontal drag detector wired to the animation. Attached by the thumb.
+     *
+     * The gesture is claimed only once the pointer's *horizontal* movement passes the
+     * touch slop: a mostly vertical move never claims the stream, so the page's scroll
+     * wins the race and a downward flick scrolls instead of dragging. Once claimed every
+     * change is consumed, so the page cannot steal the drag mid-gesture. The accumulated
+     * slop distance is fed to [onDrag] as the first delta so the thumb tracks the finger
+     * from the moment the drag starts instead of jumping.
+     */
     val modifier: Modifier = Modifier.pointerInput(Unit) {
-        detectDragGestures(
-            onDragStart = { down ->
-                onDragStarted(down)
-                press()
-            },
-            onDragEnd = {
-                onDragStopped()
-                release()
-            },
-            onDragCancel = {
-                onDragStopped()
-                release()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var slopTotal = Offset.Zero
+            val claimed = awaitHorizontalTouchSlopOrCancellation(down.id) { change, over ->
+                change.consume()
+                slopTotal = over
             }
-        ) { _, dragAmount ->
-            onDrag(size, dragAmount)
+            if (claimed == null) return@awaitEachGesture
+            onDragStarted(down.position)
+            press()
+            onDrag(size, Offset(slopTotal.x, 0f))
+            drag(down.id) { change ->
+                val delta = change.positionChangeIgnore()
+                change.consume()
+                onDrag(size, delta)
+            }
+            onDragStopped()
+            release()
         }
     }
 

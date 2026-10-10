@@ -16,20 +16,33 @@ android {
         applicationId "com.mouya.LiquidFrame"
         minSdk 26
         targetSdk 35
-        versionCode 8
-        versionName "1.8.0"
+        versionCode 9
+        versionName "1.9.0"
+    }
+
+    signingConfigs {
+        create("custom") {
+            // A fixed keystore committed to the repository, so every CI build signs
+            // with the same key and updates install over previous versions without
+            // an uninstall. The debug and release builds share it, so any artifact
+            // of any build type can replace any other.
+            storeFile file("keystore/liquidframe-release.p12")
+            storePassword "liquidframe2026"
+            keyAlias "liquidframe"
+            keyPassword "liquidframe2026"
+            storeType "PKCS12"
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // Use the debug signing key for release builds so every CI build is signed
-            // consistently. This fixes "安装失败，与已安装 APK 签名不一致" when updating.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.custom
         }
         debug {
             minifyEnabled false
+            signingConfig signingConfigs.custom
         }
     }
 
