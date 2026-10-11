@@ -366,14 +366,25 @@ class ConfigActivity : ComponentActivity() {
                                     )
                                     IconButton(
                                         onClick = {
-                                            // Restart the camera process so the next capture picks up
-                                            // the current module state. The camera has no exported
-                                            // "reload config" intent, so force-stop is the honest way.
+                                            // Restart the camera so the next capture picks up the
+                                            // current module state. Primary path: an explicit
+                                            // broadcast to the camera's kill switch (registered in
+                                            // LiquidFrameHook); fallback: forceStopPackage via
+                                            // reflection (a @hide API, usually denied to a plain app
+                                            // process, hence only a best-effort second path).
                                             val pm = context.packageManager
+                                            val restart = Intent("com.mouya.LiquidFrame.ACTION_RESTART_CAMERA")
+                                                .setPackage("com.android.camera")
+                                            try {
+                                                context.sendBroadcast(restart)
+                                            } catch (_: Exception) {
+                                            }
                                             for (pkg in arrayOf("com.android.camera", "com.miui.camera")) {
                                                 try {
                                                     pm.getApplicationInfo(pkg, 0)
-                                                    pm.forceStopPackage(pkg)
+                                                    pm.javaClass
+                                                        .getMethod("forceStopPackage", String::class.java)
+                                                        .invoke(pm, pkg)
                                                 } catch (_: Exception) {
                                                 }
                                             }
