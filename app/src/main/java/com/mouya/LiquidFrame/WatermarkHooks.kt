@@ -251,6 +251,10 @@ object WatermarkHooks {
             override fun afterHookedMethod(p: MethodHookParam) {
                 val out = p.result as? Bitmap ?: return
                 val frame = framesByBitmap.remove(out)
+                // Refresh before the fast disabled path. Otherwise a camera process that
+                // starts disabled can never observe the UI enabling the module: params()
+                // refreshes later, but this early return would prevent reaching it.
+                GlassConfig.refresh()
                 if (!GlassConfig.masterEnabled) return
                 if (out.isRecycled) return
                 if (!out.isMutable) {
@@ -401,7 +405,15 @@ object WatermarkHooks {
         // Read only the crop the material touches. The panel is a few percent of the frame, so
         // this is the difference between a ~48 MB buffer and a few hundred KB. It also keeps
         // the full-resolution pass off the critical path of a capture.
-        val padPx = maxOf(24f, PANEL_CROP_PAD_FRACTION * minOf(resolved.width, resolved.height))
+        // Match the outer bitmap crop to the configured maximum lens displacement and blur.
+        // A fixed fraction of the panel height clips the backdrop at high refraction settings,
+        // causing the glass to lose its full-area blur and smear against a hard crop boundary.
+        val cropParams = GlassConfig.params()
+        val padPx = maxOf(
+            24f,
+            PANEL_CROP_PAD_FRACTION * minOf(resolved.width, resolved.height),
+            LiquidGlassOptics.requiredPanelPaddingPx(resolved, cropParams).toFloat(),
+        )
         val left = (resolved.left - padPx).toInt().coerceIn(0, w - 1)
         val top = (resolved.top - padPx).toInt().coerceIn(0, h - 1)
         val right = (resolved.right + padPx).toInt().coerceIn(left + 1, w)

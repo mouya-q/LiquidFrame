@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.9.1 — Interaction, dock and material polish
+
+### Dock and controls
+- Replaced the full-width white-tinted bar with a floating capsule, a correctly aligned moving glass indicator and a single base material layer.
+- Added real backdrop color variation so the dock lens has something to refract; reduced resting white veils on the dock, slider knob and toggle knob.
+- Fixed slider state observation, added tap-to-seek and horizontal drag across the 36dp track hit area, and kept vertical page scrolling unclaimed.
+- Made the liquid switch respond to direct taps and reconcile its animated fraction with the externally controlled state.
+- Added a guarded non-AGSL fallback for pre-Android 13 devices.
+
+### Watermark material
+- Localized the text-preservation mask to the watermark crop instead of allocating a full-photo float buffer.
+- Sized sampling padding from refraction displacement and blur radius; clamped invalid material values.
+- Kept the blur continuous through the glass interior and feathered label edges to reduce visible aliasing.
+- Refreshed camera-side config before the disabled early-return and fixed config-sync status reporting.
+
+### Identity
+- Replaced the old launcher PNG with a transparent XML glass-tile mark, with adaptive icon and Android 13 monochrome variants. Removed the stale Gallery PNG icon.
+- Version: `1.9.1`, `versionCode 10`.
+
+Validation note: pure Kotlin renderer smoke-tested; Android Gradle build remains unverified in the offline environment because `services.gradle.org` could not be resolved.
+
+---
+
 ## 1.9.0 — Render quality and interaction overhaul
 
 ### Watermark rendering

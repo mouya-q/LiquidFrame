@@ -68,17 +68,16 @@ object GlassConfig {
         val h = bitmap.height
         if (w <= 0 || h <= 0) return false
         val step = maxOf(1, w / 64)
-        val pixels = IntArray(w * h)
+        // This diagnostic helper is not on the render path; still avoid allocating a
+        // full IntArray for a 48 MP camera bitmap just to inspect roughly 4K samples.
         return try {
-            bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
             var total = 0.0
             var count = 0
             var y = 0
             while (y < h) {
-                val row = y * w
                 var x = 0
                 while (x < w) {
-                    val p = pixels[row + x]
+                    val p = bitmap.getPixel(x, y)
                     total += 0.213 * ((p shr 16) and 0xFF) +
                             0.715 * ((p shr 8) and 0xFF) +
                             0.072 * (p and 0xFF)

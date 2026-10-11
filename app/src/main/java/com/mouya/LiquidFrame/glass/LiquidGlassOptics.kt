@@ -1,4 +1,4 @@
-﻿package com.mouya.LiquidFrame.glass
+package com.mouya.LiquidFrame.glass
 
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -73,6 +73,27 @@ object LiquidGlassOptics {
     private const val CROP_PAD_FACTOR = 2.2f
 
     /**
+     * Minimum pixels required around a panel for its strongest configured refraction and blur.
+     * Both the renderer's inner crop and the camera hook's outer bitmap crop use this helper;
+     * otherwise the outer crop can truncate the very pixels the lens later asks for.
+     */
+    fun requiredPanelPaddingPx(panel: PanelRect, params: GlassParams = GlassParams.Default): Int {
+        val shortSide = minOf(panel.width, panel.height)
+        val maxBand = maxOf(1f, shortSide * 0.55f)
+        val minBand = minOf(MIN_BAND_PX.toFloat(), maxBand)
+        val heightFraction = params.refractionHeightFraction
+            .takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: 0.18f
+        val amountFraction = params.refractionAmountFraction
+            .takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 3f
+        val blurFraction = params.blurFraction
+            .takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: 0.25f
+        val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
+        val displacement = band * amountFraction
+        val blurRadius = band * blurFraction
+        return maxOf(band * CROP_PAD_FACTOR, displacement + band, blurRadius * 3f).toInt() + 2
+    }
+
+    /**
      * Replaces a flat watermark panel with liquid glass, directly in a finished bitmap.
      *
      * This is the path the camera uses. The panel the camera draws is an opaque rectangle of
@@ -114,9 +135,14 @@ object LiquidGlassOptics {
         } else {
             measureCornerRadius(pixels, width, height, panel)
         }
-        val band = (params.refractionHeightFraction * shortSide)
-            .coerceIn(MIN_BAND_PX, shortSide * 0.55f)
-        val amount = band * params.refractionAmountFraction
+        val maxBand = maxOf(1f, shortSide * 0.55f)
+        val minBand = minOf(MIN_BAND_PX.toFloat(), maxBand)
+        val heightFraction = params.refractionHeightFraction.takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: 0.18f
+        val amountFraction = params.refractionAmountFraction.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 3f
+        val blurFraction = params.blurFraction.takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: 0.25f
+        val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
+        val amount = band * amountFraction
+        val blurRadius = blurFraction * band
 
         // The camera may bake either a flat colour or a blurred copy of the photo into the
         // panel. A flat panel is one the labels were drawn onto, so they can be recognised and
@@ -126,32 +152,10 @@ object LiquidGlassOptics {
         val preserveContent =
             panelIsOpaquePlate && params.preserveContent && tone.uniformity >= FLAT_PANEL_UNIFORMITY
 
-        // The camera's own labels are found once, from the pixels the camera produced, and then
-        // left completely alone while the material is drawn around them. Without an explicit
-        // mask the replacement would either erase the labels or keep the whole panel.
-        val content = if (preserveContent) FloatArray(width * height) else null
-        var preserved = 0
-        if (content != null) {
-            val left = panel.left.toInt().coerceAtLeast(0)
-            val top = panel.top.toInt().coerceAtLeast(0)
-            val right = panel.right.toInt().coerceAtMost(width)
-            val bottom = panel.bottom.toInt().coerceAtMost(height)
-            for (gy in top until bottom) {
-                val row = gy * width
-                for (gx in left until right) {
-                    if (sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius) > 0.5f) continue
-                    val soft = contentSoftness(pixels[row + gx], tone.tone)
-                    if (soft > 0f) {
-                        content[row + gx] = soft
-                        if (soft >= 0.5f) preserved++
-                    }
-                }
-            }
-        }
-
-        // The lens samples from a padded crop so displacement near the silhouette still lands
-        // on real pixels instead of clamping to the panel edge.
-        val pad = (band * CROP_PAD_FACTOR).toInt() + 2
+        // The lens samples a crop large enough for both the refraction displacement and blur
+        // kernel. Previously the crop only followed band * 2.2, while the public amount slider
+        // permits up to 4x that band; samples therefore clamped at the crop edge at high values.
+        val pad = requiredPanelPaddingPx(panel, params)
         val cropLeft = (panel.left.toInt() - pad).coerceAtLeast(0)
         val cropTop = (panel.top.toInt() - pad).coerceAtLeast(0)
         val cropRight = (panel.right.toInt() + pad).coerceAtMost(width)
@@ -159,6 +163,31 @@ object LiquidGlassOptics {
         val cw = cropRight - cropLeft
         val ch = cropBottom - cropTop
         if (cw <= 0 || ch <= 0) return "skip: empty crop"
+
+        // Keep the label/antialias mask crop-local. A full-resolution FloatArray costs
+        // 4 bytes per photo pixel (48 MB at 12 MP) even though only the watermark crop is
+        // processed. Local indices stay aligned with the backdrop buffer below.
+        val content = if (preserveContent) FloatArray(cw * ch) else null
+        var preserved = 0
+        if (content != null) {
+            val left = maxOf(panel.left.toInt(), cropLeft, 0)
+            val top = maxOf(panel.top.toInt(), cropTop, 0)
+            val right = minOf(panel.right.toInt(), cropRight, width)
+            val bottom = minOf(panel.bottom.toInt(), cropBottom, height)
+            for (gy in top until bottom) {
+                val localRow = (gy - cropTop) * cw
+                val sourceRow = gy * width
+                for (gx in left until right) {
+                    if (sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius) > 0.5f) continue
+                    val soft = contentSoftness(pixels[sourceRow + gx], tone.tone)
+                    if (soft > 0f) {
+                        content[localRow + gx - cropLeft] = soft
+                        if (soft >= 0.5f) preserved++
+                    }
+                }
+            }
+        }
+
         val backdrop = IntArray(cw * ch)
         for (y in 0 until ch) {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
@@ -178,36 +207,26 @@ object LiquidGlassOptics {
         )
 
 
-        // NOTE ON BLUR. The camera's own watermark background is already a blurred layer — the
-        // assets are literally named `icon_background_light_blur` / `_dark_blur`, and the
-        // element tree blurs the photo into that panel before any label is drawn. Blurring
-        // again here would destroy exactly the low-contrast local detail the lens is supposed
-        // to bend, which is why the default blur is small and why it is applied only where the
-        // lens does not reach. Kept as a parameter because on a photo without that pre-baked
-        // layer a little blur is what sells the glass.
-        val blurRadius = params.blurFraction * band
+        // The source watermark asset may already contain blur, so the configured radius is
+        // intentionally conservative. Apply it consistently across the glass interior rather
+        // than only outside the refraction band; an abrupt blurred/sharp ring is more visible
+        // than a slightly stronger, uniform frost.
         if (blurRadius >= 0.5f) {
-            // Blur covers the whole panel *including the refraction band*. An earlier
-            // revision stopped the blur at the band's inner boundary, leaving a sharp
-            // ring where the lens magnifies - the blur/no-blur seam was visible as the
-            // glass looking "not covering the whole backdrop". The blur strength now
-            // ramps down linearly across the band instead of switching off at a step,
-            // so the frosted interior blends continuously into the lens edge.
+            // Blur the complete glass interior. Only the first ~1–3 px at the silhouette
+            // are feathered for antialiasing; the previous band-based mix made blur fall to
+            // zero at the inner refraction boundary and then jump back to full, leaving a
+            // visible sharp ring across the panel.
             val interior = backdrop.copyOf()
             val blurred = blurInPlace(interior, cw, ch, blurRadius)
+            val edgeFade = maxOf(1f, minOf(3f, band * 0.12f))
             for (y in 0 until ch) {
                 for (x in 0 until cw) {
                     val gx = cropLeft + x
                     val gy = cropTop + y
                     val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
                     if (sd < 0f) {
-                        val full = -sd >= band
-                        val mix = if (full) {
-                            1f
-                        } else {
-                            // 0 at the silhouette, 1 at the band's inner boundary.
-                            1f - (-sd / band)
-                        }
+                        val t = (-sd / edgeFade).coerceIn(0f, 1f)
+                        val mix = t * t * (3f - 2f * t)
                         val orig = backdrop[y * cw + x]
                         val blurredPx = blurred[y * cw + x]
                         backdrop[y * cw + x] = blend(orig, blurredPx, mix)
@@ -261,8 +280,7 @@ object LiquidGlassOptics {
                 // shows through by exactly the amount the pixel is not label: a hard mask
                 // here ate the soft edge and the glyphs grew visible jaggies against the
                 // frosted interior.
-                val index = gy * width + gx
-                val keep = content?.get(index) ?: 0f
+                val keep = content?.get(i) ?: 0f
                 if (keep >= 0.999f) continue
 
                 val nx = (px - (panel.left + panel.width * 0.5f)) / (panel.width * 0.5f)
@@ -382,22 +400,27 @@ object LiquidGlassOptics {
         // still exactly where the camera put them.
         if (panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY) {
             var cleared = 0
-            for (y in 0 until ch) {
-                val gy = cropTop + y
-                if (gy < 0 || gy >= height) continue
+            // Only clear the corners inside the camera's original rectangular plate.
+            // Iterating the entire padded crop used to visit tens of thousands of pixels
+            // outside the watermark that were already identical, wasting time on every shot.
+            val clearLeft = maxOf(panel.left.toInt(), cropLeft, 0)
+            val clearTop = maxOf(panel.top.toInt(), cropTop, 0)
+            val clearRight = minOf(panel.right.toInt(), cropRight, width)
+            val clearBottom = minOf(panel.bottom.toInt(), cropBottom, height)
+            for (gy in clearTop until clearBottom) {
+                val y = gy - cropTop
                 val row = gy * width
-                for (x in 0 until cw) {
-                    val gx = cropLeft + x
-                    if (gx < 0 || gx >= width) continue
+                val localRow = y * cw
+                for (gx in clearLeft until clearRight) {
                     val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
                     if (sd <= 0.5f) continue  // inside the capsule: already glass
                     val index = row + gx
                     // Never touch the camera's own labels, wherever they are. A soft
                     // mask value means an antialiased edge: clear the plate out from
                     // under it proportionally, keeping the label's own share.
-                    val keep = content?.get(index) ?: 0f
+                    val keep = content?.get(localRow + gx - cropLeft) ?: 0f
                     if (keep >= 0.999f) continue
-                    val scene = backdrop[y * cw + x]
+                    val scene = backdrop[localRow + gx - cropLeft]
                     pixels[index] = if (keep > 0.001f) blend(scene, pixels[index], keep) else scene
                     cleared++
                 }
@@ -421,10 +444,11 @@ object LiquidGlassOptics {
      * whatever stands away from it.
      */
     private fun measurePanelTone(pixels: IntArray, width: Int, panel: PanelRect): PanelTone {
+        val imageHeight = pixels.size / width
         val left = panel.left.toInt().coerceAtLeast(0)
         val top = panel.top.toInt().coerceAtLeast(0)
         val right = panel.right.toInt().coerceAtMost(width) - 1
-        val bottom = panel.bottom.toInt() - 1
+        val bottom = panel.bottom.toInt().coerceAtMost(imageHeight) - 1
         if (right <= left || bottom <= top) return PanelTone(128f, 0f)
 
         val bins = IntArray(64)
@@ -492,7 +516,10 @@ object LiquidGlassOptics {
         } else if (delta <= CONTENT_LUMA_DELTA * 0.5f) {
             0f
         } else {
-            (delta - CONTENT_LUMA_DELTA * 0.5f) / (CONTENT_LUMA_DELTA * 0.5f)
+            val t = ((delta - CONTENT_LUMA_DELTA * 0.5f) / (CONTENT_LUMA_DELTA * 0.5f)).coerceIn(0f, 1f)
+            // Smoothstep keeps the grayscale antialias fringe gradual instead of making
+            // the recovered watermark contour look like a hard threshold.
+            t * t * (3f - 2f * t)
         }
         if (soft >= 1f) return 1f
         // A saturated pixel is content even at the background's brightness: coloured icons
@@ -773,9 +800,13 @@ object LiquidGlassOptics {
 
         val shortSide = minOf(width, height).toFloat()
         val radius = panel.cornerRadiusPx.coerceIn(0f, shortSide * 0.5f)
-        val band = (params.refractionHeightFraction * shortSide)
-            .coerceIn(MIN_BAND_PX, shortSide * 0.5f)
-        val amount = band * params.refractionAmountFraction
+        val maxBand = maxOf(1f, shortSide * 0.5f)
+        val minBand = minOf(MIN_BAND_PX.toFloat(), maxBand)
+        val heightFraction = params.refractionHeightFraction.takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: 0.18f
+        val amountFraction = params.refractionAmountFraction.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 3f
+        val blurFraction = params.blurFraction.takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: 0.25f
+        val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
+        val amount = band * amountFraction
 
         // ---- pass 1: classify glass body vs glyph ------------------------------------------
         val mask = ByteArray(width * height)
@@ -826,11 +857,11 @@ object LiquidGlassOptics {
             srcPanelH = height.toFloat()
         }
 
-        val blurRadius = params.blurFraction * band
+        val blurRadius = blurFraction * band
         val blurred = if (blurRadius >= 0.5f) boxBlur(source, srcW, srcH, blurRadius) else source
 
         // ---- pass 2: refraction ------------------------------------------------------------
-        val pad = (band * CROP_PAD_FACTOR).toInt() + 2
+        val pad = requiredPanelPaddingPx(panel, params)
         val cropLeft = (-pad).coerceAtLeast(0)
         val cropTop = (-pad).coerceAtLeast(0)
         val cropRight = (width + pad).coerceAtMost(width)

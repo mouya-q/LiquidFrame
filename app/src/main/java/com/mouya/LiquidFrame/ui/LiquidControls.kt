@@ -10,7 +10,10 @@ package com.mouya.LiquidFrame.ui
  */
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +48,11 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -67,6 +75,7 @@ import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
 
@@ -89,18 +98,30 @@ fun LiquidSlider(
 
     val backdrop = liquidGlassBackdrop()
     val trackBackdrop = rememberLayerBackdrop()
+    val latestValue = rememberUpdatedState(value)
+    val latestOnValueChange = rememberUpdatedState(onValueChange)
+    val latestOnValueChangeFinished = rememberUpdatedState(onValueChangeFinished)
 
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
-            .graphicsLayer { alpha = if (enabled) 1f else 0.45f },
+            .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
+            .semantics(mergeDescendants = true) {
+                progressBarRangeInfo = ProgressBarRangeInfo(value.coerceIn(valueRange), valueRange)
+                if (enabled) {
+                    setProgress { requested ->
+                        latestOnValueChange.value(requested.coerceIn(valueRange))
+                        latestOnValueChangeFinished.value?.invoke()
+                        true
+                    }
+                }
+            },
         contentAlignment = Alignment.CenterStart
     ) {
-        val trackWidth = constraints.maxWidth
+        val trackWidth = constraints.maxWidth.coerceAtLeast(1)
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
         var didDrag by remember { mutableStateOf(false) }
-
         val dampedDragAnimation = remember(animationScope) {
             DampedDragAnimation(
                 animationScope = animationScope,
@@ -112,9 +133,9 @@ fun LiquidSlider(
                 onDragStarted = {},
                 onDragStopped = {
                     if (didDrag) {
-                        onValueChange(targetValue)
+                        latestOnValueChange.value(targetValue.coerceIn(valueRange))
                     }
-                    onValueChangeFinished?.invoke()
+                    latestOnValueChangeFinished.value?.invoke()
                     didDrag = false
                 },
                 onDrag = { _, dragAmount ->
@@ -122,7 +143,7 @@ fun LiquidSlider(
                         didDrag = dragAmount.x != 0f
                     }
                     val delta = (valueRange.endInclusive - valueRange.start) * (dragAmount.x / trackWidth)
-                    onValueChange(
+                    latestOnValueChange.value(
                         if (isLtr) (targetValue + delta).coerceIn(valueRange)
                         else (targetValue - delta).coerceIn(valueRange)
                     )
@@ -131,56 +152,99 @@ fun LiquidSlider(
         }
 
         LaunchedEffect(dampedDragAnimation) {
-            snapshotFlow { value }
+            // Upstream AndroidLiquidGlass uses value: () -> Float here. The previous
+            // Float capture only observed the first composition, so the thumb could
+            // keep animating toward stale state and appear impossible to drag.
+            snapshotFlow { latestValue.value }
                 .collectLatest { v ->
                     if (dampedDragAnimation.targetValue != v) {
-                        dampedDragAnimation.updateValue(v)
+                        dampedDragAnimation.updateValue(v.coerceIn(valueRange))
                     }
                 }
         }
 
-        // Track background + filled portion. The track also handles taps: a tap jumps
-        // straight to the tapped position through the damped spring.
-        Box(Modifier.layerBackdrop(trackBackdrop)) {
-            Box(
-                Modifier
-                    .clip(Capsule())
-                    .background(trackColor)
-                    .then(
-                        if (enabled) {
-                            Modifier.pointerInput(animationScope) {
-                                detectTapGestures { position ->
-                                    val delta =
-                                        (valueRange.endInclusive - valueRange.start) * (position.x / trackWidth)
-                                    val targetValue =
-                                        (if (isLtr) valueRange.start + delta
-                                        else valueRange.endInclusive - delta)
+        // The visible track is 6dp, but its hit target is 36dp. Tapping near the
+        // track works on real phones; vertical gestures remain available to the page.
+        Box(
+            Modifier
+                .layerBackdrop(trackBackdrop)
+                .fillMaxWidth()
+                .height(36.dp)
+                .then(
+                    if (enabled) Modifier.pointerInput(valueRange, trackWidth, isLtr) {
+                        // One gesture recognizer handles both taps and horizontal drags.
+                        // The old implementation only listened for taps on the 6dp track;
+                        // that was too narrow and never moved the value during a drag.
+                        // A vertical gesture is intentionally left unconsumed so the parent
+                        // LazyColumn can scroll normally.
+                        val touchSlop = viewConfiguration.touchSlop
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            var dragging = false
+                            var rejectedVertical = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    if (!dragging && !rejectedVertical) {
+                                        val fraction = (change.position.x / size.width.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+                                        val valueFraction = if (isLtr) fraction else 1f - fraction
+                                        val target = (valueRange.start + (valueRange.endInclusive - valueRange.start) * valueFraction)
                                             .coerceIn(valueRange)
-                                    dampedDragAnimation.animateToValue(targetValue)
-                                    onValueChange(targetValue)
-                                    onValueChangeFinished?.invoke()
+                                        dampedDragAnimation.animateToValue(target)
+                                        latestOnValueChange.value(target)
+                                        latestOnValueChangeFinished.value?.invoke()
+                                    }
+                                    break
+                                }
+
+                                val dx = change.position.x - down.position.x
+                                val dy = change.position.y - down.position.y
+                                if (!dragging) {
+                                    if (kotlin.math.abs(dx) > touchSlop && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.15f) {
+                                        dragging = true
+                                        change.consume()
+                                    } else if (kotlin.math.abs(dy) > touchSlop) {
+                                        rejectedVertical = true
+                                        break
+                                    }
+                                } else {
+                                    change.consume()
+                                }
+
+                                if (dragging) {
+                                    val fraction = (change.position.x / size.width.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+                                    val valueFraction = if (isLtr) fraction else 1f - fraction
+                                    val target = (valueRange.start + (valueRange.endInclusive - valueRange.start) * valueFraction)
+                                        .coerceIn(valueRange)
+                                    dampedDragAnimation.updateValue(target)
+                                    latestOnValueChange.value(target)
                                 }
                             }
-                        } else {
-                            Modifier
+                            if (dragging) latestOnValueChangeFinished.value?.invoke()
                         }
-                    )
-                    .height(6f.dp)
-                    .fillMaxWidth()
-            )
-
+                    } else Modifier,
+                ),
+            contentAlignment = Alignment.CenterStart,
+        ) {
             Box(
                 Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(Capsule())
+                    .background(trackColor),
+            )
+            Box(
+                Modifier
+                    .height(6.dp)
                     .clip(Capsule())
                     .background(accentColor)
-                    .height(6f.dp)
                     .layout { measurable, constraints ->
                         val placeable = measurable.measure(constraints)
-                        val width = (constraints.maxWidth * dampedDragAnimation.progress).fastRoundToInt()
-                        layout(width, placeable.height) {
-                            placeable.place(0, 0)
-                        }
-                    }
+                        val progress = dampedDragAnimation.progress.coerceIn(0f, 1f)
+                        val width = (constraints.maxWidth * progress).fastRoundToInt().coerceIn(0, constraints.maxWidth)
+                        layout(width, placeable.height) { placeable.place(0, 0) }
+                    },
             )
         }
 
@@ -189,9 +253,9 @@ fun LiquidSlider(
         Box(
             Modifier
                 .graphicsLayer {
-                    translationX =
-                        (-size.width / 2f + trackWidth * dampedDragAnimation.progress)
-                            .fastCoerceIn(-size.width / 4f, trackWidth - size.width * 3f / 4f) * if (isLtr) 1f else -1f
+                    val p = if (isLtr) dampedDragAnimation.progress else 1f - dampedDragAnimation.progress
+                    translationX = (-size.width / 2f + trackWidth * p)
+                        .fastCoerceIn(-size.width / 4f, trackWidth - size.width * 3f / 4f)
                 }
                 .then(if (enabled) dampedDragAnimation.modifier else Modifier)
                 .then(
@@ -249,12 +313,15 @@ fun LiquidSlider(
                                 // white mask sitting on the glass; the press now thins
                                 // the frost instead of building it.
                                 val progress = dampedDragAnimation.pressProgress
-                                drawRect(Color.White.copy(alpha = (1f - progress) * 0.26f))
+                                drawRect(Color.White.copy(alpha = (1f - progress) * if (isLightTheme) 0.09f else 0.055f))
                             }
                         )
                     } else {
                         Modifier
-                            .background(Color.White, LiquidShapes.capsule)
+                            .background(
+                                if (isLightTheme) Color(0xFFF7FAFF) else Color(0xFF3A3A41),
+                                LiquidShapes.capsule,
+                            )
                             .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
                     },
                 )
@@ -285,7 +352,8 @@ fun LiquidToggle(
     val scope = rememberCoroutineScope()
     var didDrag by remember { mutableStateOf(false) }
     var fraction by remember { mutableFloatStateOf(if (checked) 1f else 0f) }
-    val currentChecked by rememberUpdatedState(checked)
+    val currentChecked = rememberUpdatedState(checked)
+    val latestOnToggle = rememberUpdatedState(onToggle)
     val animation = remember(scope) {
         DampedDragAnimation(
             animationScope = scope,
@@ -297,14 +365,16 @@ fun LiquidToggle(
             onDragStarted = {},
             onDragStopped = {
                 if (!enabled) return@DampedDragAnimation
-                if (didDrag) {
-                    fraction = if (targetValue >= 0.5f) 1f else 0f
-                    didDrag = false
-                } else {
-                    fraction = if (currentChecked) 0f else 1f
+                val wasChecked = currentChecked.value
+                val desired = if (didDrag) targetValue >= 0.5f else !wasChecked
+                fraction = if (desired) 1f else 0f
+                didDrag = false
+                // The callback contract is a toggle, so call it only when the final
+                // drag target differs from the external state.
+                if (desired != wasChecked) {
+                    latestOnToggle.value()
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 }
-                onToggle()
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
             },
             onDrag = { _, dragAmount ->
                 if (!enabled) return@DampedDragAnimation
@@ -330,26 +400,44 @@ fun LiquidToggle(
 
     val trackBackdrop = rememberLayerBackdrop()
     val pageBackdrop = liquidGlassBackdrop()
+    val switchInteraction = remember { MutableInteractionSource() }
     Box(
         modifier = modifier
             .width(64.dp)
             .height(28.dp)
-            .then(if (enabled) animation.modifier else Modifier),
+            .then(
+                if (enabled) {
+                    Modifier
+                        .clickable(
+                            interactionSource = switchInteraction,
+                            indication = null,
+                            role = Role.Switch,
+                        ) {
+                            val target = if (currentChecked.value) 0f else 1f
+                            fraction = target
+                            animation.animateToValue(target)
+                            latestOnToggle.value()
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                        .then(animation.modifier)
+                } else Modifier,
+            ),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(
             Modifier
                 .layerBackdrop(trackBackdrop)
                 .clip(Capsule())
-                .drawBehind { drawRect(lerp(track, accent, animation.value)) }
+                .drawBehind { drawRect(lerp(track, accent, safeProgress(animation.value))) }
                 .size(width = 64.dp, height = 28.dp),
         )
         Box(
             Modifier
                 .graphicsLayer {
                     val padding = 2.dp.toPx()
-                    translationX = if (isLtr) lerp(padding, padding + travelPx, animation.value)
-                    else lerp(-padding, -(padding + travelPx), animation.value)
+                    val progress = safeProgress(animation.value)
+                    translationX = if (isLtr) lerp(padding, padding + travelPx, progress)
+                    else lerp(-padding, -(padding + travelPx), progress)
                 }
                 .then(
                     if (pageBackdrop != null) {
@@ -386,12 +474,15 @@ fun LiquidToggle(
                             onDrawSurface = {
                                 // Same resting-frost fix as the slider thumb: a full
                                 // white at rest read as an opaque mask, not a highlight.
-                                drawRect(Color.White.copy(alpha = (1f - safeProgress(animation.pressProgress)) * 0.26f))
+                                drawRect(Color.White.copy(alpha = (1f - safeProgress(animation.pressProgress)) * if (dark) 0.055f else 0.09f))
                             },
                         )
                     } else {
                         Modifier
-                            .background(Color.White, LiquidShapes.capsule)
+                            .background(
+                                if (dark) Color(0xFF3A3A41) else Color(0xFFF7FAFF),
+                                LiquidShapes.capsule,
+                            )
                             .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
                     },
                 )

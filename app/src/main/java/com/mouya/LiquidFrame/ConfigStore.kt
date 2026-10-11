@@ -145,16 +145,23 @@ object ConfigStore {
 
         lastWriteStatus = when {
             primaryMode == WRITE_OK && legacyMode == WRITE_OK ->
-                "已写入 ${FILE_NAME} · ${sizeOf(text)} B"
+                "已保存并同步到相机 · ${sizeOf(text)} B"
             primaryMode == WRITE_OK && legacyMode == WRITE_ROOT ->
-                "已写入 ${FILE_NAME} (su) · ${sizeOf(text)} B"
+                "已保存并同步到相机 (su) · ${sizeOf(text)} B"
+            primaryMode == WRITE_ROOT && legacyMode == WRITE_OK ->
+                "相机配置已同步；应用缓存写入需要检查"
+            primaryMode == WRITE_ROOT && legacyMode == WRITE_ROOT ->
+                "配置已通过 su 同步 · ${sizeOf(text)} B"
             primaryMode == WRITE_OK ->
-                "已写入 ${FILE_NAME} · ${sizeOf(text)} B"
-            primaryMode == WRITE_ROOT ->
-                "已写入 ${FILE_NAME} (su) · ${sizeOf(text)} B"
-            else -> "写入失败：${FILE_NAME} 无写权限"
+                "本地已保存，但相机同步失败；检查 Root 授权与共享文件权限"
+            legacyMode == WRITE_OK || legacyMode == WRITE_ROOT ->
+                "相机配置已同步，但应用缓存写入失败"
+            else -> "写入失败：本地与相机配置均未确认"
         }
-        if (primaryMode == WRITE_OK || primaryMode == WRITE_ROOT) {
+        // `lastWriteMs` is the shared camera-config success timestamp, not merely
+        // proof that the app-private copy exists. The camera cannot read that copy
+        // across its process boundary on a normal non-root app sandbox.
+        if (legacyMode == WRITE_OK || legacyMode == WRITE_ROOT) {
             lastWriteMs = System.currentTimeMillis()
         }
         LogHelper.log(TAG, "save -> $lastWriteStatus")

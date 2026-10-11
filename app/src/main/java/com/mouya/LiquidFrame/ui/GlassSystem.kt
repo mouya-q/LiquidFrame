@@ -1,5 +1,7 @@
 package com.mouya.LiquidFrame.ui
 
+import android.os.Build
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -10,7 +12,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.Shape
@@ -24,7 +28,6 @@ import androidx.compose.ui.util.fastCoerceAtMost
 import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -62,9 +65,57 @@ fun LiquidBackdropProvider(
     // rememberBackdrop(backdrop, onDraw) *wraps an existing* Backdrop, so calling it with no
     // arguments does not compile.
     val backdrop = rememberLayerBackdrop()
+    val dark = isSystemInDarkTheme()
     Box(modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
-            Box(Modifier.fillMaxSize().background(bgPrimary()))
+        // Record a restrained, spatially varied background as the actual backdrop source.
+        // A flat solid-color layer technically supports lens shaders but has nothing to refract,
+        // which made the dock look like a frosted white sticker. These static ambient fields give
+        // the glass real color transitions without adding per-frame animation cost.
+        Canvas(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
+            val base = if (dark) Color(0xFF0B1018) else Color(0xFFF4F7FC)
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = if (dark) listOf(Color(0xFF101722), base, Color(0xFF11101B))
+                    else listOf(Color(0xFFF8FAFE), base, Color(0xFFEEF4FD)),
+                    startY = 0f,
+                    endY = size.height.coerceAtLeast(1f),
+                ),
+            )
+            val blueCenter = Offset(size.width * 0.18f, size.height * 0.28f)
+            val violetCenter = Offset(size.width * 0.86f, size.height * 0.70f)
+            val warmCenter = Offset(size.width * 0.76f, size.height * 0.14f)
+            val radius = size.maxDimension * 0.62f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = if (dark) listOf(Color(0xFF245DAA).copy(alpha = 0.22f), Color.Transparent)
+                    else listOf(Color(0xFF9BCBFF).copy(alpha = 0.30f), Color.Transparent),
+                    center = blueCenter,
+                    radius = radius,
+                ),
+                radius = radius,
+                center = blueCenter,
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = if (dark) listOf(Color(0xFF5C3B89).copy(alpha = 0.16f), Color.Transparent)
+                    else listOf(Color(0xFFC9B9FF).copy(alpha = 0.20f), Color.Transparent),
+                    center = violetCenter,
+                    radius = radius * 0.85f,
+                ),
+                radius = radius * 0.85f,
+                center = violetCenter,
+            )
+            if (!dark) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFFFFD8C4).copy(alpha = 0.12f), Color.Transparent),
+                        center = warmCenter,
+                        radius = radius * 0.55f,
+                    ),
+                    radius = radius * 0.55f,
+                    center = warmCenter,
+                )
+            }
         }
         CompositionLocalProvider(LocalLiquidBackdrop provides backdrop) {
             content()
@@ -82,6 +133,10 @@ fun LiquidBackdropProvider(
  */
 @Composable
 fun liquidGlassAvailable(): Boolean {
+    // Kyant's AGSL backdrop effects depend on RuntimeShader (API 33+). A hardware-
+    // accelerated view alone is not enough on Android 8–12; fail closed to the
+    // stable, readable Compose fallback instead of invoking unsupported shaders.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
     if (!LocalView.current.isHardwareAccelerated) return false
     return LocalLiquidBackdrop.current != null
 }
@@ -258,247 +313,6 @@ fun Modifier.liquidBackdropBlur(
         innerShadow = null,
         onDrawSurface = {
             if (surfaceColor != Color.Transparent) drawRect(surfaceColor)
-        },
-    )
-}
-
-// =====================================================================================
-// Bottom bar material stack (three independent layers)
-// =====================================================================================
-
-/**
- * Shared coat endpoints for the bottom chrome, driven by the tone scalar
- * `d` (0 = light, 1 = dark). Every depth-dependent value must be derived from
- * this one scalar; any layer reading the system theme directly will disagree
- * with the others while `d` is mid-flight.
- */
-internal val BottomGlassTintLight = Color.White.copy(alpha = 0.12f)
-internal val BottomGlassTintDark = Color.Black.copy(alpha = 0.10f)
-
-/**
- * Coat concentration shared by all three bottom-bar glass layers (single source
- * of truth). 0.52 balances against the 2dp blur: the bar reads as "more
- * transparent but more coated". Blur and coat are designed to move in opposite
- * directions — using blur to compensate for a coat change undoes it.
- */
-internal const val BOTTOM_GLASS_SURFACE_ALPHA = 0.52f
-
-/**
- * Equal-proportion lens scale for the droplet = droplet height / the 56dp
- * reference droplet. `refractionHeight` samples inward from the droplet's own
- * contour, so a smaller droplet needs proportionally smaller lens values or the
- * refraction band reads too deep relative to the droplet.
- */
-internal const val DROPLET_LENS_SCALE = 49f / 56f
-
-/**
- * Rest-state floor for the droplet's outer shadow. Without it a resting droplet
- * has zero elevation cue and reads as a hole punched in the panel rather than a
- * glass bead floating in it. `Shadow`'s default color is Black 0.06, so 0.5
- * alpha is roughly 3% effective; beyond this it stops being glass and starts
- * being a pasted-on dark ring.
- */
-internal const val DROPLET_REST_SHADOW = 0.50f
-
-/** Rest-state floor for the droplet's inner shadow; the radius still animates 4dp -> 8dp with p. */
-internal const val DROPLET_REST_INNER_SHADOW = 0.60f
-
-/**
- * Resolves the single tone scalar for the bottom chrome: 0 = light, 1 = dark.
- * Accepts a sampled value when available; otherwise falls back to the theme.
- */
-@Composable
-internal fun bottomBarTone(systemDark: Boolean, sampled: Float): Float =
-    if (sampled.isNaN()) if (systemDark) 1f else 0f else sampled
-
-/**
- * Panel layer. The bar itself: constant lens (never multiplied by press
- * progress), full shadow/inner-shadow, and an exported backdrop so nested
- * controls can sample the panel without re-rendering a second copy of the same
- * glass.
- *
- * The panel blur and the capture layer blur must stay equal (2dp here and in
- * [liquidCaptureLayer]). If they diverge, sharp page content entering the lens
- * chain tears into fragments — when that symptom appears, check these two blur
- * calls before touching the lens values.
- *
- * The `tint` parameter exists for call-site compatibility and is not consumed:
- * the coat is controlled solely by `surfaceColor`.
- */
-@Composable
-fun Modifier.liquidBottomBar(
-    shape: Shape,
-    tint: Color,
-    surfaceColor: Color,
-    pressProgress: Float = 0f,
-    tone: Float = Float.NaN,
-    exportedBackdrop: com.kyant.backdrop.backdrops.LayerBackdrop? = null,
-): Modifier {
-    val backdrop = liquidGlassBackdrop()
-    val dark = isSystemInDarkTheme()
-    val d = bottomBarTone(dark, tone)
-    if (backdrop == null) {
-        val stableSurface = surfaceColor.compositeOver(MaterialTheme.colorScheme.background)
-        return background(stableSurface, shape)
-    }
-    val p = safeProgress(pressProgress)
-    return drawBackdrop(
-        backdrop = backdrop,
-        shape = { shape },
-        effects = {
-            vibrancy()
-            // Keep in sync with the capture layer blur. Constant lens, never
-            // multiplied by p: the panel refracts at rest, by design.
-            blur(2.dp.toPx())
-            lens(24.dp.toPx(), 24.dp.toPx())
-        },
-        highlight = {
-            Highlight.Default.copy(
-                alpha = (lerp(0.48f, 0.32f, d) + 0.30f * p).coerceAtMost(1f),
-            )
-        },
-        shadow = {
-            Shadow(
-                radius = 24.dp,
-                color = Color.Black.copy(alpha = 0.12f),
-                alpha = 0.08f + 0.22f * p,
-            )
-        },
-        innerShadow = {
-            InnerShadow(
-                radius = 4.dp + 8.dp * p,
-                color = Color.Black.copy(alpha = 0.12f),
-                alpha = 0.10f + 0.30f * p,
-            )
-        },
-        layerBlock = {
-            val scale = (1f + 16.dp.toPx() / size.width.coerceAtLeast(1f) * p).finiteOrZero()
-            scaleX = scale
-            scaleY = scale
-        },
-        exportedBackdrop = exportedBackdrop,
-        onDrawSurface = { drawRect(surfaceColor) },
-    )
-}
-
-/**
- * The droplet's capture layer. This is NOT the same material as the panel and
- * must not reuse it:
- *
- * - The panel lens is constant; this one scales with press progress. At rest
- *   (p ~ 0) the lens is skipped entirely — never call lens(0, 0): inside the
- *   AGSL shader a zero refraction height makes anti-aliased edge pixels (sd > 0)
- *   fall through to a division by zero, producing NaN sample coordinates whose
- *   behavior on GPU is undefined. Skipping the lens outputs the same pixels as
- *   the shader's early return would.
- * - No shadow, no inner shadow. The panel's constant lens would first consume
- *   the page's boundary fold, the panel's top-edge inner shadow band would sit
- *   exactly on the droplet's most contrast-critical fold zone, and the panel's
- *   outer shadow would bake a duplicate lip into the droplet edge.
- *
- * At rest the capture layer is a clean light window; the fold opens only under
- * press. Same blur as the panel, by constraint.
- */
-@Composable
-fun Modifier.liquidCaptureLayer(
-    shape: Shape,
-    surfaceColor: Color,
-    pressProgress: Float,
-): Modifier {
-    val backdrop = liquidGlassBackdrop() ?: return this
-    val p = safeProgress(pressProgress)
-    return drawBackdrop(
-        backdrop = backdrop,
-        shape = { shape },
-        effects = {
-            vibrancy()
-            blur(2.dp.toPx())
-            if (p > 0.001f) {
-                lens(24.dp.toPx() * p, 24.dp.toPx() * p)
-            }
-        },
-        highlight = { Highlight.Default.copy(alpha = p) },
-        shadow = null,
-        innerShadow = null,
-        onDrawSurface = { drawRect(surfaceColor) },
-    )
-}
-
-/**
- * The moving selection droplet inside the panel. Samples the page through the
- * panel's exported backdrop (combined), scales the lens proportionally to the
- * droplet height, and carries rest-state floors for rim/shadow/inner shadow so
- * a resting droplet still reads as glass instead of a hole.
- *
- * `pressProgress` gates the fold: at rest the floors keep the bead visible, at
- * full press the values match the reference material exactly.
- */
-@Composable
-fun Modifier.liquidTabSelection(
-    shape: Shape,
-    selected: Boolean,
-    tint: Color,
-    panelBackdrop: Backdrop? = null,
-    pressProgress: Float = 0f,
-    tone: Float = Float.NaN,
-    layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
-): Modifier {
-    if (!selected) return this
-    val backdrop = liquidGlassBackdrop()
-    if (backdrop == null) {
-        return background(tint.copy(alpha = maxOf(tint.alpha, 0.36f)), shape)
-    }
-    val dark = isSystemInDarkTheme()
-    val d = bottomBarTone(dark, tone)
-    val selectionBackdrop = rememberCombinedBackdrop(backdrop, panelBackdrop ?: backdrop)
-    val restRim = lerp(0.48f, 0.32f, d)
-    val p = safeProgress(pressProgress)
-    return drawBackdrop(
-        backdrop = selectionBackdrop,
-        shape = { shape },
-        effects = {
-            // Skip entirely at rest — see liquidCaptureLayer for why lens(0, 0) is
-            // forbidden (division by zero in the shader on AA edge pixels).
-            if (p > 0.001f) {
-                lens(
-                    refractionHeight = 10.dp.toPx() * p * DROPLET_LENS_SCALE,
-                    refractionAmount = 14.dp.toPx() * p * DROPLET_LENS_SCALE,
-                    chromaticAberration = true,
-                )
-            }
-        },
-        highlight = { Highlight.Default.copy(alpha = lerp(restRim, 1f, p)) },
-        shadow = { Shadow(alpha = lerp(DROPLET_REST_SHADOW, 1f, p)) },
-        innerShadow = {
-            InnerShadow(
-                radius = 4.dp + 4.dp * p,
-                alpha = lerp(DROPLET_REST_INNER_SHADOW, 1f, p),
-            )
-        },
-        layerBlock = layerBlock?.let { userBlock ->
-            {
-                userBlock(this)
-                // Everything here lands in a HWUI RenderNode transform matrix;
-                // wash NaN/Inf at the single write exit. Identity for normal values.
-                scaleX = scaleX.finiteOrZero()
-                scaleY = scaleY.finiteOrZero()
-                translationX = translationX.finiteOrZero()
-                translationY = translationY.finiteOrZero()
-                alpha = alpha.finiteOrZero()
-            }
-        },
-        onDrawSurface = {
-            // Reference behavior: the selection coat fades out under press and a
-            // very faint dark layer fades in.
-            drawRect(
-                lerp(
-                    Color.Black.copy(0.1f),
-                    Color.White.copy(0.1f),
-                    d,
-                ),
-                alpha = 1f - p,
-            )
-            drawRect(Color.Black.copy(alpha = 0.03f * p))
         },
     )
 }

@@ -19,11 +19,13 @@ package com.mouya.LiquidFrame.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -57,9 +59,11 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.mouya.LiquidFrame.R
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -156,13 +160,18 @@ fun AboutPage(
 
     var animationTime by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
-        var previous = 0L
+        // Animate the gradient at 30 Hz instead of invalidating the entire About
+        // composition on every display frame. Gradients stay fluid, while the page
+        // stops doing unnecessary layout/state work at 60/90/120 Hz.
+        var lastPublish = 0L
         while (true) {
             withFrameNanos { now ->
-                if (previous != 0L) {
-                    animationTime += (now - previous) / 1_000_000_000f
+                if (lastPublish == 0L) {
+                    lastPublish = now
+                } else if (now - lastPublish >= 33_333_333L) {
+                    animationTime += (now - lastPublish) / 1_000_000_000f
+                    lastPublish = now
                 }
-                previous = now
             }
         }
     }
@@ -332,7 +341,7 @@ private fun AboutHero(
             }
             Box(
                 modifier = Modifier
-                    .size(width = 190.dp, height = 58.dp)
+                    .size(width = 232.dp, height = 68.dp)
                     .drawBackdrop(
                         backdrop = backdrop,
                         shape = { Capsule() },
@@ -361,13 +370,23 @@ private fun AboutHero(
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    "LiquidFrame",
-                    fontSize = 21.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.6.sp,
-                    color = if (dark) Color.White else Color(0xFF111113),
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_liquidframe),
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Text(
+                        "LiquidFrame",
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.25.sp,
+                        color = if (dark) Color.White else Color(0xFF111113),
+                    )
+                }
             }
 
             Spacer(Modifier.height(10.dp))

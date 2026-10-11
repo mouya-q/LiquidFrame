@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,8 +96,10 @@ class ConfigActivity : ComponentActivity() {
         Thread(runnable, "LiquidFrame-Preview").apply { isDaemon = true }
     }
     private val previewGeneration = AtomicLong(0L)
+    private val backdropLoadGeneration = AtomicLong(0L)
     private var previewRunnable: Runnable? = null
     private var basePhoto: Bitmap? = null
+    private var displayedPreviewBitmap: Bitmap? = null
     private var backdropSource = "内置背景 background-a.jpg"
     private var backdropRevision = mutableIntStateOf(0)
 
@@ -144,7 +147,9 @@ class ConfigActivity : ComponentActivity() {
         previewRunnable?.let(mainHandler::removeCallbacks)
         mainHandler.removeCallbacksAndMessages(null)
         previewExecutor.shutdownNow()
-        basePhoto?.recycle()
+        displayedPreviewBitmap?.let { if (!it.isRecycled) it.recycle() }
+        displayedPreviewBitmap = null
+        basePhoto?.let { if (!it.isRecycled) it.recycle() }
         basePhoto = null
         super.onDestroy()
     }
@@ -158,22 +163,50 @@ class ConfigActivity : ComponentActivity() {
     }
 
     private fun loadBackdrop(uri: Uri) {
-        val decoded = try {
-            contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream)
+        // Opening a user image is a preview task, not UI work. Read bounds first and
+        // decode only enough pixels for the 900x420 preview; this avoids decoding a
+        // 50–100 MP camera photo on the main thread only to shrink it immediately.
+        val generation = backdropLoadGeneration.incrementAndGet()
+        previewExecutor.execute {
+            val decoded = try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, bounds)
+                }
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
+                    var sample = 1
+                    while (bounds.outWidth / (sample * 2) >= PREVIEW_W &&
+                        bounds.outHeight / (sample * 2) >= PREVIEW_H
+                    ) {
+                        sample *= 2
+                    }
+                    val options = BitmapFactory.Options().apply {
+                        inSampleSize = sample
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, options)
+                    }
+                }
+            } catch (_: Throwable) {
+                null
             }
-        } catch (_: Throwable) {
-            null
-        } ?: run {
-            Toast.makeText(this, "无法读取这张图片", Toast.LENGTH_SHORT).show()
-            return
+            val cropped = decoded?.let { centreCrop(it, PREVIEW_W, PREVIEW_H) }
+            mainHandler.post {
+                if (generation != backdropLoadGeneration.get() || isFinishing || isDestroyed) {
+                    cropped?.recycle()
+                    return@post
+                }
+                if (cropped == null) {
+                    Toast.makeText(this, "无法读取这张图片", Toast.LENGTH_SHORT).show()
+                    return@post
+                }
+                basePhoto?.recycle()
+                basePhoto = cropped
+                backdropSource = "已选择照片"
+                backdropRevision.intValue++
+            }
         }
-
-        val cropped = centreCrop(decoded, PREVIEW_W, PREVIEW_H)
-        basePhoto?.recycle()
-        basePhoto = cropped
-        backdropSource = "已选择照片"
-        backdropRevision.intValue++
     }
 
     private fun centreCrop(source: Bitmap, targetW: Int, targetH: Int): Bitmap {
@@ -205,7 +238,8 @@ class ConfigActivity : ComponentActivity() {
     @Composable
     private fun LiquidFrameDashboard() {
         val context = LocalContext.current
-        val scroll = rememberScrollState()
+        val homeScroll = rememberScrollState()
+        val glassScroll = rememberScrollState()
 
         var currentPage by remember { mutableStateOf(LiquidPage.Home) }
 
@@ -232,6 +266,7 @@ class ConfigActivity : ComponentActivity() {
         LaunchedEffect(currentBackdropRevision) {
             previewSource = backdropSource
             schedulePreview { bitmap, result ->
+                replaceDisplayedPreview(bitmap)
                 previewBitmap = bitmap
                 previewResult = result
             }
@@ -262,6 +297,7 @@ class ConfigActivity : ComponentActivity() {
             }
             writeStatus = status
             schedulePreview { bitmap, result ->
+                replaceDisplayedPreview(bitmap)
                 previewBitmap = bitmap
                 previewResult = result
             }
@@ -283,7 +319,7 @@ class ConfigActivity : ComponentActivity() {
             depth = d.depthEffect
         }
 
-        Box(Modifier.fillMaxSize().background(bgPrimary())) {
+        Box(Modifier.fillMaxSize()) {
             LiquidBackdropProvider(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize()) {
                     when (currentPage) {
@@ -291,7 +327,7 @@ class ConfigActivity : ComponentActivity() {
                         LiquidPage.Home -> Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .verticalScroll(scroll)
+                                .verticalScroll(homeScroll)
                                 .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 120.dp)),
                             verticalArrangement = Arrangement.spacedBy(20.dp),
                         ) {
@@ -300,8 +336,25 @@ class ConfigActivity : ComponentActivity() {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
-                                Column {
-                                    Text("LiquidFrame", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = textPrimary())
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Image(
+                                        painter = painterResource(R.drawable.ic_liquidframe),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(44.dp),
+                                    )
+                                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                        Text("LiquidFrame", fontSize = 25.sp, fontWeight = FontWeight.SemiBold, color = textPrimary())
+                                        Text(
+                                            "CAMERA MATERIAL",
+                                            fontSize = 9.sp,
+                                            letterSpacing = 1.25.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = textSecondary(),
+                                        )
+                                    }
                                 }
                                 StatusPill(
                                     text = if (enabled) "已启用" else "已停用",
@@ -345,7 +398,7 @@ class ConfigActivity : ComponentActivity() {
                                     onClick = {
                                         val diagnostic = buildString {
                                             appendLine("LiquidFrame Diagnostic Log")
-                                            appendLine("Version: 1.9.0 (9)")
+                                            appendLine("Version: 1.9.1 (10)")
                                             appendLine("写入状态: $writeStatus")
                                             appendLine("预览: $previewResult")
                                             appendLine("背景: $previewSource")
@@ -386,7 +439,7 @@ class ConfigActivity : ComponentActivity() {
                         LiquidPage.Glass -> Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .verticalScroll(scroll)
+                                .verticalScroll(glassScroll)
                                 .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 120.dp)),
                             verticalArrangement = Arrangement.spacedBy(20.dp),
                         ) {
@@ -445,7 +498,7 @@ class ConfigActivity : ComponentActivity() {
                                 LiquidSliderRow("折射带", band, 0f..0.45f, "")
                                     { band = it }
                                 SettingDivider()
-                                LiquidSliderRow("折射强度", amount, 0f..5f, "", valueLabel = String.format(java.util.Locale.ROOT, "%.1f×", amount))
+                                LiquidSliderRow("折射强度", amount, 0f..4f, "", valueLabel = String.format(java.util.Locale.ROOT, "%.1f×", amount))
                                     { amount = it }
                                 SettingDivider()
                                 LiquidSliderRow("背景模糊", blur, 0f..1.5f, "")
@@ -470,15 +523,14 @@ class ConfigActivity : ComponentActivity() {
                         }
 
                         LiquidPage.About -> AboutPage(
-                            versionName = "1.9.0",
-                            versionCode = 9,
+                            versionName = "1.9.1",
+                            versionCode = 10,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
                     GlassBottomBar(
                         currentPage = currentPage,
                         onPageSelected = { currentPage = it },
-                        enabled = enabled,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth(),
@@ -491,6 +543,14 @@ class ConfigActivity : ComponentActivity() {
     // ---------------------------------------------------------------------------------------
     // Preview rendering
     // ---------------------------------------------------------------------------------------
+
+    private fun replaceDisplayedPreview(bitmap: Bitmap) {
+        val previous = displayedPreviewBitmap
+        displayedPreviewBitmap = bitmap
+        if (previous != null && previous !== bitmap && !previous.isRecycled) {
+            previous.recycle()
+        }
+    }
 
     private fun schedulePreview(callback: (Bitmap, String) -> Unit) {
         previewRunnable?.let(mainHandler::removeCallbacks)
