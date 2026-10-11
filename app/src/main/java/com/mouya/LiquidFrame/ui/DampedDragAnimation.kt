@@ -86,13 +86,14 @@ class DampedDragAnimation(
                 slopTotal = over
             }
             if (claimed == null) return@awaitEachGesture
+            val dragSize = size
             onDragStarted(down.position)
             press()
-            onDrag(size, Offset(slopTotal.x, 0f))
+            onDrag(dragSize, Offset(slopTotal.x, 0f))
             drag(down.id) { change ->
                 val delta = change.positionChange()
                 change.consume()
-                onDrag(size, delta)
+                this@DampedDragAnimation.onDrag(dragSize, delta)
             }
             onDragStopped()
             release()
