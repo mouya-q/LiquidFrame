@@ -40,8 +40,16 @@ class LiquidFrameHook : IXposedHookLoadPackage {
                     object : BroadcastReceiver() {
                         override fun onReceive(context: Context, intent: Intent) {
                             // Only honour the kill switch from the module's own settings app.
-                            val senderOk = context.packageManager
-                                .getPackagesForUid(getSendingUid())
+                            // getSendingUid is @hide, so it is reached by reflection.
+                            val uid = try {
+                                BroadcastReceiver::class.java
+                                    .getMethod("getSendingUid")
+                                    .invoke(this) as? Int
+                            } catch (_: Throwable) {
+                                null
+                            }
+                            val senderOk = uid != null && context.packageManager
+                                .getPackagesForUid(uid)
                                 ?.any { it == "com.mouya.LiquidFrame" } == true
                             if (!senderOk) return
                             XposedBridge.log("LiquidFrame: restart camera broadcast received, killing self")
