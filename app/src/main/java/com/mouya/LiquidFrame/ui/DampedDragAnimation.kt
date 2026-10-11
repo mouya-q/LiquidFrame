@@ -23,7 +23,6 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChangeIgnore
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.CoroutineScope
@@ -91,7 +90,7 @@ class DampedDragAnimation(
             press()
             onDrag(size, Offset(slopTotal.x, 0f))
             drag(down.id) { change ->
-                val delta = change.positionChangeIgnore()
+                val delta = change.positionChange()
                 change.consume()
                 onDrag(size, delta)
             }
