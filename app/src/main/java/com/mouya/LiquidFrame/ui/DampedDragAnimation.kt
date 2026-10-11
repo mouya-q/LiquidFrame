@@ -91,7 +91,7 @@ class DampedDragAnimation(
             press()
             this@DampedDragAnimation.onDrag(dragSize, Offset(slopX, 0f))
             drag(down.id) { change ->
-                val delta = change.positionChange()
+                val delta = change.position - change.previousPosition
                 change.consume()
                 this@DampedDragAnimation.onDrag(dragSize, delta)
             }
