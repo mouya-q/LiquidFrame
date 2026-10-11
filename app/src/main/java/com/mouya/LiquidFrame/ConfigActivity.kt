@@ -359,7 +359,7 @@ class ConfigActivity : ComponentActivity() {
                                         )
                                     }
                                 }
-                                Row(verticalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                     StatusPill(
                                         text = if (enabled) "已启用" else "已停用",
                                         color = if (enabled) LiquidColors.success else LiquidColors.warning,
