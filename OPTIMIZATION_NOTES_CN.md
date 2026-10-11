@@ -1,3 +1,30 @@
+# LiquidFrame 1.9.2 — Optimization notes
+
+This patch is based on the supplied project archive and source-level comparisons with:
+
+- MeloX-Android slider wrapper and its AndroidLiquidGlass port: <https://github.com/lladlam/MeloX-Android>
+- HyperIsland floating navigation bar and background capture: <https://github.com/1812z/HyperIsland>
+- AndroidLiquidGlass reference components: <https://github.com/Kyant0/AndroidLiquidGlass>
+
+## Watermark rendering — photo-anchored glass
+
+- Root cause of the three reported defects (white line above the glass, white spot behind it, and the watermark visibly changing photo scale): the optics were refracting the camera's own baked plate, not the photograph. `mirrorInteriorFromAbove` existed only because the plate hid the scene underneath.
+- **Fix**: the composite's *first* `drawRect` before-hook now captures the output bitmap region behind the first plate rectangle (plus padding) — at that moment the photo is already blitted but the plate is not, so the crop holds the true scene. The optics receive this pre-plate snapshot as `photoBackdrop` and overwrite the panel interior with it, then refract the real photograph directly.
+- Capture is cropped (`PANEL_CROP_PAD_FRACTION = 0.55`, min 32px) so one shot costs a few hundred KB instead of a full 48 MB frame; `frame.bitmap` is stored by the canvas-wrapper after-hook and `absoluteRect` maps the element-local rectangle through the canvas matrix.
+- Backdrop build order is now: copy composite → `mirrorInteriorFromAbove` fills the whole plate rectangle (white corners gone) → snapshot overwrites the panel interior with true photo content (no mirroring inside the glass). `hasPhoto` fallback keeps the old mirror path alive when capture fails or is absent.
+- The mirror call is now exactly one; the previous `if (!hasPhoto)` duplicate branch was removed.
+
+## Dock spring and identity
+
+- Press scale `spring(0.62, 420)` and selection travel `spring(0.62, 380)`: lower damping than 1.9.1 gives a slight overshoot on settle — closer to AndroidLiquidGlass's liquid feel.
+- Indicator press feedback is now scale + sink: `translationY = (1 - selectionScale) * 22dp` dips the capsule ~1.5dp while pressed.
+- Switch enabled track is now a white frost (`0xFFE8E8ED` dark / `White` light) instead of iOS green, matching the AndroidLiquidGlass reference.
+- App identity renamed to `liquidFrame` (launcher label, activity title, home header, toggle copy, About hero/module copy).
+- New home-page restart-camera button: force-stops `com.android.camera` / `com.miui.camera` so the new watermark path applies immediately.
+- Version: `1.9.2`, `versionCode 11`.
+
+---
+
 # LiquidFrame 1.9.1 — Optimization notes
 
 This patch is based on the supplied project archive and source-level comparisons with:

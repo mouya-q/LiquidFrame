@@ -1,6 +1,23 @@
 # Changelog
 
-## 1.9.1 — Interaction, dock and material polish
+## 1.9.2 — Photo-anchored watermark, dock spring and identity polish
+
+### Watermark rendering
+- **Photo-anchored glass (根治镜像/白边/尺寸三病灶)**: the composite's first plate draw now captures the real photograph *before* the plate is painted over it. The optics receive that pre-plate snapshot as backdrop, so the glass refracts the actual scene under the panel instead of the camera's baked plate — no mirroring, no white corners, and the watermark no longer changes the photo's scale.
+- Capture is cropped to the first panel rectangle plus padding (≈ hundreds of KB per shot instead of a full 48 MB frame), with a silent fallback to the existing mirror path if the capture fails.
+- Reordered the backdrop build: mirror fills the whole plate rectangle first (clearing white corners), then the snapshot overwrites the panel interior with true photo content.
+
+### Bottom bar
+- Softer, more liquid springs: press scale `spring(0.62, 420)` and selection travel `spring(0.62, 380)` — lower damping adds a slight overshoot as the capsule settles.
+- Press feedback is now scale + sink: the indicator dips ~1.5dp via `translationY = (1 - selectionScale) * 22dp` while pressed, then springs back.
+
+### Identity & controls
+- App name changed to `liquidFrame` (launcher, activity title, home header, toggle text and About page hero).
+- The enabled switch track is now a light white frost (`0xFFE8E8ED` dark / `White` light) instead of iOS green, matching the reference material.
+- New restart-camera button at the top-right of the home page: force-stops `com.android.camera` / `com.miui.camera` so the watermark changes apply on next launch.
+- Version: `1.9.2`, `versionCode 11`.
+
+---
 
 ### Dock and controls
 - Replaced the full-width white-tinted bar with a floating capsule, a correctly aligned moving glass indicator and a single base material layer.

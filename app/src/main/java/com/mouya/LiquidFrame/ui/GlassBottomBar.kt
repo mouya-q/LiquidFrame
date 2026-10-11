@@ -96,13 +96,13 @@ fun GlassBottomBar(
     val slotInsetPx = with(density) { 8.dp.toPx() }
     val selectionScale by animateFloatAsState(
         targetValue = if (dockDragging) 1.045f else 1f,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 520f),
+        animationSpec = spring(dampingRatio = 0.62f, stiffness = 420f),
         label = "dock_press_scale",
     )
     LaunchedEffect(index) {
         selectionAnimation.animateTo(
             index.toFloat(),
-            animationSpec = spring(dampingRatio = 0.78f, stiffness = 460f),
+            animationSpec = spring(dampingRatio = 0.62f, stiffness = 380f),
         )
     }
     val animatedIndex = if (dockDragging) dockDragIndex else selectionAnimation.value
@@ -188,6 +188,11 @@ fun GlassBottomBar(
                 .graphicsLayer {
                     scaleX = selectionScale
                     scaleY = 2f - selectionScale
+                    // Pressing the dock pushes the lens down 1.5dp and lifts it on
+                    // release, so the selection reads as a physical capsule instead
+                    // of a flat highlight. 1.045 press scale and the y offset move
+                    // together; the spring above drives both.
+                    translationY = (1f - selectionScale) * with(density) { 22.dp.toPx() }
                 }
 
             // Base surface first; the selected capsule is drawn on top of it.

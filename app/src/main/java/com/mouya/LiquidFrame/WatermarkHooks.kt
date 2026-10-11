@@ -113,6 +113,28 @@ object WatermarkHooks {
     /** Per-composite panel observations. No strong reference to the destination bitmap is kept. */
     private class Frame {
         val panels = ArrayList<PanelRect>(MAX_PANELS)
+
+        /**
+         * Photograph captured *before* the watermark plate is drawn, cropped to the first
+         * plate rectangle plus padding.
+         *
+         * The composite blits the photo into the output bitmap first, then draws the plate
+         * and labels over it. The first `drawRect` before-hook therefore still sees the real
+         * photograph under the plate region. Grabbing that rectangle here gives the optics a
+         * genuine backdrop — no mirroring, no baked plate, and the glass sits directly on the
+         * photo without changing its scale. Only the crop is stored, so a capture costs a few
+         * hundred KB instead of a full 48 MB frame.
+         */
+        var photoPixels: IntArray? = null
+
+        /** [photoPixels] origin and size in the output bitmap's coordinates. */
+        var photoLeft = 0
+        var photoTop = 0
+        var photoW = 0
+        var photoH = 0
+
+        /** The output bitmap this composite renders into; used for the photo capture. */
+        var bitmap: Bitmap? = null
     }
 
     /** Keyed by the `Lpe/o` canvas wrapper, which is created once per composite. */
@@ -196,6 +218,7 @@ object WatermarkHooks {
                 val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
                 val self = p.thisObject ?: return
                 val frame = Frame()
+                frame.bitmap = bitmap
                 // Keyed by the wrapper *instance*, not by this hook object: the wrapper is
                 // created once per composite, so concurrent composites no longer overwrite each
                 // other's state and the drawRect hook can find its own canvas.
@@ -229,6 +252,37 @@ object WatermarkHooks {
 
                 val radiusHint = shaderRadius(shader, w, h)
                 val rect = absoluteRect(canvasOf(self), x0, y0, x1, y1)
+
+                // First plate draw of this composite: the photo is already blitted in but the
+                // plate is not, so the output bitmap still holds the real photograph under the
+                // panel region. Capture it once — later draws only add the plate/labels.
+                if (frame.photoPixels == null) {
+                    val bmp = frame.bitmap
+                    if (bmp != null && !bmp.isRecycled && bmp.width > 0 && bmp.height > 0) {
+                        try {
+                            // Only the first plate rectangle plus padding is needed: the optics
+                            // never samples further than the configured refraction pad. Cropping
+                            // here keeps the capture at a few hundred KB per shot.
+                            val pad = maxOf(32, (rect.width() * 0.55f).toInt())
+                            val capLeft = (rect.left - pad).toInt().coerceIn(0, bmp.width - 1)
+                            val capTop = (rect.top - pad).toInt().coerceIn(0, bmp.height - 1)
+                            val capRight = (rect.right + pad).toInt().coerceIn(capLeft + 1, bmp.width)
+                            val capBottom = (rect.bottom + pad).toInt().coerceIn(capTop + 1, bmp.height)
+                            val cw = capRight - capLeft
+                            val ch = capBottom - capTop
+                            val px = IntArray(cw * ch)
+                            bmp.getPixels(px, 0, cw, capLeft, capTop, cw, ch)
+                            frame.photoPixels = px
+                            frame.photoLeft = capLeft
+                            frame.photoTop = capTop
+                            frame.photoW = cw
+                            frame.photoH = ch
+                        } catch (_: Throwable) {
+                            // A failed capture degrades to the existing mirror path.
+                        }
+                    }
+                }
+
                 if (frame.panels.size < MAX_PANELS) {
                     frame.panels.add(
                         PanelRect(
@@ -434,7 +488,25 @@ object WatermarkHooks {
         )
 
         val params = resolveParams(pixels, cw, ch, localPanel)
-        val result = LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
+
+        // If the pre-plate photograph was captured, hand the optics the real photo pixels
+        // instead of the baked plate: the glass then sits directly on the scene, nothing is
+        // mirrored, and the corner-clearing replaces the plate with true photo content.
+        val f = frame
+        val photo = f?.photoPixels
+        val result = if (f != null && photo != null && f.photoW > 0 && f.photoH > 0) {
+            LiquidGlassOptics.renderPanel(
+                pixels, cw, ch, localPanel, params,
+                panelIsOpaquePlate = true,
+                photoBackdrop = photo,
+                photoLeft = f.photoLeft,
+                photoTop = f.photoTop,
+                photoW = f.photoW,
+                photoH = f.photoH,
+            )
+        } else {
+            LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
+        }
         if (!result.startsWith("skip")) {
             out.setPixels(pixels, 0, cw, left, top, cw, ch)
         }

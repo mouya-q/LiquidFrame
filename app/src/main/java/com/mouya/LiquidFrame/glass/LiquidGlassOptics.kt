@@ -121,6 +121,11 @@ object LiquidGlassOptics {
         panel: PanelRect,
         params: GlassParams = GlassParams.Default,
         panelIsOpaquePlate: Boolean = true,
+        photoBackdrop: IntArray? = null,
+        photoLeft: Int = 0,
+        photoTop: Int = 0,
+        photoW: Int = 0,
+        photoH: Int = 0,
     ): String {
         if (width < 8 || height < 8) return "skip: bitmap too small (${width}x$height)"
         if (pixels.size < width * height) return "skip: pixel buffer too small"
@@ -189,22 +194,57 @@ object LiquidGlassOptics {
         }
 
         val backdrop = IntArray(cw * ch)
+        // Ground truth: when the pre-plate photograph was captured, it already carries the
+        // real scene under the panel — no mirroring needed. Otherwise the crop holds the
+        // camera's baked plate and the mirror below restores scene content from above.
+        val photo = photoBackdrop
+        val hasPhoto = photo != null && photoW > 0 && photoH > 0
+
+        // Start from the composite as-is (the baked plate), then fix the interior:
+        // 1. mirror fills the whole plate rectangle with scene so no white corners remain;
+        // 2. the pre-plate snapshot, when present, then overwrites the panel interior with
+        //    the true photograph — the mirror only stays visible outside the snapshot.
         for (y in 0 until ch) {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
+        }
+        mirrorInteriorFromAbove(
+            backdrop, cw, ch, cropLeft, cropTop, panel, radius,
+            panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
+        )
+        if (hasPhoto) {
+            val interLeft = maxOf(cropLeft, photoLeft)
+            val interTop = maxOf(cropTop, photoTop)
+            val interRight = minOf(cropRight, photoLeft + photoW)
+            val interBottom = minOf(cropBottom, photoTop + photoH)
+            for (y in interTop until interBottom) {
+                val srcRow = (y - photoTop) * photoW
+                val dstRow = (y - cropTop) * cw
+                val count = interRight - interLeft
+                if (count > 0) {
+                    System.arraycopy(
+                        photo, srcRow + (interLeft - photoLeft),
+                        backdrop, dstRow + (interLeft - cropLeft),
+                        count,
+                    )
+                }
+            }
         }
 
         // THE WHITE BASE. The pixels the camera left inside the panel are not the photo: they are
         // the opaque plate the camera itself baked in (a flat near-white sheet, or a blurred copy
         // of the scene). Refracting that plate produces a grey wash and the pale rectangle the
         // user saw — the glass was magnifying the plate, not the world. So the panel's interior is
-        // re-sourced from the photograph directly above it (a vertical mirror across the top edge,
-        // continuous at that edge and always backed by real scene pixels), and only then is the
+        // re-sourced from the photograph: when the pre-plate capture exists it IS the photo under
+        // the panel, otherwise it is reconstructed as a vertical mirror of the rows above the panel
+        // (continuous at that edge and always backed by real scene pixels), and only then is the
         // lens run over it. Labels are unaffected: they are still drawn from the untouched original
         // through the `content` mask below.
-        mirrorInteriorFromAbove(
-            backdrop, cw, ch, cropLeft, cropTop, panel, radius,
-            panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
-        )
+        if (!hasPhoto) {
+            mirrorInteriorFromAbove(
+                backdrop, cw, ch, cropLeft, cropTop, panel, radius,
+                panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
+            )
+        }
 
 
         // The source watermark asset may already contain blur, so the configured radius is

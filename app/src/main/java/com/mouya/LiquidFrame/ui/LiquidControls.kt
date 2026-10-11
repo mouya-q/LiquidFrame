@@ -342,7 +342,9 @@ fun LiquidToggle(
     modifier: Modifier = Modifier,
 ) {
     val dark = isSystemInDarkTheme()
-    val accent = if (dark) Color(0xFF30D158) else Color(0xFF34C759)
+    // The switch follows the reference material: an enabled track is a light
+    // frost (white) rather than iOS green, so it reads as glass, not status UI.
+    val accent = if (dark) Color(0xFFE8E8ED) else Color.White
     val track = if (dark) Color(0xFF787880).copy(alpha = 0.36f) else Color(0xFF787878).copy(alpha = 0.20f)
     val density = LocalDensity.current
     val haptics = LocalHapticFeedback.current

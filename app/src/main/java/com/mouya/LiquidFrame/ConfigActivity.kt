@@ -3,6 +3,8 @@ package com.mouya.LiquidFrame
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -39,6 +41,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -346,7 +349,7 @@ class ConfigActivity : ComponentActivity() {
                                         modifier = Modifier.size(44.dp),
                                     )
                                     Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                        Text("LiquidFrame", fontSize = 25.sp, fontWeight = FontWeight.SemiBold, color = textPrimary())
+                                        Text("liquidFrame", fontSize = 25.sp, fontWeight = FontWeight.SemiBold, color = textPrimary())
                                         Text(
                                             "CAMERA MATERIAL",
                                             fontSize = 9.sp,
@@ -356,15 +359,40 @@ class ConfigActivity : ComponentActivity() {
                                         )
                                     }
                                 }
-                                StatusPill(
-                                    text = if (enabled) "已启用" else "已停用",
-                                    color = if (enabled) LiquidColors.success else LiquidColors.warning,
-                                )
+                                Row(verticalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    StatusPill(
+                                        text = if (enabled) "已启用" else "已停用",
+                                        color = if (enabled) LiquidColors.success else LiquidColors.warning,
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            // Restart the camera process so the next capture picks up
+                                            // the current module state. The camera has no exported
+                                            // "reload config" intent, so force-stop is the honest way.
+                                            val pm = context.packageManager
+                                            for (pkg in arrayOf("com.android.camera", "com.miui.camera")) {
+                                                try {
+                                                    pm.getApplicationInfo(pkg, 0)
+                                                    pm.forceStopPackage(pkg)
+                                                } catch (_: Exception) {
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.size(36.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.Refresh,
+                                            contentDescription = "重启相机",
+                                            tint = LiquidColors.blue,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                }
                             }
 
                             SettingSection("核心") {
                                 LiquidToggleRow(
-                                    "启用 LiquidFrame",
+                                    "启用 liquidFrame",
                                     enabled,
                                     { enabled = !enabled },
                                     "下一次拍照开始生效",
@@ -398,7 +426,7 @@ class ConfigActivity : ComponentActivity() {
                                     onClick = {
                                         val diagnostic = buildString {
                                             appendLine("LiquidFrame Diagnostic Log")
-                                            appendLine("Version: 1.9.1 (10)")
+                                            appendLine("Version: 1.9.2 (11)")
                                             appendLine("写入状态: $writeStatus")
                                             appendLine("预览: $previewResult")
                                             appendLine("背景: $previewSource")
@@ -523,8 +551,8 @@ class ConfigActivity : ComponentActivity() {
                         }
 
                         LiquidPage.About -> AboutPage(
-                            versionName = "1.9.1",
-                            versionCode = 10,
+                            versionName = "1.9.2",
+                            versionCode = 11,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
