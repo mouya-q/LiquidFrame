@@ -239,12 +239,12 @@ object LiquidGlassOptics {
         // (continuous at that edge and always backed by real scene pixels), and only then is the
         // lens run over it. Labels are unaffected: they are still drawn from the untouched original
         // through the `content` mask below.
-        if (!hasPhoto) {
-            mirrorInteriorFromAbove(
-                backdrop, cw, ch, cropLeft, cropTop, panel, radius,
-                panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
-            )
-        }
+        // NOTE: mirror was already called unconditionally at line ~211. When hasPhoto is
+        // true, the snapshot overwrote the panel interior after mirroring, so the mirror's
+        // only visible contribution is outside the snapshot (corner clearing). When hasPhoto
+        // is false, the mirror at ~211 already filled the whole rectangle — this second
+        // call was a no-op duplicate and has been removed.
+
 
 
         // The source watermark asset may already contain blur, so the configured radius is

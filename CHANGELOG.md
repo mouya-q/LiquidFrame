@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.3 — Source-bitmap photo anchor (mirror/white-edge root fix)
+
+### Watermark rendering
+- **Root cause found and fixed**: the v1.9.2 drawRect pre-plate capture never fired on the real camera pipeline (the `pe.o` wrapper or its drawRect signature changed), so the optics always fell back to `mirrorInteriorFromAbove` — the V-symmetry wood grain in the user's test photo was the mirror's telltale.
+- **New approach — source bitmap from composite arguments**: the composite method (`Fe/a->j` or its DexKit-discovered equivalent) receives the original photograph as one of its own arguments. The after-hook now extracts the largest non-output Bitmap argument and passes it to `process()` as `srcPhoto`. This is exact, timing-independent, and does not rely on the drawRect hook at all.
+- `process()` reads the panel crop region directly from `srcPhoto` (with proportional mapping and nearest-neighbour resampling when the source resolution differs from the output). The optics receive the true scene as `photoBackdrop` — no mirroring, no white corners, no scale change.
+- Removed the duplicate `mirrorInteriorFromAbove` call from the `if (!hasPhoto)` branch; the unconditional call at the top of the backdrop build already handles both paths.
+- Diagnostic log now reports `photo=yes/no` so the user can confirm the source-bitmap path is live.
+- Version: `1.9.3`, `versionCode 12`.
+
+---
+
 ## 1.9.2 — Photo-anchored watermark, dock spring and identity polish
 
 ### Watermark rendering

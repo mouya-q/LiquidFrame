@@ -315,8 +315,20 @@ object WatermarkHooks {
                     log("skip: composite bitmap not mutable (${out.width}x${out.height})")
                     return
                 }
+                // The source photograph is one of the composite's own arguments: the
+                // camera passes the photo in and blits it into [out] before any plate is
+                // drawn. Taking it from the arguments is exact and does not depend on the
+                // drawRect capture timing at all — the largest bitmap argument that is not
+                // the destination is the photo.
+                val src = try {
+                    p.args?.filterIsInstance<Bitmap>()
+                        ?.filter { it !== out && !it.isRecycled && it.width >= 8 && it.height >= 8 }
+                        ?.maxByOrNull { it.width.toLong() * it.height.toLong() }
+                } catch (_: Throwable) {
+                    null
+                }
                 try {
-                    process(out, frame)
+                    process(out, frame, src)
                 } catch (t: Throwable) {
                     log("process failed: ${t.javaClass.simpleName}: ${t.message}")
                 }
@@ -434,7 +446,7 @@ object WatermarkHooks {
     // Rendering
     // ---------------------------------------------------------------------------------------
 
-    private fun process(out: Bitmap, frame: Frame?) {
+    private fun process(out: Bitmap, frame: Frame?, srcPhoto: Bitmap?) {
         val w = out.width
         val h = out.height
         if (w < MIN_PANEL_WIDTH || h < 16) {
@@ -489,20 +501,78 @@ object WatermarkHooks {
 
         val params = resolveParams(pixels, cw, ch, localPanel)
 
-        // If the pre-plate photograph was captured, hand the optics the real photo pixels
-        // instead of the baked plate: the glass then sits directly on the scene, nothing is
-        // mirrored, and the corner-clearing replaces the plate with true photo content.
-        val f = frame
-        val photo = f?.photoPixels
-        val result = if (f != null && photo != null && f.photoW > 0 && f.photoH > 0) {
+        // Source the backdrop from the original photograph passed to the composite.
+        // The camera blits the photo into [out] first, then draws the watermark plate
+        // over it. So [out] already holds the photo everywhere except inside the plate.
+        // When the source bitmap is available and dimensionally compatible, reading the
+        // panel region directly from it gives the optics the true scene — no mirroring,
+        // no white corners, no scale change.
+        var photoPixels: IntArray? = null
+        var photoLeft = 0
+        var photoTop = 0
+        var photoW = 0
+        var photoH = 0
+        if (srcPhoto != null && !srcPhoto.isRecycled && srcPhoto.width >= 8 && srcPhoto.height >= 8) {
+            val sx: Int
+            val sy: Int
+            val sw: Int
+            val sh: Int
+            if (srcPhoto.width == w && srcPhoto.height == h) {
+                // Exact match: same coordinate space as [out].
+                sx = left; sy = top; sw = cw; sh = ch
+            } else {
+                // The source may be a different resolution that the camera scales to fit
+                // [out]. Map the crop rectangle proportionally.
+                val sxw = (cw.toLong() * srcPhoto.width / w).toInt().coerceAtLeast(1)
+                val sxh = (ch.toLong() * srcPhoto.height / h).toInt().coerceAtLeast(1)
+                sx = (left.toLong() * srcPhoto.width / w).toInt().coerceIn(0, srcPhoto.width - 1)
+                sy = (top.toLong() * srcPhoto.height / h).toInt().coerceIn(0, srcPhoto.height - 1)
+                sw = sxw.coerceAtMost(srcPhoto.width - sx)
+                sh = sxh.coerceAtMost(srcPhoto.height - sy)
+            }
+            if (sw > 0 && sh > 0) {
+                try {
+                    val px = IntArray(sw * sh)
+                    srcPhoto.getPixels(px, 0, sw, sx, sy, sw, sh)
+                    photoPixels = px
+                    photoLeft = left
+                    photoTop = top
+                    photoW = cw
+                    photoH = ch
+                    // Note: when srcPhoto dimensions differ from [out], the captured block
+                    // is in source resolution but tagged with output coordinates. The
+                    // renderPanel intersection math uses output coordinates, so we must
+                    // resample. For the exact-match case (the common one) this is a direct
+                    // copy. For the mismatched case, the block is nearest-neighbour scaled
+                    // back to output resolution below.
+                    if (srcPhoto.width != w || srcPhoto.height != h) {
+                        val scaled = IntArray(cw * ch)
+                        for (y in 0 until ch) {
+                            val srcY = (y.toLong() * sh / ch).toInt().coerceIn(0, sh - 1)
+                            for (x in 0 until cw) {
+                                val srcX = (x.toLong() * sw / cw).toInt().coerceIn(0, sw - 1)
+                                scaled[y * cw + x] = px[srcY * sw + srcX]
+                            }
+                        }
+                        photoPixels = scaled
+                        photoW = cw
+                        photoH = ch
+                    }
+                } catch (_: Throwable) {
+                    // Falls back to the mirror path.
+                }
+            }
+        }
+
+        val result = if (photoPixels != null && photoW > 0 && photoH > 0) {
             LiquidGlassOptics.renderPanel(
                 pixels, cw, ch, localPanel, params,
                 panelIsOpaquePlate = true,
-                photoBackdrop = photo,
-                photoLeft = f.photoLeft,
-                photoTop = f.photoTop,
-                photoW = f.photoW,
-                photoH = f.photoH,
+                photoBackdrop = photoPixels,
+                photoLeft = photoLeft,
+                photoTop = photoTop,
+                photoW = photoW,
+                photoH = photoH,
             )
         } else {
             LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
@@ -513,7 +583,8 @@ object WatermarkHooks {
 
         log("panel=${f(resolved.left)},${f(resolved.top)} " +
                 "${f(resolved.width)}x${f(resolved.height)} " +
-                "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} -> $result")
+                "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} " +
+                "photo=${if (photoPixels != null) "yes" else "no"} -> $result")
     }
 
     /**

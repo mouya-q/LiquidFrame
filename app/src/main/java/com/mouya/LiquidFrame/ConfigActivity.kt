@@ -437,7 +437,7 @@ class ConfigActivity : ComponentActivity() {
                                     onClick = {
                                         val diagnostic = buildString {
                                             appendLine("LiquidFrame Diagnostic Log")
-                                            appendLine("Version: 1.9.2 (11)")
+                                            appendLine("Version: 1.9.3 (12)")
                                             appendLine("写入状态: $writeStatus")
                                             appendLine("预览: $previewResult")
                                             appendLine("背景: $previewSource")
@@ -562,8 +562,8 @@ class ConfigActivity : ComponentActivity() {
                         }
 
                         LiquidPage.About -> AboutPage(
-                            versionName = "1.9.2",
-                            versionCode = 11,
+                            versionName = "1.9.3",
+                            versionCode = 12,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
