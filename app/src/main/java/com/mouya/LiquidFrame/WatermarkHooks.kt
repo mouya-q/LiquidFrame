@@ -114,26 +114,7 @@ object WatermarkHooks {
     private class Frame {
         val panels = ArrayList<PanelRect>(MAX_PANELS)
 
-        /**
-         * Photograph captured *before* the watermark plate is drawn, cropped to the first
-         * plate rectangle plus padding.
-         *
-         * The composite blits the photo into the output bitmap first, then draws the plate
-         * and labels over it. The first `drawRect` before-hook therefore still sees the real
-         * photograph under the plate region. Grabbing that rectangle here gives the optics a
-         * genuine backdrop — no mirroring, no baked plate, and the glass sits directly on the
-         * photo without changing its scale. Only the crop is stored, so a capture costs a few
-         * hundred KB instead of a full 48 MB frame.
-         */
-        var photoPixels: IntArray? = null
-
-        /** [photoPixels] origin and size in the output bitmap's coordinates. */
-        var photoLeft = 0
-        var photoTop = 0
-        var photoW = 0
-        var photoH = 0
-
-        /** The output bitmap this composite renders into; used for the photo capture. */
+        /** The output bitmap this composite renders into. */
         var bitmap: Bitmap? = null
     }
 
@@ -253,36 +234,6 @@ object WatermarkHooks {
                 val radiusHint = shaderRadius(shader, w, h)
                 val rect = absoluteRect(canvasOf(self), x0, y0, x1, y1)
 
-                // First plate draw of this composite: the photo is already blitted in but the
-                // plate is not, so the output bitmap still holds the real photograph under the
-                // panel region. Capture it once — later draws only add the plate/labels.
-                if (frame.photoPixels == null) {
-                    val bmp = frame.bitmap
-                    if (bmp != null && !bmp.isRecycled && bmp.width > 0 && bmp.height > 0) {
-                        try {
-                            // Only the first plate rectangle plus padding is needed: the optics
-                            // never samples further than the configured refraction pad. Cropping
-                            // here keeps the capture at a few hundred KB per shot.
-                            val pad = maxOf(32, (rect.width() * 0.55f).toInt())
-                            val capLeft = (rect.left - pad).toInt().coerceIn(0, bmp.width - 1)
-                            val capTop = (rect.top - pad).toInt().coerceIn(0, bmp.height - 1)
-                            val capRight = (rect.right + pad).toInt().coerceIn(capLeft + 1, bmp.width)
-                            val capBottom = (rect.bottom + pad).toInt().coerceIn(capTop + 1, bmp.height)
-                            val cw = capRight - capLeft
-                            val ch = capBottom - capTop
-                            val px = IntArray(cw * ch)
-                            bmp.getPixels(px, 0, cw, capLeft, capTop, cw, ch)
-                            frame.photoPixels = px
-                            frame.photoLeft = capLeft
-                            frame.photoTop = capTop
-                            frame.photoW = cw
-                            frame.photoH = ch
-                        } catch (_: Throwable) {
-                            // A failed capture degrades to the existing mirror path.
-                        }
-                    }
-                }
-
                 if (frame.panels.size < MAX_PANELS) {
                     frame.panels.add(
                         PanelRect(
@@ -315,20 +266,8 @@ object WatermarkHooks {
                     log("skip: composite bitmap not mutable (${out.width}x${out.height})")
                     return
                 }
-                // The source photograph is one of the composite's own arguments: the
-                // camera passes the photo in and blits it into [out] before any plate is
-                // drawn. Taking it from the arguments is exact and does not depend on the
-                // drawRect capture timing at all — the largest bitmap argument that is not
-                // the destination is the photo.
-                val src = try {
-                    p.args?.filterIsInstance<Bitmap>()
-                        ?.filter { it !== out && !it.isRecycled && it.width >= 8 && it.height >= 8 }
-                        ?.maxByOrNull { it.width.toLong() * it.height.toLong() }
-                } catch (_: Throwable) {
-                    null
-                }
                 try {
-                    process(out, frame, src)
+                    process(out, frame)
                 } catch (t: Throwable) {
                     log("process failed: ${t.javaClass.simpleName}: ${t.message}")
                 }
@@ -446,7 +385,7 @@ object WatermarkHooks {
     // Rendering
     // ---------------------------------------------------------------------------------------
 
-    private fun process(out: Bitmap, frame: Frame?, srcPhoto: Bitmap?) {
+    private fun process(out: Bitmap, frame: Frame?) {
         val w = out.width
         val h = out.height
         if (w < MIN_PANEL_WIDTH || h < 16) {
@@ -501,96 +440,18 @@ object WatermarkHooks {
 
         val params = resolveParams(pixels, cw, ch, localPanel)
 
-        // Source the backdrop from the original photograph passed to the composite.
-        // The camera blits the photo into [out] first, then draws the watermark plate
-        // over it. So [out] already holds the photo everywhere except inside the plate.
-        // When the source bitmap is available and dimensionally compatible, reading the
-        // panel region directly from it gives the optics the true scene — no mirroring,
-        // no white corners, no scale change.
-        var photoPixels: IntArray? = null
-        var photoLeft = 0
-        var photoTop = 0
-        var photoW = 0
-        var photoH = 0
-        if (srcPhoto != null && !srcPhoto.isRecycled && srcPhoto.width >= 8 && srcPhoto.height >= 8) {
-            val sx: Int
-            val sy: Int
-            val sw: Int
-            val sh: Int
-            if (srcPhoto.width == w && srcPhoto.height == h) {
-                // Exact match: same coordinate space as [out].
-                sx = left; sy = top; sw = cw; sh = ch
-            } else {
-                // The source may be a different resolution that the camera scales to fit
-                // [out]. Map the crop rectangle proportionally.
-                val sxw = (cw.toLong() * srcPhoto.width / w).toInt().coerceAtLeast(1)
-                val sxh = (ch.toLong() * srcPhoto.height / h).toInt().coerceAtLeast(1)
-                sx = (left.toLong() * srcPhoto.width / w).toInt().coerceIn(0, srcPhoto.width - 1)
-                sy = (top.toLong() * srcPhoto.height / h).toInt().coerceIn(0, srcPhoto.height - 1)
-                sw = sxw.coerceAtMost(srcPhoto.width - sx)
-                sh = sxh.coerceAtMost(srcPhoto.height - sy)
-            }
-            if (sw > 0 && sh > 0) {
-                try {
-                    // Read the panel crop region from the original photograph.
-                    // For the exact-match case (same resolution as [out]) this is a direct
-                    // copy. For a resolution mismatch, read at source resolution and then
-                    // nearest-neighbour resample back to the output crop dimensions.
-                    val rawW: Int
-                    val rawH: Int
-                    if (srcPhoto.width == w && srcPhoto.height == h) {
-                        rawW = cw; rawH = ch
-                    } else {
-                        rawW = sw; rawH = sh
-                    }
-                    val px = IntArray(rawW * rawH)
-                    srcPhoto.getPixels(px, 0, rawW, sx, sy, rawW, rawH)
-                    if (srcPhoto.width != w || srcPhoto.height != h) {
-                        val scaled = IntArray(cw * ch)
-                        for (y in 0 until ch) {
-                            val srcY = (y.toLong() * sh / ch).toInt().coerceIn(0, sh - 1)
-                            for (x in 0 until cw) {
-                                val srcX = (x.toLong() * sw / cw).toInt().coerceIn(0, sw - 1)
-                                scaled[y * cw + x] = px[srcY * rawW + srcX]
-                            }
-                        }
-                        photoPixels = scaled
-                    } else {
-                        photoPixels = px
-                    }
-                    // renderPanel works in crop-local coordinates: the crop starts at (0,0)
-                    // in the backdrop buffer and the photo block covers the entire crop.
-                    photoLeft = 0
-                    photoTop = 0
-                    photoW = cw
-                    photoH = ch
-                } catch (_: Throwable) {
-                    // Falls back to the mirror path.
-                }
-            }
-        }
-
-        val result = if (photoPixels != null && photoW > 0 && photoH > 0) {
-            LiquidGlassOptics.renderPanel(
-                pixels, cw, ch, localPanel, params,
-                panelIsOpaquePlate = true,
-                photoBackdrop = photoPixels,
-                photoLeft = photoLeft,
-                photoTop = photoTop,
-                photoW = photoW,
-                photoH = photoH,
-            )
-        } else {
-            LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
-        }
+        // The watermark plate sits below the original photograph, so the source bitmap
+        // contains the camera's white fill, not the real scene. Mirroring from above is
+        // the only correct source of background content. The srcPhoto path was tried in
+        // v1.9.3/1.9.4 and is now abandoned.
+        val result = LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
         if (!result.startsWith("skip")) {
             out.setPixels(pixels, 0, cw, left, top, cw, ch)
         }
 
         log("panel=${f(resolved.left)},${f(resolved.top)} " +
                 "${f(resolved.width)}x${f(resolved.height)} " +
-                "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} " +
-                "photo=${if (photoPixels != null) "yes" else "no"} -> $result")
+                "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} -> $result")
     }
 
     /**
