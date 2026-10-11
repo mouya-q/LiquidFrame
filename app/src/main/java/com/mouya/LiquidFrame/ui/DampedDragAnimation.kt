@@ -78,18 +78,18 @@ class DampedDragAnimation(
      * from the moment the drag starts instead of jumping.
      */
     val modifier: Modifier = Modifier.pointerInput(Unit) {
-        awaitEachGesture {
+                awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            var slopTotal = Offset.Zero
+            var slopX = 0f
             val claimed = awaitHorizontalTouchSlopOrCancellation(down.id) { change, over ->
                 change.consume()
-                slopTotal = over
+                slopX = over
             }
             if (claimed == null) return@awaitEachGesture
             val dragSize = size
             onDragStarted(down.position)
             press()
-            this@DampedDragAnimation.onDrag(dragSize, Offset(slopTotal.x, 0f))
+            this@DampedDragAnimation.onDrag(dragSize, Offset(slopX, 0f))
             drag(down.id) { change ->
                 val delta = change.positionChange()
                 change.consume()
