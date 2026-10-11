@@ -532,32 +532,38 @@ object WatermarkHooks {
             }
             if (sw > 0 && sh > 0) {
                 try {
-                    val px = IntArray(sw * sh)
-                    srcPhoto.getPixels(px, 0, sw, sx, sy, sw, sh)
-                    photoPixels = px
-                    photoLeft = left
-                    photoTop = top
-                    photoW = cw
-                    photoH = ch
-                    // Note: when srcPhoto dimensions differ from [out], the captured block
-                    // is in source resolution but tagged with output coordinates. The
-                    // renderPanel intersection math uses output coordinates, so we must
-                    // resample. For the exact-match case (the common one) this is a direct
-                    // copy. For the mismatched case, the block is nearest-neighbour scaled
-                    // back to output resolution below.
+                    // Read the panel crop region from the original photograph.
+                    // For the exact-match case (same resolution as [out]) this is a direct
+                    // copy. For a resolution mismatch, read at source resolution and then
+                    // nearest-neighbour resample back to the output crop dimensions.
+                    val rawW: Int
+                    val rawH: Int
+                    if (srcPhoto.width == w && srcPhoto.height == h) {
+                        rawW = cw; rawH = ch
+                    } else {
+                        rawW = sw; rawH = sh
+                    }
+                    val px = IntArray(rawW * rawH)
+                    srcPhoto.getPixels(px, 0, rawW, sx, sy, rawW, rawH)
                     if (srcPhoto.width != w || srcPhoto.height != h) {
                         val scaled = IntArray(cw * ch)
                         for (y in 0 until ch) {
                             val srcY = (y.toLong() * sh / ch).toInt().coerceIn(0, sh - 1)
                             for (x in 0 until cw) {
                                 val srcX = (x.toLong() * sw / cw).toInt().coerceIn(0, sw - 1)
-                                scaled[y * cw + x] = px[srcY * sw + srcX]
+                                scaled[y * cw + x] = px[srcY * rawW + srcX]
                             }
                         }
                         photoPixels = scaled
-                        photoW = cw
-                        photoH = ch
+                    } else {
+                        photoPixels = px
                     }
+                    // renderPanel works in crop-local coordinates: the crop starts at (0,0)
+                    // in the backdrop buffer and the photo block covers the entire crop.
+                    photoLeft = 0
+                    photoTop = 0
+                    photoW = cw
+                    photoH = ch
                 } catch (_: Throwable) {
                     // Falls back to the mirror path.
                 }

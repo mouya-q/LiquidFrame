@@ -212,18 +212,22 @@ object LiquidGlassOptics {
             panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
         )
         if (hasPhoto) {
-            val interLeft = maxOf(cropLeft, photoLeft)
-            val interTop = maxOf(cropTop, photoTop)
-            val interRight = minOf(cropRight, photoLeft + photoW)
-            val interBottom = minOf(cropBottom, photoTop + photoH)
+            // The photo block covers the entire crop-local area: photoLeft=0, photoTop=0,
+            // photoW=cw, photoH=ch. Overwrite the whole backdrop with the real photograph.
+            // (If the photo block were smaller, the intersection math below would clip
+            // it to the overlap region in crop-local coordinates.)
+            val interLeft = maxOf(0, photoLeft)
+            val interTop = maxOf(0, photoTop)
+            val interRight = minOf(cw, photoLeft + photoW)
+            val interBottom = minOf(ch, photoTop + photoH)
             for (y in interTop until interBottom) {
                 val srcRow = (y - photoTop) * photoW
-                val dstRow = (y - cropTop) * cw
+                val dstRow = y * cw
                 val count = interRight - interLeft
                 if (count > 0) {
                     System.arraycopy(
                         photo, srcRow + (interLeft - photoLeft),
-                        backdrop, dstRow + (interLeft - cropLeft),
+                        backdrop, dstRow + interLeft,
                         count,
                     )
                 }
@@ -438,7 +442,7 @@ object LiquidGlassOptics {
         // result is that nothing of the camera's own background survives, while its labels —
         // which are drawn into `pixels` by the camera and skipped by the `content` mask — are
         // still exactly where the camera put them.
-        if (panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY) {
+        if (panelIsOpaquePlate && (hasPhoto || tone.uniformity >= FLAT_PANEL_UNIFORMITY)) {
             var cleared = 0
             // Only clear the corners inside the camera's original rectangular plate.
             // Iterating the entire padded crop used to visit tens of thousands of pixels

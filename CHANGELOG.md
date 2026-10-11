@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.4 — Coordinate-system fix for white-edge elimination
+
+### Watermark rendering
+- **Root cause of remaining white edges**: the photo block's origin was tagged with output-bitmap absolute coordinates (e.g. `photoLeft=200`) while `renderPanel`'s intersection math used crop-local coordinates starting at 0. The `maxOf(cropLeft, photoLeft)` therefore compared ~200 against ~5, producing an empty intersection — the photograph was never written into the backdrop, leaving the camera's baked plate visible at every corner outside the glass silhouette.
+- **Fix**: `photoLeft`/`photoTop` now use crop-local coordinates (`0, 0`), and the intersection math in `renderPanel` operates entirely in crop-local space. The photograph now overwrites the complete backdrop, so every corner outside the rounded glass silhouette carries real scene content instead of the camera's white plate.
+- Corner-clearing (`erasedCorners`) is no longer gated by `tone.uniformity >= FLAT_PANEL_UNIFORMITY` when a photograph is present (`hasPhoto` bypasses the uniformity check), so white wedges are cleared unconditionally when the optics have the real scene.
+- Version: `1.9.4`, `versionCode 13`.
+
+---
+
 ## 1.9.3 — Source-bitmap photo anchor (mirror/white-edge root fix)
 
 ### Watermark rendering
