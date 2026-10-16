@@ -121,6 +121,11 @@ object LiquidGlassOptics {
         panel: PanelRect,
         params: GlassParams = GlassParams.Default,
         panelIsOpaquePlate: Boolean = true,
+        photoBackdrop: IntArray? = null,
+        photoLeft: Int = 0,
+        photoTop: Int = 0,
+        photoW: Int = 0,
+        photoH: Int = 0,
     ): String {
         if (width < 8 || height < 8) return "skip: bitmap too small (${width}x$height)"
         if (pixels.size < width * height) return "skip: pixel buffer too small"
@@ -188,23 +193,63 @@ object LiquidGlassOptics {
             }
         }
 
-        // The camera's plate can overshoot the detected capsule: its own top hairline shows
-        // as a white line above the glass and its soft bottom edge as a white smear below.
-        // Grow the plate rectangle over those rows so both the mirror and the plate-clearing
-        // cover them, while the glass capsule itself stays on the detected rectangle.
-        val plate = growPlateToOvershoot(pixels, width, height, panel, tone)
-
         val backdrop = IntArray(cw * ch)
-        // The watermark plate sits below the original photograph, so the rows around the
-        // capsule are baked white sheet, not the real scene. The mirror rebuilds the plate
-        // area from the photograph above it — the only correct source of background content.
+        // Ground truth: when the pre-plate photograph was captured, it already carries the
+        // real scene under the panel — no mirroring needed. Otherwise the crop holds the
+        // camera's baked plate and the mirror below restores scene content from above.
+        val photo = photoBackdrop
+        val hasPhoto = photo != null && photoW > 0 && photoH > 0
+
+        // Start from the composite as-is (the baked plate), then fix the interior:
+        // 1. mirror fills the whole plate rectangle with scene so no white corners remain;
+        // 2. the pre-plate snapshot, when present, then overwrites the panel interior with
+        //    the true photograph — the mirror only stays visible outside the snapshot.
         for (y in 0 until ch) {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
         }
         mirrorInteriorFromAbove(
-            backdrop, cw, ch, cropLeft, cropTop, plate, radius,
+            backdrop, cw, ch, cropLeft, cropTop, panel, radius,
             panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
         )
+        if (hasPhoto) {
+            // The photo block covers the entire crop-local area: photoLeft=0, photoTop=0,
+            // photoW=cw, photoH=ch. Overwrite the whole backdrop with the real photograph.
+            // (If the photo block were smaller, the intersection math below would clip
+            // it to the overlap region in crop-local coordinates.)
+            val interLeft = maxOf(0, photoLeft)
+            val interTop = maxOf(0, photoTop)
+            val interRight = minOf(cw, photoLeft + photoW)
+            val interBottom = minOf(ch, photoTop + photoH)
+            for (y in interTop until interBottom) {
+                val srcRow = (y - photoTop) * photoW
+                val dstRow = y * cw
+                val count = interRight - interLeft
+                if (count > 0) {
+                    System.arraycopy(
+                        photo, srcRow + (interLeft - photoLeft),
+                        backdrop, dstRow + interLeft,
+                        count,
+                    )
+                }
+            }
+        }
+
+        // THE WHITE BASE. The pixels the camera left inside the panel are not the photo: they are
+        // the opaque plate the camera itself baked in (a flat near-white sheet, or a blurred copy
+        // of the scene). Refracting that plate produces a grey wash and the pale rectangle the
+        // user saw — the glass was magnifying the plate, not the world. So the panel's interior is
+        // re-sourced from the photograph: when the pre-plate capture exists it IS the photo under
+        // the panel, otherwise it is reconstructed as a vertical mirror of the rows above the panel
+        // (continuous at that edge and always backed by real scene pixels), and only then is the
+        // lens run over it. Labels are unaffected: they are still drawn from the untouched original
+        // through the `content` mask below.
+        // NOTE: mirror was already called unconditionally at line ~211. When hasPhoto is
+        // true, the snapshot overwrote the panel interior after mirroring, so the mirror's
+        // only visible contribution is outside the snapshot (corner clearing). When hasPhoto
+        // is false, the mirror at ~211 already filled the whole rectangle — this second
+        // call was a no-op duplicate and has been removed.
+
+
 
         // The source watermark asset may already contain blur, so the configured radius is
         // intentionally conservative. Apply it consistently across the glass interior rather
@@ -391,21 +436,21 @@ object LiquidGlassOptics {
         // capsule sat on a clean scene, surrounded by four white corner wedges of the original
         // plate. That is the ring the user reported as "液态玻璃还是叠加在原来的白色背景上的".
         //
-        // Writing the mirrored scene back over the whole crop removes the plate completely:
-        // inside the silhouette the loop above already composited glass over exactly this
-        // content, and outside it the corners now carry scene instead of baked white. The
+        // Writing the mirrored scene back over the whole panel rectangle removes the plate
+        // completely: inside the silhouette the loop above already composited glass over exactly
+        // this content, and outside it the corners now carry scene instead of baked white. The
         // result is that nothing of the camera's own background survives, while its labels —
         // which are drawn into `pixels` by the camera and skipped by the `content` mask — are
         // still exactly where the camera put them.
-        if (panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY) {
+        if (panelIsOpaquePlate && (hasPhoto || tone.uniformity >= FLAT_PANEL_UNIFORMITY)) {
             var cleared = 0
-            // Clear the grown plate rectangle, not just the detected capsule. Rows the
-            // plate overshoots the capsule by (top hairline, soft bottom edge) are white
-            // sheet; the mirrored backdrop replaces them with scene.
-            val clearLeft = maxOf(plate.left.toInt(), cropLeft, 0)
-            val clearTop = maxOf(plate.top.toInt(), cropTop, 0)
-            val clearRight = minOf(plate.right.toInt(), cropRight, width)
-            val clearBottom = minOf(plate.bottom.toInt(), cropBottom, height)
+            // Only clear the corners inside the camera's original rectangular plate.
+            // Iterating the entire padded crop used to visit tens of thousands of pixels
+            // outside the watermark that were already identical, wasting time on every shot.
+            val clearLeft = maxOf(panel.left.toInt(), cropLeft, 0)
+            val clearTop = maxOf(panel.top.toInt(), cropTop, 0)
+            val clearRight = minOf(panel.right.toInt(), cropRight, width)
+            val clearBottom = minOf(panel.bottom.toInt(), cropBottom, height)
             for (gy in clearTop until clearBottom) {
                 val y = gy - cropTop
                 val row = gy * width
@@ -430,10 +475,6 @@ object LiquidGlassOptics {
         return "ok: panel=${panel.width.toInt()}x${panel.height.toInt()} " +
                 "r=${radius.toInt()} band=${band.toInt()} px=$written " +
                 "corner=$erasedCorners " +
-                "grow=t${plate.top.toInt() - panel.top.toInt()} " +
-                "b${plate.bottom.toInt() - panel.bottom.toInt()} " +
-                "l${plate.left.toInt() - panel.left.toInt()} " +
-                "r${plate.right.toInt() - panel.right.toInt()} " +
                 "content=$preserved flat=$preserveContent " +
                 "u=${fmt(tone.uniformity)} tone=${tone.tone.toInt()} adapt=${fmt(adapt)}"
     }
@@ -664,116 +705,6 @@ object LiquidGlassOptics {
             }
         }
     }
-
-    /**
-     * Grows the detected capsule rectangle to cover the camera's plate overshoot.
-     *
-     * The plate the camera composites is wider/taller than the capsule the module detects:
-     * its top hairline reads as a white line just above the glass, and its soft bottom edge
-     * as a white smear below. Scanning outward from the detected rectangle, a row/column that
-     * stays within [CONTENT_LUMA_DELTA] of the plate's dominant tone for most of its length is
-     * part of the plate and is swallowed; the first photographic row/column stops the growth.
-     * The growth is bounded by the crop's own padding so a mis-detected rectangle can never
-     * eat the frame.
-     */
-    private fun growPlateToOvershoot(
-        pixels: IntArray,
-        width: Int,
-        height: Int,
-        panel: PanelRect,
-        tone: PanelTone,
-    ): PanelRect {
-        val tol = CONTENT_LUMA_DELTA
-        val need = 0.6f
-
-        fun rowIsPlate(gy: Int, x0: Int, x1: Int): Boolean {
-            if (x1 <= x0) return false
-            var hit = 0
-            var total = 0
-            val row = gy * width
-            var x = x0
-            while (x < x1) {
-                val p = pixels[row + x]
-                val luma = 0.213f * ((p shr 16) and 0xFF) +
-                        0.715f * ((p shr 8) and 0xFF) +
-                        0.072f * (p and 0xFF)
-                if (abs(luma - tone.tone) <= tol) hit++
-                total++
-                x += 2
-            }
-            return total > 0 && hit.toFloat() / total >= need
-        }
-
-        fun colIsPlate(gx: Int, y0: Int, y1: Int): Boolean {
-            if (y1 <= y0) return false
-            var hit = 0
-            var total = 0
-            var y = y0
-            while (y < y1) {
-                val p = pixels[y * width + gx]
-                val luma = 0.213f * ((p shr 16) and 0xFF) +
-                        0.715f * ((p shr 8) and 0xFF) +
-                        0.072f * (p and 0xFF)
-                if (abs(luma - tone.tone) <= tol) hit++
-                total++
-                y += 2
-            }
-            return total > 0 && hit.toFloat() / total >= need
-        }
-
-        var left = panel.left.toInt()
-        var top = panel.top.toInt()
-        var right = panel.right.toInt()
-        var bottom = panel.bottom.toInt()
-
-        val maxUp = panel.top.toInt().coerceAtLeast(0)
-        val maxDown = (height - panel.bottom.toInt()).coerceAtLeast(0)
-        val maxLeftG = panel.left.toInt().coerceAtLeast(0)
-        val maxRightG = (width - panel.right.toInt()).coerceAtLeast(0)
-        val maxGrowV = maxOf(maxUp, maxDown)
-        val maxGrowH = maxOf(maxLeftG, maxRightG)
-        val limitV = minOf(maxGrowV, (shortSideLimit(panel) * 0.5f).toInt())
-        val limitH = minOf(maxGrowH, (shortSideLimit(panel) * 1.2f).toInt())
-
-        // Vertical growth first: the reported symptoms are a top hairline and a bottom smear.
-        // Upward growth keeps at least one photograph row above the plate — the mirror
-        // sources from it, so swallowing the last row would disable the rebuild entirely.
-        var up = 0
-        while (up < limitV && up < maxUp - 1 &&
-            rowIsPlate(panel.top.toInt() - 1 - up, panel.left.toInt(), panel.right.toInt())
-        ) up++
-        var down = 0
-        while (down < limitV && down < maxDown &&
-            rowIsPlate(panel.bottom.toInt() + down, panel.left.toInt(), panel.right.toInt())
-        ) down++
-        top -= up
-        bottom += down
-
-        // Horizontal growth uses the vertically grown band so it follows the plate, not the
-        // capsule: the plate's side margins usually match the capsule's, so this rarely moves.
-        var lGrow = 0
-        while (lGrow < limitH && lGrow < maxLeftG &&
-            colIsPlate(panel.left.toInt() - 1 - lGrow, top, bottom)
-        ) lGrow++
-        var rGrow = 0
-        while (rGrow < limitH && rGrow < maxRightG &&
-            colIsPlate(panel.right.toInt() + rGrow, top, bottom)
-        ) rGrow++
-        left -= lGrow
-        right += rGrow
-
-        if (up == 0 && down == 0 && lGrow == 0 && rGrow == 0) return panel
-        return PanelRect(
-            left = left.toFloat(),
-            top = top.toFloat(),
-            width = (right - left).toFloat(),
-            height = (bottom - top).toFloat(),
-            cornerRadiusPx = panel.cornerRadiusPx,
-        )
-    }
-
-    private fun shortSideLimit(panel: PanelRect): Int =
-        minOf(panel.width, panel.height).toInt().coerceAtLeast(8)
 
     /** Reference dispersion, sampled from a crop-local buffer. */
     private fun sampleSpectrumRegion(

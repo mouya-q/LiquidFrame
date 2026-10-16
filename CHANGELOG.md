@@ -1,17 +1,5 @@
 # Changelog
 
-## 1.9.5 — Mirror-only backdrop with plate-overshoot growth
-
-### Watermark rendering
-- **Backdrop source corrected**: the watermark plate sits *below* the original photograph in the composited frame, so the composite's source bitmap contains the camera's white fill — not the real scene — inside the plate area. The v1.9.3/1.9.4 source-bitmap path sampled that white fill and fed it to the optics, so the backdrop was never the scene. The source-bitmap path has been removed; the backdrop is again rebuilt by `mirrorInteriorFromAbove`, which reflects the photograph rows above the plate downward (the only real scene available near the plate).
-- **Plate overshoot growth**: the camera's plate extends beyond the detected capsule — its top hairline reads as a white line just above the glass and its soft bottom edge as a white smear below. New `growPlateToOvershoot` scans outward from the detected rectangle, swallowing rows/columns whose luminance stays within `CONTENT_LUMA_DELTA` of the plate's dominant tone (≥60% of samples). Both the mirror and the plate-clearing now cover the grown rectangle, so the overshooting white line and smear are erased with scene content, while the glass capsule itself stays on the detected silhouette.
-- Growth bounds: at most half the panel's short side vertically (keeping ≥1 photo row above the plate so the mirror always has a source) and 1.2× the short side horizontally, additionally clamped to the crop.
-- Diagnostic log now reports the grown deltas as `grow=tN bN lN rN`.
-- Removed the abandoned capture plumbing: `Frame.photoPixels`/`photoLeft/photoTop/photoW/photoH`, the drawRect pre-plate capture, the composite-argument bitmap extraction, and the `photoBackdrop`/`photo*` parameters of `renderPanel`. Call sites unchanged.
-- Version: `1.9.5`, `versionCode 14`.
-
----
-
 ## 1.9.4 — Coordinate-system fix for white-edge elimination
 
 ### Watermark rendering

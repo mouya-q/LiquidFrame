@@ -1,16 +1,3 @@
-# LiquidFrame 1.9.5 — Optimization notes
-
-## Watermark rendering — mirror-only backdrop, plate-overshoot growth
-
-- 用户实拍确认：水印板位于原图下方，板下方没有真实照片像素（只有相机的白色填充）。v1.9.3/v1.9.4 的"composite 参数直取源照片"路线在板区域采到的正是白色填充，不是场景——该路线已移除。背景重建回归 `mirrorInteriorFromAbove`：从板上方的真实照片行向下镜像（板附近唯一可用的真实场景来源）。
-- **板溢出生长（白线/白底根治）**：相机烘焙的 plate 比检测到的胶囊更大——顶边发丝线在玻璃上方呈白线，底边软边在下方呈白色涂抹。新增 `growPlateToOvershoot`：从检测矩形向外逐行/列扫描，亮度落在 plate 主色调 ±`CONTENT_LUMA_DELTA` 内且占比 ≥60% 的行/列判为 plate 并吞入；首个照片行/列停止生长。镜像与 plate 清理均作用于生长后的矩形，溢出的白线/白底被场景内容覆盖，玻璃胶囊轮廓仍保持在检测矩形上。
-- 生长上限：垂直不超过短边一半（且向上至少保留 1 行照片供镜像采样），水平不超过短边 1.2 倍，并受 crop 边界约束。
-- 诊断日志新增 `grow=tN bN lN rN`，报告四个方向的生长量，便于实机核查。
-- 移除废弃采集管线：`Frame.photoPixels` 等字段、drawRect 前置捕获、composite 参数位图提取、`renderPanel` 的 `photoBackdrop`/`photo*` 参数。调用点不变。
-- Version: `1.9.5`, `versionCode 14`.
-
----
-
 # LiquidFrame 1.9.2 — Optimization notes
 
 This patch is based on the supplied project archive and source-level comparisons with:
