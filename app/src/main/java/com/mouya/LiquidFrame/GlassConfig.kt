@@ -1,6 +1,5 @@
 package com.mouya.LiquidFrame
 
-import android.graphics.Bitmap
 import com.mouya.LiquidFrame.glass.GlassParams
 
 /**
@@ -56,39 +55,5 @@ object GlassConfig {
     fun params(): GlassParams {
         refresh()
         return cachedParams
-    }
-
-    /**
-     * Mean luminance test used to pick a scene variant. Samples on a stride rather than
-     * calling `getPixel` per point, which on a 4000 px frame would dominate the capture time.
-     */
-    fun isDarkScene(bitmap: Bitmap): Boolean {
-        if (bitmap.isRecycled) return false
-        val w = bitmap.width
-        val h = bitmap.height
-        if (w <= 0 || h <= 0) return false
-        val step = maxOf(1, w / 64)
-        // This diagnostic helper is not on the render path; still avoid allocating a
-        // full IntArray for a 48 MP camera bitmap just to inspect roughly 4K samples.
-        return try {
-            var total = 0.0
-            var count = 0
-            var y = 0
-            while (y < h) {
-                var x = 0
-                while (x < w) {
-                    val p = bitmap.getPixel(x, y)
-                    total += 0.213 * ((p shr 16) and 0xFF) +
-                            0.715 * ((p shr 8) and 0xFF) +
-                            0.072 * (p and 0xFF)
-                    count++
-                    x += step
-                }
-                y += step
-            }
-            if (count == 0) false else (total / count) < 108.0
-        } catch (_: Throwable) {
-            false
-        }
     }
 }

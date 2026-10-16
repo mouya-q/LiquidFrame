@@ -99,7 +99,7 @@ object LiquidGlassOptics {
      * This is the path the camera uses. The panel the camera draws is an opaque rectangle of
      * pre-baked background, and the bitmap it was drawn into already holds the photo, so:
      *
-     *  - the backdrop needs no external source 鈥?the pixels under the panel *are* the photo;
+     *  - the backdrop needs no external source — the pixels under the panel *are* the photo;
      *  - the corner radius is measured from the panel instead of assumed;
      *  - the result is composited through a rounded-rect mask, so the square panel the camera
      *    drew comes back as the glass silhouette.
@@ -192,30 +192,19 @@ object LiquidGlassOptics {
                 }
             }
         }
-
+        // The crop holds the finished composite: the real scene everywhere except inside the
+        // panel rectangle, which the camera filled with its own opaque plate.
         val backdrop = IntArray(cw * ch)
-        // Ground truth: when the pre-plate photograph was captured, it already carries the
-        // real scene under the panel — no mirroring needed. Otherwise the crop holds the
-        // camera's baked plate and the mirror below restores scene content from above.
-        val photo = photoBackdrop
-        val hasPhoto = photo != null && photoW > 0 && photoH > 0
-
-        // Start from the composite as-is (the baked plate), then fix the interior:
-        // 1. mirror fills the whole plate rectangle with scene so no white corners remain;
-        // 2. the pre-plate snapshot, when present, then overwrites the panel interior with
-        //    the true photograph — the mirror only stays visible outside the snapshot.
         for (y in 0 until ch) {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
         }
-        mirrorInteriorFromAbove(
-            backdrop, cw, ch, cropLeft, cropTop, panel, radius,
-            panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY,
-        )
+
+        val photo = photoBackdrop
+        val hasPhoto = photo != null && photoW > 0 && photoH > 0
         if (hasPhoto) {
-            // The photo block covers the entire crop-local area: photoLeft=0, photoTop=0,
-            // photoW=cw, photoH=ch. Overwrite the whole backdrop with the real photograph.
-            // (If the photo block were smaller, the intersection math below would clip
-            // it to the overlap region in crop-local coordinates.)
+            // Ground truth: the source photograph replaces the plate interior with the true
+            // scene. The block normally covers the whole crop (photoLeft/Top = 0, photoW/H =
+            // cw/ch); the intersection math below also handles a smaller block.
             val interLeft = maxOf(0, photoLeft)
             val interTop = maxOf(0, photoTop)
             val interRight = minOf(cw, photoLeft + photoW)
@@ -232,22 +221,13 @@ object LiquidGlassOptics {
                     )
                 }
             }
+        } else if (panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY) {
+            // Last resort only: no source photograph is available and the panel is a flat
+            // baked plate. Reconstruct the interior from the rows above the panel so the
+            // lens has scene to refract. This is the single path that can produce mirrored
+            // content, so it must stay gated behind the absence of a real photograph.
+            mirrorInteriorFromAbove(backdrop, cw, ch, cropLeft, cropTop, panel, radius)
         }
-
-        // THE WHITE BASE. The pixels the camera left inside the panel are not the photo: they are
-        // the opaque plate the camera itself baked in (a flat near-white sheet, or a blurred copy
-        // of the scene). Refracting that plate produces a grey wash and the pale rectangle the
-        // user saw — the glass was magnifying the plate, not the world. So the panel's interior is
-        // re-sourced from the photograph: when the pre-plate capture exists it IS the photo under
-        // the panel, otherwise it is reconstructed as a vertical mirror of the rows above the panel
-        // (continuous at that edge and always backed by real scene pixels), and only then is the
-        // lens run over it. Labels are unaffected: they are still drawn from the untouched original
-        // through the `content` mask below.
-        // NOTE: mirror was already called unconditionally at line ~211. When hasPhoto is
-        // true, the snapshot overwrote the panel interior after mirroring, so the mirror's
-        // only visible contribution is outside the snapshot (corner clearing). When hasPhoto
-        // is false, the mirror at ~211 already filled the whole rectangle — this second
-        // call was a no-op duplicate and has been removed.
 
 
 
@@ -657,8 +637,9 @@ object LiquidGlassOptics {
      * the top edge, so there is no seam where the capsule meets the photo, and one row of
      * source per row of output means the scene is never stretched.
      *
-     * Only applied when the panel really is a flat baked background ([flat]); a panel the camera
-     * filled with a blurred copy of the scene is already photographic and is left alone.
+     * Called only when no source photograph is available and the panel is a flat baked
+     * background; a panel the camera filled with a blurred copy of the scene is already
+     * photographic and is left alone.
      *
      * @param backdrop crop-local buffer, width [cw], height [ch], modified in place
      */
@@ -670,9 +651,7 @@ object LiquidGlassOptics {
         cropTop: Int,
         panel: PanelRect,
         radius: Float,
-        flat: Boolean,
     ) {
-        if (!flat) return
         if (cw <= 0 || ch <= 0) return
 
         val topInCrop = panel.top.toInt() - cropTop

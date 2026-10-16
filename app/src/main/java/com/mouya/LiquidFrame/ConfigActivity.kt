@@ -437,7 +437,7 @@ class ConfigActivity : ComponentActivity() {
                                     onClick = {
                                         val diagnostic = buildString {
                                             appendLine("LiquidFrame Diagnostic Log")
-                                            appendLine("Version: 1.9.6 (15)")
+                                            appendLine("Version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
                                             appendLine("写入状态: $writeStatus")
                                             appendLine("预览: $previewResult")
                                             appendLine("背景: $previewSource")
@@ -561,12 +561,12 @@ class ConfigActivity : ComponentActivity() {
                             }
                         }
 
-                        LiquidPage.About -> AboutPage(
-                            versionName = "1.9.4",
-                            versionCode = 13,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
+LiquidPage.About -> AboutPage(
+                             versionName = BuildConfig.VERSION_NAME,
+                             versionCode = BuildConfig.VERSION_CODE,
+                             modifier = Modifier.fillMaxSize(),
+                         )
+                     }
                     GlassBottomBar(
                         currentPage = currentPage,
                         onPageSelected = { currentPage = it },

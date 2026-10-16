@@ -113,28 +113,6 @@ object WatermarkHooks {
     /** Per-composite panel observations. No strong reference to the destination bitmap is kept. */
     private class Frame {
         val panels = ArrayList<PanelRect>(MAX_PANELS)
-
-        /**
-         * Photograph captured *before* the watermark plate is drawn, cropped to the first
-         * plate rectangle plus padding.
-         *
-         * The composite blits the photo into the output bitmap first, then draws the plate
-         * and labels over it. The first `drawRect` before-hook therefore still sees the real
-         * photograph under the plate region. Grabbing that rectangle here gives the optics a
-         * genuine backdrop — no mirroring, no baked plate, and the glass sits directly on the
-         * photo without changing its scale. Only the crop is stored, so a capture costs a few
-         * hundred KB instead of a full 48 MB frame.
-         */
-        var photoPixels: IntArray? = null
-
-        /** [photoPixels] origin and size in the output bitmap's coordinates. */
-        var photoLeft = 0
-        var photoTop = 0
-        var photoW = 0
-        var photoH = 0
-
-        /** The output bitmap this composite renders into; used for the photo capture. */
-        var bitmap: Bitmap? = null
     }
 
     /** Keyed by the `Lpe/o` canvas wrapper, which is created once per composite. */
@@ -142,7 +120,7 @@ object WatermarkHooks {
         java.util.WeakHashMap<Any, Frame>()
     )
 
-    /** Secondary lookup by destination Bitmap, so the composite callback cannot mix captures. */
+    /** Secondary lookup by destination Bitmap, so the composite callback can find its frame. */
     private val framesByBitmap = java.util.Collections.synchronizedMap(
         java.util.WeakHashMap<Bitmap, Frame>()
     )
@@ -218,7 +196,6 @@ object WatermarkHooks {
                 val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
                 val self = p.thisObject ?: return
                 val frame = Frame()
-                frame.bitmap = bitmap
                 // Keyed by the wrapper *instance*, not by this hook object: the wrapper is
                 // created once per composite, so concurrent composites no longer overwrite each
                 // other's state and the drawRect hook can find its own canvas.
@@ -252,36 +229,6 @@ object WatermarkHooks {
 
                 val radiusHint = shaderRadius(shader, w, h)
                 val rect = absoluteRect(canvasOf(self), x0, y0, x1, y1)
-
-                // First plate draw of this composite: the photo is already blitted in but the
-                // plate is not, so the output bitmap still holds the real photograph under the
-                // panel region. Capture it once — later draws only add the plate/labels.
-                if (frame.photoPixels == null) {
-                    val bmp = frame.bitmap
-                    if (bmp != null && !bmp.isRecycled && bmp.width > 0 && bmp.height > 0) {
-                        try {
-                            // Only the first plate rectangle plus padding is needed: the optics
-                            // never samples further than the configured refraction pad. Cropping
-                            // here keeps the capture at a few hundred KB per shot.
-                            val pad = maxOf(32, (rect.width() * 0.55f).toInt())
-                            val capLeft = (rect.left - pad).toInt().coerceIn(0, bmp.width - 1)
-                            val capTop = (rect.top - pad).toInt().coerceIn(0, bmp.height - 1)
-                            val capRight = (rect.right + pad).toInt().coerceIn(capLeft + 1, bmp.width)
-                            val capBottom = (rect.bottom + pad).toInt().coerceIn(capTop + 1, bmp.height)
-                            val cw = capRight - capLeft
-                            val ch = capBottom - capTop
-                            val px = IntArray(cw * ch)
-                            bmp.getPixels(px, 0, cw, capLeft, capTop, cw, ch)
-                            frame.photoPixels = px
-                            frame.photoLeft = capLeft
-                            frame.photoTop = capTop
-                            frame.photoW = cw
-                            frame.photoH = ch
-                        } catch (_: Throwable) {
-                            // A failed capture degrades to the existing mirror path.
-                        }
-                    }
-                }
 
                 if (frame.panels.size < MAX_PANELS) {
                     frame.panels.add(
@@ -468,6 +415,34 @@ object WatermarkHooks {
             return
         }
 
+        // --- Position overlay: move the glass from the camera's white fill area
+        // onto the photograph itself. The camera draws the watermark strip below
+        // the photo, extending the canvas with a flat white fill. Rendering glass
+        // there samples white, not the scene — the root cause of every white-edge
+        // and mirror artifact. Instead, detect the photo/fill boundary and shift
+        // the panel's render target up into the photo so the backdrop is real.
+        val photoBottom = detectPhotoBottom(out, w, h, resolved)
+        val overlayPanel = if (resolved.bottom > photoBottom) {
+            // Panel is (fully or partly) below the photo — shift it up so its
+            // bottom aligns with the photo's bottom edge, with a small inset.
+            val inset = (resolved.height * 0.15f).coerceAtLeast(2f)
+            val newBottom = (photoBottom - inset).toFloat()
+            val newTop = newBottom - resolved.height
+            PanelRect(
+                left = resolved.left,
+                top = newTop.coerceAtLeast(0f),
+                width = resolved.width,
+                height = resolved.height,
+                cornerRadiusPx = resolved.cornerRadiusPx,
+            )
+        } else {
+            resolved
+        }
+        val shifted = overlayPanel !== resolved
+        if (shifted) {
+            log("overlay: panel ${f(resolved.top)}→${f(overlayPanel.top)} photoBottom=$photoBottom")
+        }
+
         // Read only the crop the material touches. The panel is a few percent of the frame, so
         // this is the difference between a ~48 MB buffer and a few hundred KB. It also keeps
         // the full-resolution pass off the critical path of a capture.
@@ -477,13 +452,13 @@ object WatermarkHooks {
         val cropParams = GlassConfig.params()
         val padPx = maxOf(
             24f,
-            PANEL_CROP_PAD_FRACTION * minOf(resolved.width, resolved.height),
-            LiquidGlassOptics.requiredPanelPaddingPx(resolved, cropParams).toFloat(),
+            PANEL_CROP_PAD_FRACTION * minOf(overlayPanel.width, overlayPanel.height),
+            LiquidGlassOptics.requiredPanelPaddingPx(overlayPanel, cropParams).toFloat(),
         )
-        val left = (resolved.left - padPx).toInt().coerceIn(0, w - 1)
-        val top = (resolved.top - padPx).toInt().coerceIn(0, h - 1)
-        val right = (resolved.right + padPx).toInt().coerceIn(left + 1, w)
-        val bottom = (resolved.bottom + padPx).toInt().coerceIn(top + 1, h)
+        val left = (overlayPanel.left - padPx).toInt().coerceIn(0, w - 1)
+        val top = (overlayPanel.top - padPx).toInt().coerceIn(0, h - 1)
+        val right = (overlayPanel.right + padPx).toInt().coerceIn(left + 1, w)
+        val bottom = (overlayPanel.bottom + padPx).toInt().coerceIn(top + 1, h)
         val cw = right - left
         val ch = bottom - top
 
@@ -492,11 +467,11 @@ object WatermarkHooks {
 
         // The optics index in crop-local coordinates, so the panel is shifted with the crop.
         val localPanel = PanelRect(
-            left = resolved.left - left,
-            top = resolved.top - top,
-            width = resolved.width,
-            height = resolved.height,
-            cornerRadiusPx = resolved.cornerRadiusPx,
+            left = overlayPanel.left - left,
+            top = overlayPanel.top - top,
+            width = overlayPanel.width,
+            height = overlayPanel.height,
+            cornerRadiusPx = overlayPanel.cornerRadiusPx,
         )
 
         val params = resolveParams(pixels, cw, ch, localPanel)
@@ -573,7 +548,7 @@ object WatermarkHooks {
         val result = if (photoPixels != null && photoW > 0 && photoH > 0) {
             LiquidGlassOptics.renderPanel(
                 pixels, cw, ch, localPanel, params,
-                panelIsOpaquePlate = true,
+                panelIsOpaquePlate = !shifted,
                 photoBackdrop = photoPixels,
                 photoLeft = photoLeft,
                 photoTop = photoTop,
@@ -581,16 +556,19 @@ object WatermarkHooks {
                 photoH = photoH,
             )
         } else {
-            LiquidGlassOptics.renderPanel(pixels, cw, ch, localPanel, params)
+            LiquidGlassOptics.renderPanel(
+                pixels, cw, ch, localPanel, params,
+                panelIsOpaquePlate = !shifted,
+            )
         }
         if (!result.startsWith("skip")) {
             out.setPixels(pixels, 0, cw, left, top, cw, ch)
         }
 
-        log("panel=${f(resolved.left)},${f(resolved.top)} " +
-                "${f(resolved.width)}x${f(resolved.height)} " +
-                "r=${f(resolved.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} " +
-                "photo=${if (photoPixels != null) "yes" else "no"} -> $result")
+        log("panel=${f(overlayPanel.left)},${f(overlayPanel.top)} " +
+                "${f(overlayPanel.width)}x${f(overlayPanel.height)} " +
+                "r=${f(overlayPanel.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} " +
+                "photo=${if (photoPixels != null) "yes" else "no"} shift=${if (shifted) "yes" else "no"} -> $result")
     }
 
     /**
@@ -779,6 +757,51 @@ object WatermarkHooks {
             log("pixel scan failed: ${t.javaClass.simpleName}: ${t.message}")
             null
         }
+    }
+
+/**
+     * Detects the bottom edge of the photograph inside [out].
+     *
+     * The camera composites the photo at the top of [out] and extends the canvas
+     * downward with a near-white fill to accommodate the watermark strip. The
+     * boundary between photo content (varied colour, texture, edges) and the fill
+     * (flat near-white) is a sharp transition in row-wise luminance variance.
+     *
+     * The scan starts from the panel's top edge and walks upward, sampling a
+     * sparse column of pixels per row. When the variance drops below a threshold
+     * and the mean luminance is near-white, that row is the photo bottom.
+     *
+     * Falls back to the panel's top if no boundary is found (the photo may fill
+     * the entire canvas, or the fill is not pure white).
+     */
+    private fun detectPhotoBottom(out: Bitmap, w: Int, h: Int, panel: PanelRect): Int {
+        val scanStep = maxOf(1, w / 64)
+        val sampleCols = (0 until w step scanStep).toList()
+        val startY = panel.top.toInt().coerceIn(1, h - 1)
+        var lastVariedRow = startY
+        for (y in startY downTo 1) {
+            var sum = 0.0
+            var sumSq = 0.0
+            var n = 0
+            for (x in sampleCols) {
+                val p = out.getPixel(x, y)
+                val luma = (0.213f * ((p shr 16) and 0xFF) +
+                        0.715f * ((p shr 8) and 0xFF) +
+                        0.072f * (p and 0xFF))
+                sum += luma
+                sumSq += luma.toDouble() * luma
+                n++
+            }
+            if (n == 0) continue
+            val mean = sum / n
+            val variance = (sumSq / n - mean * mean)
+            if (variance > 4.0 || mean < 240.0) {
+                lastVariedRow = y
+            } else if (variance < 1.0 && mean >= 245.0 && lastVariedRow < y) {
+                return y
+            }
+        }
+        return lastVariedRow.coerceIn(0, h - 1)
     }
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
