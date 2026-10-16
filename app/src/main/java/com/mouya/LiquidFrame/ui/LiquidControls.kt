@@ -342,9 +342,9 @@ fun LiquidToggle(
     modifier: Modifier = Modifier,
 ) {
     val dark = isSystemInDarkTheme()
-    // The switch follows the reference material: an enabled track is a light
-    // frost (white) rather than iOS green, so it reads as glass, not status UI.
-    val accent = if (dark) Color(0xFFE8E8ED) else Color.White
+    // iOS system green: the enabled track is green, matching the reference
+    // switch control. The thumb is white glass with refraction.
+    val accent = if (dark) Color(0xFF30D158) else Color(0xFF34C759)
     val track = if (dark) Color(0xFF787880).copy(alpha = 0.36f) else Color(0xFF787878).copy(alpha = 0.20f)
     val density = LocalDensity.current
     val haptics = LocalHapticFeedback.current
@@ -474,18 +474,19 @@ fun LiquidToggle(
                                 alpha = if (enabled) 1f else 0.45f
                             },
                             onDrawSurface = {
-                                // Same resting-frost fix as the slider thumb: a full
-                                // white at rest read as an opaque mask, not a highlight.
-                                drawRect(Color.White.copy(alpha = (1f - safeProgress(animation.pressProgress)) * if (dark) 0.055f else 0.09f))
+                                drawRect(Color.White.copy(alpha = 1f - safeProgress(animation.pressProgress)))
                             },
                         )
                     } else {
                         Modifier
-                            .background(
-                                if (dark) Color(0xFF3A3A41) else Color(0xFFF7FAFF),
-                                LiquidShapes.capsule,
-                            )
-                            .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
+                            .graphicsLayer {
+                                val p = safeProgress(animation.pressProgress)
+                                shadowElevation = 8.dp.toPx() * p
+                                scaleX = animation.scaleX.finiteOrZero()
+                                scaleY = animation.scaleY.finiteOrZero()
+                                alpha = if (enabled) (1f - p * 0.15f) else 0.45f
+                            }
+                            .background(Color.White, LiquidShapes.capsule)
                     },
                 )
                 .size(width = 40.dp, height = 24.dp),

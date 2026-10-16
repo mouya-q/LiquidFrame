@@ -437,7 +437,7 @@ class ConfigActivity : ComponentActivity() {
                                     onClick = {
                                         val diagnostic = buildString {
                                             appendLine("LiquidFrame Diagnostic Log")
-                                            appendLine("Version: 1.9.4 (13)")
+                                            appendLine("Version: 1.9.6 (15)")
                                             appendLine("写入状态: $writeStatus")
                                             appendLine("预览: $previewResult")
                                             appendLine("背景: $previewSource")

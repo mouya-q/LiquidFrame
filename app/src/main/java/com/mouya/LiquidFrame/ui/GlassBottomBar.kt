@@ -219,7 +219,7 @@ fun GlassBottomBar(
                                         color = Color.Black.copy(alpha = if (dark) 0.25f else 0.13f),
                                     )
                                 },
-                                innerShadow = {
+innerShadow = {
                                     InnerShadow(
                                         radius = 2.dp,
                                         color = Color.White.copy(alpha = 0.13f),
@@ -227,7 +227,7 @@ fun GlassBottomBar(
                                     )
                                 },
                                 onDrawSurface = {
-                                    drawRect(Color.White.copy(alpha = if (dark) 0.025f else 0.055f))
+                                    drawRect(Color.White.copy(alpha = if (dark) 0.05f else 0.12f))
                                 },
                             )
                         } else {
@@ -266,7 +266,7 @@ fun GlassBottomBar(
                             )
                         },
                         onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = if (dark) 0.035f else 0.075f))
+                            drawRect(Color.White.copy(alpha = if (dark) 0.06f else 0.12f))
                         },
                     )
                 } else {
