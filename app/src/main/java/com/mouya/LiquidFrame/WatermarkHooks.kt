@@ -422,7 +422,7 @@ object WatermarkHooks {
         // and mirror artifact. Instead, detect the photo/fill boundary and shift
         // the panel's render target up into the photo so the backdrop is real.
         val photoBottom = detectPhotoBottom(out, w, h, resolved)
-        val overlayPanel = if (resolved.bottom > photoBottom) {
+        val overlayPanel = if (photoBottom >= 0 && resolved.bottom > photoBottom) {
             // Panel is (fully or partly) below the photo — shift it up so its
             // bottom aligns with the photo's bottom edge, with a small inset.
             val inset = (resolved.height * 0.15f).coerceAtLeast(2f)
@@ -440,7 +440,9 @@ object WatermarkHooks {
         }
         val shifted = overlayPanel !== resolved
         if (shifted) {
-            log("overlay: panel ${f(resolved.top)}→${f(overlayPanel.top)} photoBottom=$photoBottom")
+            log("overlay: panel ${f(resolved.top)}→${f(overlayPanel.top)} photoBottom=$photoBottom shift=yes")
+        } else {
+            log("overlay: no shift photoBottom=$photoBottom shift=no")
         }
 
         // Read only the crop the material touches. The panel is a few percent of the frame, so
@@ -764,21 +766,20 @@ object WatermarkHooks {
      *
      * The camera composites the photo at the top of [out] and extends the canvas
      * downward with a near-white fill to accommodate the watermark strip. The
-     * boundary between photo content (varied colour, texture, edges) and the fill
-     * (flat near-white) is a sharp transition in row-wise luminance variance.
+     * boundary between photo content (varied colour, texture, or dark scene)
+     * and the fill (flat near-white) is a sharp transition in row luminance.
      *
-     * The scan starts from the panel's top edge and walks upward, sampling a
-     * sparse column of pixels per row. When the variance drops below a threshold
-     * and the mean luminance is near-white, that row is the photo bottom.
+     * Walks upward from the panel's top edge. The rows immediately above the
+     * panel are the camera's white fill; the first row that deviates from flat
+     * near-white is the photo's bottom edge.
      *
-     * Falls back to the panel's top if no boundary is found (the photo may fill
-     * the entire canvas, or the fill is not pure white).
+     * Returns -1 when no white fill is found above the panel — the photo fills
+     * the entire canvas and the panel is already on the photograph.
      */
     private fun detectPhotoBottom(out: Bitmap, w: Int, h: Int, panel: PanelRect): Int {
         val scanStep = maxOf(1, w / 64)
         val sampleCols = (0 until w step scanStep).toList()
         val startY = panel.top.toInt().coerceIn(1, h - 1)
-        var lastVariedRow = startY
         for (y in startY downTo 1) {
             var sum = 0.0
             var sumSq = 0.0
@@ -795,13 +796,16 @@ object WatermarkHooks {
             if (n == 0) continue
             val mean = sum / n
             val variance = (sumSq / n - mean * mean)
+            // Photo content: coloured/varied or dark — anything that is not
+            // flat near-white fill.
             if (variance > 4.0 || mean < 240.0) {
-                lastVariedRow = y
-            } else if (variance < 1.0 && mean >= 245.0 && lastVariedRow < y) {
                 return y
             }
         }
-        return lastVariedRow.coerceIn(0, h - 1)
+        // No non-white row found above the panel — the entire region above
+        // is white fill, which means the photo does not extend here at all.
+        // Return -1 so the caller knows there is no photo boundary to use.
+        return -1
     }
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
