@@ -833,28 +833,41 @@ object WatermarkHooks {
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
 
     /** Rate-limited log: at most [LOG_RATE_LIMIT] lines per second, extras counted and summarised. */
-    private var logWindowStart = 0L
-    private var logCountInWindow = 0
-    private var logDroppedInWindow = 0
+    // Multiple camera threads (capture, preview, video) can reach log() concurrently, so the
+    // window counters are atomic rather than plain vars.
+    private val logWindowStart = java.util.concurrent.atomic.AtomicLong(0L)
+    private val logCountInWindow = java.util.concurrent.atomic.AtomicInteger(0)
+    private val logDroppedInWindow = java.util.concurrent.atomic.AtomicInteger(0)
+    private val logLock = Any()
 
     private fun log(message: String) {
         val now = SystemClock.elapsedRealtime()
-        if (logWindowStart == 0L) logWindowStart = now
-        if (now - logWindowStart >= 1000L) {
-            if (logDroppedInWindow > 0) {
-                XposedBridge.log("$TAG: [${logDroppedInWindow} log lines dropped in last window]")
-                LogHelper.log(TAG, "[${logDroppedInWindow} log lines dropped in last window]")
+        val dropped: Int
+        val emit: Boolean
+        synchronized(logLock) {
+            if (logWindowStart.get() == 0L) logWindowStart.set(now)
+            if (now - logWindowStart.get() >= 1000L) {
+                dropped = logDroppedInWindow.getAndSet(0)
+                logWindowStart.set(now)
+                logCountInWindow.set(0)
+            } else {
+                dropped = 0
             }
-            logWindowStart = now
-            logCountInWindow = 0
-            logDroppedInWindow = 0
+            if (logCountInWindow.get() < LOG_RATE_LIMIT) {
+                logCountInWindow.incrementAndGet()
+                emit = true
+            } else {
+                logDroppedInWindow.incrementAndGet()
+                emit = false
+            }
         }
-        if (logCountInWindow < LOG_RATE_LIMIT) {
-            logCountInWindow++
+        if (dropped > 0) {
+            XposedBridge.log("$TAG: [$dropped log lines dropped in last window]")
+            LogHelper.log(TAG, "[$dropped log lines dropped in last window]")
+        }
+        if (emit) {
             XposedBridge.log("$TAG: $message")
             LogHelper.log(TAG, message)
-        } else {
-            logDroppedInWindow++
         }
     }
 }
