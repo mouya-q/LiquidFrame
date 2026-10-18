@@ -706,4 +706,3 @@ LiquidPage.About -> AboutPage(
         return bitmap
     }
 }
-}
