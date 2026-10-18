@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.12 — Bottom bar 1:1 alignment with kyant0 LiquidBottomTabs
+
+### Bottom bar (GlassBottomBar)
+- **Complete rewrite** to achieve 1:1 code-level alignment with kyant0's `LiquidBottomTabs.kt`, `LiquidBottomTab.kt`, and `InteractiveHighlight.kt`.
+- **Three-layer architecture restored**: Layer 1 (outer container glass, 64dp, vibrancy+blur 8dp+lens 24dp, press-scale), Layer 2 (hidden accent layer, 56dp, alpha=0, ColorFilter.tint(accentColor), lens scales with pressProgress), Layer 3 (active tab indicator, 56dp, combined backdrop, lens 10×14dp with chromaticAberration, Shadow+InnerShadow, velocity warp in layerBlock).
+- **`DampedDragAnimation`** wired with `pressedScale = 78f/56f`, `onDragStopped` snaps to nearest tab index and animates `offsetAnimation` back to zero.
+- **`InteractiveHighlight`** with RuntimeShader radial highlight, `inspectDragGestures` for press/drag tracking, position follows indicator center.
+- **`panelOffset`** computed via `derivedStateOf` using `offsetAnimation.value / constraints.maxWidth` (not hardcoded 360f).
+- **`LiquidBottomTab`** uses `clickable` (not `selectable`), `clip(Capsule())`, `Role.Tab`, `fillMaxHeight().weight(1f)`, scale from `LocalLiquidBottomTabScale`.
+- **`DragGestureInspector.kt`** added — provides `inspectDragGestures` suspend function (identical to kyant0 catalog utils).
+- Backdrop null-safety: when `liquidGlassBackdrop()` returns null (API < 33 or no HW accel), each layer falls back to `Modifier.background(color, Capsule())`.
+- Tab icons use system drawables (`ic_menu_camera`, `ic_menu_preferences`, `ic_menu_info_details`) with accent/neutral tint.
+- Version: `1.9.12`, `versionCode 21`.
+
+---
+
 ## 1.9.4 — Coordinate-system fix for white-edge elimination
 
 ### Watermark rendering
