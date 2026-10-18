@@ -329,6 +329,37 @@ object ConfigStore {
     const val KEY_ADAPTIVE = "adaptive"
     const val KEY_PRESERVE = "preserve_content"
 
+    /**
+     * Settings for the rebuilt iOS-style capsule watermark.
+     *
+     * When enabled the module stops dressing the camera's own panel in glass and instead
+     * *replaces* it: the original watermark is erased, and a compact capsule is drawn on the
+     * photograph itself, refracting the real scene, with up to four lines of text inside
+     * (device name, capture time, exposure, coordinates) — the composition of the reference
+     * photographs the user supplied.
+     */
+    const val KEY_CAPSULE_ENABLED = "capsule_enabled"
+    const val KEY_CAPSULE_POS = "capsule_pos"
+    const val KEY_CAPSULE_MODEL = "capsule_model"
+    const val KEY_CAPSULE_DATETIME = "capsule_datetime"
+    const val KEY_CAPSULE_EXIF = "capsule_exif"
+    const val KEY_CAPSULE_GPS = "capsule_gps"
+    const val KEY_CAPSULE_SCALE = "capsule_scale"
+
+    fun capsuleEnabled(): Boolean = bool(KEY_CAPSULE_ENABLED, true)
+
+    fun capsuleModel(): String = cached[KEY_CAPSULE_MODEL]?.trim().orEmpty()
+
+    fun capsulePos(): String =
+        (cached[KEY_CAPSULE_POS] ?: "center").lowercase(Locale.US)
+
+    fun capsuleShowDatetime(): Boolean = bool(KEY_CAPSULE_DATETIME, true)
+    fun capsuleShowExif(): Boolean = bool(KEY_CAPSULE_EXIF, true)
+    fun capsuleShowGps(): Boolean = bool(KEY_CAPSULE_GPS, true)
+
+    fun capsuleScale(): Float =
+        float(KEY_CAPSULE_SCALE, 1f).coerceIn(0.6f, 2.0f)
+
     /** Current values, ready to edit in the UI. */
     fun snapshot(): MutableMap<String, String> {
         val p = glassParams()
@@ -346,6 +377,13 @@ object ConfigStore {
             KEY_DISPERSION to p.chromaticAberration.toString(),
             KEY_ADAPTIVE to p.adaptive.toString(),
             KEY_PRESERVE to p.preserveContent.toString(),
+            KEY_CAPSULE_ENABLED to bool(KEY_CAPSULE_ENABLED, true).toString(),
+            KEY_CAPSULE_POS to capsulePos(),
+            KEY_CAPSULE_MODEL to capsuleModel(),
+            KEY_CAPSULE_DATETIME to capsuleShowDatetime().toString(),
+            KEY_CAPSULE_EXIF to capsuleShowExif().toString(),
+            KEY_CAPSULE_GPS to capsuleShowGps().toString(),
+            KEY_CAPSULE_SCALE to capsuleScale().toString(),
         )
     }
 

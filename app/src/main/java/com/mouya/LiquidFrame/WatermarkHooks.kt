@@ -7,10 +7,12 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
+import com.mouya.LiquidFrame.glass.CapsuleRenderer
 import com.mouya.LiquidFrame.glass.PanelScan
 import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.PanelRect
+import com.mouya.LiquidFrame.glass.CropRect
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -123,6 +125,14 @@ object WatermarkHooks {
 
     /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
     private const val PANEL_CROP_PAD_FRACTION = 0.55f
+
+    /**
+     * Minimum clear air between the photograph's bottom edge and the plate's top
+     * for the plate to count as floating in an appended fill strip. A plate at or
+     * above the boundary was drawn on the photograph itself and needs source-photo
+     * reconstruction, not strip repaint.
+     */
+    private const val STRIP_PLATE_GAP_MIN = 12
 
     /** Per-composite panel observations. No strong reference to the destination bitmap is kept. */
     private class Frame {
@@ -293,7 +303,7 @@ object WatermarkHooks {
                     null
                 }
                 try {
-                    process(out, frame, src)
+                    process(out, frame, src, p.thisObject, p.args)
                 } catch (t: Throwable) {
                     log("process failed: ${t.javaClass.simpleName}: ${t.message}")
                 }
@@ -404,7 +414,13 @@ object WatermarkHooks {
     // Rendering
     // ---------------------------------------------------------------------------------------
 
-    private fun process(out: Bitmap, frame: Frame?, srcPhoto: Bitmap?) {
+    private fun process(
+        out: Bitmap,
+        frame: Frame?,
+        srcPhoto: Bitmap?,
+        thisObj: Any?,
+        args: Array<Any?>?,
+    ) {
         val startTime = SystemClock.elapsedRealtime()
         val w = out.width
         val h = out.height
@@ -427,7 +443,29 @@ object WatermarkHooks {
             return
         }
 
-        // --- Position overlay: move the glass from the camera's white fill area
+        // --- Capsule rebuild: erase the stock plate and draw a fresh iOS-style
+        // capsule onto the photograph itself.
+        //
+        // The camera paints its watermark onto a strip it appends below the photo
+        // (or over the photo's bottom on some styles), then layers the plate and
+        // glyphs on top. Dressing that plate in glass refracts whatever the camera
+        // left behind it — white fill, glyph remnants, or a mirrored stand-in —
+        // which is exactly the "no real scene under the glass and no text" the user
+        // reported. Rebuilding is the honest route: repair the plate area with the
+        // original photograph, then render a compact glass capsule carrying fresh
+        // text lines at a fixed position inside the photo.
+        if (ConfigStore.capsuleEnabled()) {
+            try {
+                processCapsule(out, w, h, resolved, srcPhoto, System.currentTimeMillis(), thisObj, args)
+            } catch (t: Throwable) {
+                log("capsule failed: ${t.javaClass.simpleName}: ${t.message}")
+            }
+            return
+        }
+
+        // --- Legacy path: dress the detected stock panel itself in glass. ---
+
+        // Position overlay: move the glass from the camera's white fill area
         // onto the photograph itself. The camera draws the watermark strip below
         // the photo, extending the canvas with a flat white fill. Rendering glass
         // there samples white, not the scene — the root cause of every white-edge
@@ -593,6 +631,290 @@ object WatermarkHooks {
                 "${f(overlayPanel.width)}x${f(overlayPanel.height)} " +
                 "r=${f(overlayPanel.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} " +
                 "photo=${if (photoPixels != null) "yes" else "no"} shift=${if (shifted) "yes" else "no"} ${elapsed}ms -> $result")
+    }
+
+    /**
+     * The rebuilt-capsule pipeline.
+     *
+     * 1. Find where the photograph ends inside [out] (the camera extends the canvas
+     *    with flat fill below it to make room for the stock watermark strip).
+     * 2. Eradicate the stock marks: an appended fill strip is repainted with its
+     *    own factory fill, and a plate drawn over the photograph is rebuilt
+     *    from the original photograph. Rows whose repair cannot be proven safe
+     *    are left untouched instead of being smeared.
+     * 3. Place and render a fresh glass capsule strictly inside the photo. The
+     *    capsule floats on a real-scene backdrop — the eradicate above
+     *    guarantees the crop is scene — and the optics' two opaque-plate
+     *    fallbacks (mirrored interior, content preserve-blend) are switched
+     *    off at the call boundary, so the bent backdrop is always true scene.
+     */
+    // The rebuild needs the composite call's live receiver and arguments to mine
+    // capture metadata out of the camera stack (model name, shutter parameters,
+    // GPS fix). They travel from hookComposite through process() to here.
+    private fun processCapsule(
+        out: Bitmap,
+        w: Int,
+        h: Int,
+        plate: PanelRect,
+        srcPhoto: Bitmap?,
+        now: Long,
+        thisObj: Any?,
+        args: Array<Any?>?,
+    ) {
+        val start = SystemClock.elapsedRealtime()
+        val shortSide = minOf(w, h)
+        var photoBottom = detectPhotoBottom(out, w, h, plate)
+        if (photoBottom < 0 && srcPhoto != null && !srcPhoto.isRecycled &&
+            srcPhoto.width >= 8 && srcPhoto.height >= 8
+        ) {
+            // The uniformity scan could not see a photo/fill boundary — the rows
+            // above the plate happened to be flat. The composite paints the
+            // source bitmap at one uniform scale with the fill appended below,
+            // so the source's own height times that scale is the exact boundary
+            // without scanning a single pixel.
+            val s = w.toFloat() / srcPhoto.width.toFloat()
+            val candidate = (srcPhoto.height.toFloat() * s).toInt()
+            if (candidate in 8 until h) photoBottom = candidate
+        }
+        val anchorY = if (photoBottom >= 0) photoBottom.toFloat() else h.toFloat()
+
+        // ------------------------------------------------------------------
+        // Eradicate the stock marks. Two layouts exist, told apart by whether
+        // the plate floats with clear air below the photograph's bottom:
+        //
+        //  - strip layout: the band the camera appended below the photo is
+        //    repainted whole with its own verified fill colour, so no stock
+        //    glyph, glow or plate seam survives anywhere across the width.
+        //  - over-photo layout: the plate was painted on the photograph
+        //    itself, so its rectangle (plus a glow margin) is rebuilt from
+        //    the original photograph via the composite's uniform scale.
+        //
+        // Repairs that cannot be proven safe are refused rather than smeared:
+        // stock marks left standing under fresh glass beat a stretched
+        // repaint of real scene content.
+        // ------------------------------------------------------------------
+        val eraseTopY = if (photoBottom >= 0) {
+            (photoBottom - 2).coerceAtLeast(0)
+        } else {
+            (plate.top.toInt() - 16).coerceAtLeast(0)
+        }
+        val eraseRowsGlobal = if (photoBottom >= 0) {
+            h - eraseTopY
+        } else {
+            ((plate.bottom + 24f).toInt() - eraseTopY).coerceIn(0, h - eraseTopY)
+        }
+        val isStripLayout = photoBottom >= 0 && plate.top >= photoBottom + STRIP_PLATE_GAP_MIN
+        var eraseMode = "none"
+        if (eraseRowsGlobal > 0) {
+            if (isStripLayout) {
+                val strip = IntArray(w * eraseRowsGlobal)
+                out.getPixels(strip, 0, w, 0, eraseTopY, w, eraseRowsGlobal)
+                val fill = CapsuleRenderer.fillColorFromStripTop(strip, w)
+                val repaired = fill != null &&
+                        CapsuleRenderer.fillStrip(strip, w, eraseRowsGlobal, fill)
+                if (repaired) {
+                    out.setPixels(strip, 0, w, 0, eraseTopY, w, eraseRowsGlobal)
+                    eraseMode = "strip-fill"
+                }
+            } else if (srcPhoto != null) {
+                // Rebuild the plate rectangle from the true photograph.
+                val pad = 16
+                val pl = (plate.left - pad).toInt().coerceIn(0, w - 1)
+                val pt = (plate.top - pad).toInt().coerceIn(0, h - 1)
+                val pr = (plate.right + pad).toInt().coerceIn(pl + 1, w)
+                val pb = (plate.bottom + pad).toInt().coerceIn(pt + 1, h)
+                val ppw = pr - pl
+                val pph = pb - pt
+                if (ppw >= 8 && pph >= 8) {
+                    val patch = IntArray(ppw * pph)
+                    out.getPixels(patch, 0, ppw, pl, pt, ppw, pph)
+                    val ok = CapsuleRenderer.patchCropFromSource(
+                        patch, ppw, pph, pl, pt, w, h, srcPhoto,
+                    )
+                    // patchCropFromSource rewrites only rows the source can
+                    // truly serve and leaves the rest untouched in the buffer,
+                    // so writing back is safe whether or not it succeeded.
+                    out.setPixels(patch, 0, ppw, pl, pt, ppw, pph)
+                    if (ok) eraseMode = "plate-patch"
+                }
+            }
+            if (eraseMode == "none") {
+                // Last resort, any layout: erase only the plate's own band
+                // with the colour sampled just left and right of it. In an
+                // over-photo layout those samples are scene and the routine
+                // refuses on its own variance gate; in a band layout they are
+                // fill, and the stock plate disappears without ever touching
+                // the photograph above the boundary.
+                val pTop = (plate.top.toInt() - 1).coerceAtLeast(0)
+                val pBot = (plate.bottom.toInt() + 24).coerceAtMost(h).coerceAtLeast(pTop + 8)
+                if (pBot <= h && pBot - pTop >= 8 && w >= 8) {
+                    val sub = IntArray(w * (pBot - pTop))
+                    out.getPixels(sub, 0, w, 0, pTop, w, pBot - pTop)
+                    val region = CropRect(
+                        (plate.left.toInt() - 16).coerceIn(0, w - 1),
+                        0,
+                        (plate.right.toInt() + 16).coerceIn(1, w),
+                        pBot - pTop,
+                    )
+                    val ok = CapsuleRenderer.eraseFlatRegion(sub, w, pBot - pTop, region)
+                    if (ok) {
+                        out.setPixels(sub, 0, w, 0, pTop, w, pBot - pTop)
+                        eraseMode = "plate-flat"
+                    }
+                }
+            }
+        }
+        log("eradicate: mode=$eraseMode y=$eraseTopY..${eraseTopY + eraseRowsGlobal} " +
+                "photoBottom=$photoBottom strip=${if (isStripLayout) "yes" else "no"}")
+
+        if (SystemClock.elapsedRealtime() - start > RENDER_TIME_BUDGET_MS) {
+            log("skip: capsule erase exhausted time budget")
+            return
+        }
+
+        // ------------------------------------------------------------------
+        // Place the capsule inside the photograph.
+        // ------------------------------------------------------------------
+        val opts = CapsuleRenderer.Options(
+            modelOverride = ConfigStore.capsuleModel(),
+            position = ConfigStore.capsulePos(),
+            showDateTime = ConfigStore.capsuleShowDatetime(),
+            showExif = ConfigStore.capsuleShowExif(),
+            showGps = ConfigStore.capsuleShowGps(),
+            scale = ConfigStore.capsuleScale(),
+        )
+        val meta = CapsuleRenderer.extractMeta(thisObj, args, now)
+        val lines = CapsuleRenderer.buildLines(opts, meta, shortSide)
+        if (lines.isEmpty()) {
+            log("skip: no capsule text")
+            return
+        }
+        val metrics = CapsuleRenderer.measureCapsule(w, shortSide, opts.scale, lines)
+        if (metrics == null) {
+            log("skip: capsule layout failed")
+            return
+        }
+
+        val capsuleW = metrics.capsuleWidth
+        val capsuleH = metrics.capsuleHeight
+        // The optics pad depends only on the capsule's box (shortSide × params),
+        // so it is computable before placement. The inset must clear that pad:
+        // an inset smaller than the pad puts the crop's bottom edge past the
+        // photograph's end, and the clamp backer then amputates the lens's lower
+        // sample window — the refraction band stretches and the bottom edge
+        // washes out with fill-band white.
+        val protoCapsule = PanelRect(0f, 0f, capsuleW, capsuleH, capsuleH * 0.5f)
+        val cropParams = GlassConfig.params()
+        val padPx = maxOf(
+            24f,
+            PANEL_CROP_PAD_FRACTION * minOf(capsuleW, capsuleH),
+            LiquidGlassOptics.requiredPanelPaddingPx(protoCapsule, cropParams).toFloat(),
+        )
+        val inset = (CapsuleRenderer.BOX_INSET_REF * metrics.unitPx)
+            .coerceAtLeast(padPx + 6f)
+        // Placement cap. In the strip layout the photograph's bottom edge is the
+        // ceiling. When the eradicate refused (eraseMode still "none") the stock
+        // plate is still standing; the capsule — including its optics pad — must
+        // then stay clear of it, because a fresh capsule stamped onto the
+        // surviving stock mark reads worse than the mark alone. With the plate
+        // eradicated the ceiling moves back to the photo's bottom edge.
+        val placementCap = when {
+            isStripLayout -> anchorY
+            eraseMode == "none" -> (plate.top - inset - 8f).coerceAtLeast(0f)
+            else -> anchorY
+        }
+        val capsuleBottom = (placementCap - inset).coerceAtLeast(capsuleH + 4f)
+        val capsuleTop = capsuleBottom - capsuleH
+        val capsuleLeft = when (opts.position) {
+            "left" -> inset
+            "right" -> w - inset - capsuleW
+            else -> (w - capsuleW) * 0.5f
+        }
+        val capsule = PanelRect(
+            left = capsuleLeft,
+            top = capsuleTop,
+            width = capsuleW,
+            height = capsuleH,
+            cornerRadiusPx = (capsuleH * 0.5f).coerceAtLeast(1f),
+        )
+
+        // ------------------------------------------------------------------
+        // Render the capsule: crop, optics, text. Crop-local coords again.
+        // ------------------------------------------------------------------
+        val cropL = (capsule.left - padPx).toInt().coerceIn(0, w - 1)
+        val cropT = (capsule.top - padPx).toInt().coerceIn(0, h - 1)
+        val cropR = (capsule.right + padPx).toInt().coerceIn(cropL + 1, w)
+        val cropB0 = (capsule.bottom + padPx).toInt().coerceIn(cropT + 1, h)
+        // The optics must not sample the fill band: flat white inside the blur
+        // window is the seed of the washed-out bottom edge. Clamp the crop to
+        // the photograph whenever that keeps the capsule fully covered; when it
+        // cannot, the capsule itself overlaps the fill and the render is
+        // refused — geometry errors must fail loud, not silently bend.
+        var cropB = cropB0
+        if (photoBottom >= 0) {
+            val bound = (photoBottom - 2).coerceAtLeast(cropT + 1)
+            if (cropB > bound) {
+                if (bound >= capsule.bottom.toInt() + 2) {
+                    cropB = bound
+                } else {
+                    log("skip: capsule crop would reach the fill band")
+                    return
+                }
+            }
+        }
+        val cw2 = cropR - cropL
+        val ch2 = cropB - cropT
+        if (cw2 < 8 || ch2 < 8) {
+            log("skip: capsule crop empty")
+            return
+        }
+        val pixels = IntArray(cw2 * ch2)
+        out.getPixels(pixels, 0, cw2, cropL, cropT, cw2, ch2)
+
+        val localCapsule = PanelRect(
+            left = capsule.left - cropL,
+            top = capsule.top - cropT,
+            width = capsule.width,
+            height = capsule.height,
+            cornerRadiusPx = capsule.cornerRadiusPx,
+        )
+        val params = resolveParams(pixels, cw2, ch2, localCapsule)
+
+        // The glass body is transparent where the stock panel was opaque, so it
+        // samples-and-bends this crop's own scene: the crop lies fully inside
+        // the photograph, so the backdrop is genuinely the scene. The camera's
+        // plate is no longer part of the backdrop at all.
+        //
+        // panelIsOpaquePlate=false tells the optics this capsule was never an
+        // opaque stock plate — its two opaque-plate fallbacks (mirrored
+        // interior, preserve-content blend) are off at the call boundary, and
+        // preserveContent=false keeps even the uniformity-gated branch from
+        // firing: the bent backdrop must always be real scene.
+        val result = LiquidGlassOptics.renderPanel(
+            pixels, cw2, ch2, localCapsule, params.copy(preserveContent = false),
+            panelIsOpaquePlate = false,
+        )
+        if (result.startsWith("skip")) {
+            log("capsule render: $result")
+            return
+        }
+
+        // ------------------------------------------------------------------
+        // Text layer. Rasterized into its own transparent layer and blended over
+        // the finished glass, so the glyphs never bend with the refraction the
+        // way the scene does — they sit on the surface, as stamped ink.
+        // ------------------------------------------------------------------
+        val textLayer = CapsuleRenderer.drawTextLayer(cw2, ch2, localCapsule, metrics)
+        if (textLayer != null) {
+            CapsuleRenderer.blendTextOver(pixels, textLayer)
+        }
+
+        out.setPixels(pixels, 0, cw2, cropL, cropT, cw2, ch2)
+
+        val elapsed = SystemClock.elapsedRealtime() - start
+        log("capsule: ${f(capsule.width)}x${f(capsule.height)} at ${f(capsule.left)},${f(capsule.top)} " +
+                "lines=${lines.size} anchor=${f(anchorY)} photoBottom=${photoBottom} " +
+                "text=${if (textLayer != null) "yes" else "no"} $elapsed -> $result")
     }
 
     /**

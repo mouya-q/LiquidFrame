@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.15 — Rebuilt capsule: eradicate the stock plate, stamp a fresh glass capsule
+
+### WatermarkHooks — the rebuilt-capsule pipeline (major rewrite)
+- **The stock watermark is no longer patched on top of — it is eradicated first.** Three-path strategy: **strip-fill** (the plate hangs in the bottom fill strip → sample the strip's own color and tile the whole band), **plate-patch** (the plate sits on the photograph → rebuild the covered region from the original source bitmap at a single scale factor; rows the source cannot serve are left untouched, never stretched), and a **plate-flat** fallback that paints only the plate's own band and refuses automatically on textured backdrops. Every capture logs `eradicate: mode=…` so failures are diagnosable from logcat alone.
+- **Strip vs on-photo layout detection now requires a real gap**: `plate.top >= photoBottom + 12 px` (`STRIP_PLATE_GAP_MIN`). Previously a naive `photoBottom >= 0` check let the strip path smear flat color over real scene pixels whenever the plate rode on the photograph — a destructive misclassification, not a cosmetic one.
+- **`detectPhotoBottom` fallback from the source bitmap**: when the scan returns −1 and `srcPhoto` is available, the photograph's projected bottom edge derives from `srcH * (w / srcW)` instead of degrading to the frame's bottom.
+- **`processCapsule` signature** now carries `thisObj` / `args` end-to-end, so model, date and GPS text come from the actual capture context.
+- **Optics contract flipped for the capsule**: `renderPanel` is called with `panelIsOpaquePlate = false` + `params.copy(preserveContent = false)`, structurally closing the mirrored-interior and preserve-content branches — the glass now always bends the real scene behind it (the root fix for "mirror of the upper photo" under the glass).
+- **Optical inset calibration**: the capsule's bottom inset is `max(BOX_INSET_REF * unitPx, opticsPad + 6)`, the pad precomputed from a prototype capsule (`requiredPanelPaddingPx` depends only on the box's short side and the params, so a prototype is exact). The crop's bottom edge no longer amputates the lens's lower sample window, which previously stretched the bottom refraction band and let fill-band white bleed in.
+- **Placement guards**: if the eradicate refused (`eraseMode == "none"`) the surviving stock plate stays bare — the capsule re-anchors above it, optics pad and all; a crop that cannot both stay inside the photograph and fully cover the capsule aborts loudly instead of silently smearing.
+
+### Version
+- `1.9.15`, `versionCode 24`.
+
+---
+
 ## 1.9.14 — Frosted card material, deduplicated bottom bar, ambient backdrop field
 
 ### GlassSystem — frosted card material (new API)
