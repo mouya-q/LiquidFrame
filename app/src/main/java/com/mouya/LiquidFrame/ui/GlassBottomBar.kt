@@ -167,7 +167,7 @@ fun GlassBottomBar(
             pressedScale = 78f / 56f,
             onDragStarted = {},
             onDragStopped = {
-                val targetIdx = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
+                val targetIdx = targetValue.fastRoundToInt().coerceIn(0, tabsCount - 1)
                 currentIndex = targetIdx
                 animateToValue(targetIdx.toFloat())
                 animationScope.launch {
@@ -314,8 +314,7 @@ fun GlassBottomBar(
                         )
                         .height(56.dp)
                         .fillMaxWidth()
-                        .padding(horizontal = 4.dp)
-                        .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                        .padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     LiquidPage.entries.forEach { _ ->
