@@ -3,6 +3,7 @@ package com.mouya.LiquidFrame.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -34,7 +35,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
@@ -175,7 +178,7 @@ fun GlassBottomBar(
                 pressedScale = 78f / 56f,
                 onDragStarted = {},
                 onDragStopped = {
-                    val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
+                    val targetIndex = targetValue.fastRoundToInt().coerceIn(0, tabsCount - 1)
                     currentIndex = targetIndex
                     animateToValue(targetIndex.toFloat())
                     animationScope.launch {
@@ -349,7 +352,13 @@ fun GlassBottomBar(
                     .height(56f.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4f.dp)
-                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                    .drawWithContent {
+                        drawContent()
+                        drawRect(
+                            color = accentColor,
+                            blendMode = BlendMode.Modulate,
+                        )
+                    },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 pages.forEachIndexed { _, page ->
