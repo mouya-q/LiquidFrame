@@ -276,8 +276,18 @@ object DexScan {
     /** `Lpe/o;`-style wrapper: new(Bitmap), holds a Canvas, draws rects with a Paint. */
     val DRAW_RECT_PARAMS = listOf(FLOAT, FLOAT, FLOAT, FLOAT, PAINT)
 
-    /** `LFe/a;->j`-style composite: static, takes the photo Bitmap, returns the merged Bitmap. */
-    val COMPOSITE_PARAMS = listOf(BITMAP, COLOR_SPACE, INT, INT, STRING, INT)
+    /**
+     * `LFe/a;->j`-style composite (6.7.x): static, takes the photo Bitmap, returns the merged Bitmap.
+     * Full signature: (Bitmap, ColorSpace, I, I, String, I) -> Bitmap
+     */
+    val COMPOSITE_PARAMS_67 = listOf(BITMAP, COLOR_SPACE, INT, INT, STRING, INT)
+
+    /**
+     * `LCd/a;->i`-style composite (6.2.x): static, takes the photo Bitmap, returns the merged Bitmap.
+     * Full signature: (Cd/a, Bitmap, ColorSpace, I) -> Bitmap
+     * The first parameter is the composite's own type (self-reference), not in the 6.7.x signature.
+     */
+    val COMPOSITE_PARAMS_62 = listOf(BITMAP, COLOR_SPACE, INT)
 
     class Found {
         /** Class names of candidate canvas wrappers, most specific first. */
@@ -343,6 +353,18 @@ object DexScan {
         return hasBitmapCtor && hasDrawRect && cls.fieldTypes.contains(CANVAS)
     }
 
+    /**
+     * A composite is recognised by: static, returns Bitmap, and the parameter list
+     * contains both a Bitmap and a ColorSpace. The exact arity differs between
+     * camera builds (6.7.x has 6 params, 6.2.x has 4), so matching on the
+     * conjunction of Bitmap + ColorSpace is specific enough while staying
+     * forward- and backward-compatible.
+     */
     private fun hasComposite(cls: DexClass): Boolean =
-        cls.methods.any { it.isStatic && it.matches(COMPOSITE_PARAMS, BITMAP) }
+        cls.methods.any { m ->
+            m.isStatic &&
+            m.returnType == BITMAP &&
+            BITMAP in m.params &&
+            COLOR_SPACE in m.params
+        }
 }

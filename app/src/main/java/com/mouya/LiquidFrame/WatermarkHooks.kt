@@ -175,10 +175,13 @@ object WatermarkHooks {
 
     /** Hardcoded names known to exist in the targeted camera builds. */
     private fun installFallback(loader: ClassLoader) {
-        log("installing fallback hooks (pe.o / Fe.a->j)")
-        hookCanvasWrapperFallback(loader)
-        hookDrawRectFallback(loader)
-        hookCompositeFallback(loader)
+        log("installing fallback hooks (trying 6.7.x then 6.2.x names)")
+        // 6.7.x fallback
+        hookCanvasWrapperFallback(loader, "pe.o")
+        hookDrawRectFallback(loader, "pe.o")
+        hookCompositeFallback(loader, "Fe.a", "j")
+        // 6.2.x fallback — different obfuscated names, no canvas wrapper
+        hookCompositeFallback(loader, "Cd.a", "i")
     }
 
     // ---------------------------------------------------------------------------------------
@@ -287,45 +290,35 @@ object WatermarkHooks {
     // Fallback Hardcoded Hooks (used until the dex scan resolves the real names)
     // ---------------------------------------------------------------------------------------
 
-    /** Class name of the canvas wrapper in the targeted camera builds. */
-    private const val FALLBACK_WRAPPER = "pe.o"
-
-    /** Class name of the composite holder in the targeted camera builds. */
-    private const val FALLBACK_COMPOSITE = "Fe.a"
-
-    /** Method name of the composite in the targeted camera builds. */
-    private const val FALLBACK_COMPOSITE_METHOD = "j"
-
-    private fun hookCanvasWrapperFallback(classLoader: ClassLoader) {
-        val cls = findClass(FALLBACK_WRAPPER, classLoader) ?: return
+    private fun hookCanvasWrapperFallback(classLoader: ClassLoader, className: String) {
+        val cls = findClass(className, classLoader) ?: return
         hookCanvasWrapper(cls)
     }
 
-    private fun hookDrawRectFallback(classLoader: ClassLoader) {
-        val cls = findClass(FALLBACK_WRAPPER, classLoader) ?: return
+    private fun hookDrawRectFallback(classLoader: ClassLoader, className: String) {
+        val cls = findClass(className, classLoader) ?: return
         hookDrawRect(cls)
     }
 
-    private fun hookCompositeFallback(classLoader: ClassLoader) {
-        val cls = findClass(FALLBACK_COMPOSITE, classLoader) ?: run {
-            log("class $FALLBACK_COMPOSITE not found")
+    private fun hookCompositeFallback(classLoader: ClassLoader, className: String, methodName: String) {
+        val cls = findClass(className, classLoader) ?: run {
+            log("class $className not found")
             return
         }
         val target = cls.declaredMethods.firstOrNull { method ->
-            method.name == FALLBACK_COMPOSITE_METHOD &&
+            method.name == methodName &&
                     Bitmap::class.java.isAssignableFrom(method.returnType) &&
                     method.parameterTypes.any { Bitmap::class.java.isAssignableFrom(it) }
         }
         if (target == null) {
             log(
-                "$FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD not found; candidates=" +
+                "$className->$methodName not found; candidates=" +
                         cls.declaredMethods.joinToString { "${it.name}/${it.parameterTypes.size}" }
             )
             return
         }
         hookComposite(target)
-        log("hooked $FALLBACK_COMPOSITE->$FALLBACK_COMPOSITE_METHOD " +
-                "(${target.parameterTypes.size} params)")
+        log("hooked $className->$methodName (${target.parameterTypes.size} params)")
     }
 
     private fun findClass(name: String, loader: ClassLoader): Class<*>? =
