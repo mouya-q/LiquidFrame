@@ -72,50 +72,9 @@ fun LiquidBackdropProvider(
         // which made the dock look like a frosted white sticker. These static ambient fields give
         // the glass real color transitions without adding per-frame animation cost.
         Canvas(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            val base = if (dark) Color(0xFF0B1018) else Color(0xFFF4F7FC)
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = if (dark) listOf(Color(0xFF101722), base, Color(0xFF11101B))
-                    else listOf(Color(0xFFF8FAFE), base, Color(0xFFEEF4FD)),
-                    startY = 0f,
-                    endY = size.height.coerceAtLeast(1f),
-                ),
-            )
-            val blueCenter = Offset(size.width * 0.18f, size.height * 0.28f)
-            val violetCenter = Offset(size.width * 0.86f, size.height * 0.70f)
-            val warmCenter = Offset(size.width * 0.76f, size.height * 0.14f)
-            val radius = size.maxDimension * 0.62f
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = if (dark) listOf(Color(0xFF245DAA).copy(alpha = 0.22f), Color.Transparent)
-                    else listOf(Color(0xFF9BCBFF).copy(alpha = 0.30f), Color.Transparent),
-                    center = blueCenter,
-                    radius = radius,
-                ),
-                radius = radius,
-                center = blueCenter,
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = if (dark) listOf(Color(0xFF5C3B89).copy(alpha = 0.16f), Color.Transparent)
-                    else listOf(Color(0xFFC9B9FF).copy(alpha = 0.20f), Color.Transparent),
-                    center = violetCenter,
-                    radius = radius * 0.85f,
-                ),
-                radius = radius * 0.85f,
-                center = violetCenter,
-            )
-            if (!dark) {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFFFD8C4).copy(alpha = 0.12f), Color.Transparent),
-                        center = warmCenter,
-                        radius = radius * 0.55f,
-                    ),
-                    radius = radius * 0.55f,
-                    center = warmCenter,
-                )
-            }
+            // Pure white background for light mode; deep black for dark mode.
+            // No gradient tints — the glass material itself provides all visual depth.
+            drawRect(if (dark) Color(0xFF000000) else Color(0xFFFFFFFF))
         }
         CompositionLocalProvider(LocalLiquidBackdrop provides backdrop) {
             content()

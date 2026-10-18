@@ -1,34 +1,28 @@
 package com.mouya.LiquidFrame.ui
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
@@ -36,21 +30,43 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.util.fastCoerceIn
+import androidx.compose.ui.util.fastRoundToInt
+import androidx.compose.ui.util.lerp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
@@ -59,22 +75,59 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.roundToInt
+import kotlin.math.sign
 
-/** Main destinations. The dock deliberately stays small and predictable. */
+/** Main destinations. */
 enum class LiquidPage(val icon: ImageVector, val label: String) {
     Home(Icons.Outlined.Home, "首页"),
     Glass(Icons.Outlined.Tune, "参数"),
     About(Icons.Outlined.Info, "关于"),
 }
 
+internal val LocalLiquidBottomTabScale =
+    staticCompositionLocalOf<() -> Float> { { 1f } }
+
+@Composable
+fun RowScope.LiquidBottomTab(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scale = LocalLiquidBottomTabScale.current
+    Column(
+        modifier
+            .clip(Capsule())
+            .selectable(
+                selected = false,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Tab,
+                onClick = onClick,
+            )
+            .fillMaxHeight()
+            .weight(1f)
+            .graphicsLayer {
+                val s = scale()
+                scaleX = s
+                scaleY = s
+            },
+        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        content = content,
+    )
+}
+
 /**
- * A floating, capsule-shaped dock. The old full-width top-rounded sheet and its
- * three independently rendered glass layers have been replaced by one surface
- * and one moving selection lens. That removes the heavy white slab and avoids
- * repeatedly compositing a glass panel over another glass panel.
+ * A floating, capsule-shaped liquid glass dock.
+ *
+ * Faithfully follows the reference architecture: one outer container layer
+ * (vibrancy + blur + lens), a hidden accent-tinted duplicate for the indicator
+ * to sample via combined backdrop, and a visible indicator lens driven by
+ * DampedDragAnimation with velocity deformation and press feedback.
  */
 @Composable
 fun GlassBottomBar(
@@ -83,29 +136,69 @@ fun GlassBottomBar(
     modifier: Modifier = Modifier,
 ) {
     val dark = isDark()
-    val backdrop = liquidGlassBackdrop()
+    val backdrop = liquidGlassBackdrop() ?: return
+    val tabsCount = LiquidPage.entries.size
     val index = LiquidPage.entries.indexOf(currentPage).coerceAtLeast(0)
-    val latestIndex = rememberUpdatedState(index)
-    val latestOnPageSelected = rememberUpdatedState(onPageSelected)
+
+    val accentColor = if (!dark) Color(0xFF0088FF) else Color(0xFF0091FF)
+    val containerColor = if (!dark) Color(0xFFFAFAFA).copy(0.4f) else Color(0xFF121212).copy(0.4f)
+
+    val tabsBackdrop = rememberLayerBackdrop()
     val animationScope = rememberCoroutineScope()
-    val selectionAnimation = remember { Animatable(index.toFloat()) }
-    var dockDragging by remember { mutableStateOf(false) }
-    var dockDragIndex by remember { mutableFloatStateOf(index.toFloat()) }
     val density = LocalDensity.current
-    val sideInsetPx = with(density) { 4.dp.toPx() }
-    val slotInsetPx = with(density) { 8.dp.toPx() }
-    val selectionScale by animateFloatAsState(
-        targetValue = if (dockDragging) 1.045f else 1f,
-        animationSpec = spring(dampingRatio = 0.62f, stiffness = 420f),
-        label = "dock_press_scale",
-    )
-    LaunchedEffect(index) {
-        selectionAnimation.animateTo(
-            index.toFloat(),
-            animationSpec = spring(dampingRatio = 0.62f, stiffness = 380f),
+    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
+
+    var currentIndex by remember { mutableIntStateOf(index) }
+    val offsetAnimation = remember { Animatable(0f) }
+    val panelOffset by remember(density) {
+        derivedStateOf {
+            val fraction = (offsetAnimation.value / 360f).fastCoerceIn(-1f, 1f)
+            with(density) { 4f.dp.toPx() * fraction.sign * EaseOut.transform(abs(fraction)) }
+        }
+    }
+
+    val dampedDragAnimation = remember(animationScope) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = index.toFloat(),
+            valueRange = 0f..(tabsCount - 1).toFloat(),
+            visibilityThreshold = 0.001f,
+            initialScale = 1f,
+            pressedScale = 78f / 56f,
+            onDragStarted = {},
+            onDragStopped = {
+                val targetIdx = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
+                currentIndex = targetIdx
+                animateToValue(targetIdx.toFloat())
+                animationScope.launch {
+                    offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))
+                }
+            },
+            onDrag = { size, dragAmount ->
+                val tabWidth = size.width.toFloat() / tabsCount
+                updateValue(
+                    (targetValue + dragAmount.x / tabWidth * if (isLtr) 1f else -1f)
+                        .fastCoerceIn(0f, (tabsCount - 1).toFloat())
+                )
+                animationScope.launch {
+                    offsetAnimation.snapTo(offsetAnimation.value + dragAmount.x)
+                }
+            },
         )
     }
-    val animatedIndex = if (dockDragging) dockDragIndex else selectionAnimation.value
+
+    LaunchedEffect(index) {
+        snapshotFlow { index }.collectLatest { i -> currentIndex = i }
+    }
+    LaunchedEffect(dampedDragAnimation) {
+        snapshotFlow { currentIndex }
+            .drop(1)
+            .collectLatest { i ->
+                dampedDragAnimation.animateToValue(i.toFloat())
+                onPageSelected(LiquidPage.entries[i])
+            }
+    }
+
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     Box(
@@ -119,221 +212,175 @@ fun GlassBottomBar(
             modifier = Modifier
                 .widthIn(max = 360.dp)
                 .fillMaxWidth()
-                .height(68.dp)
-                .pointerInput(Unit) {
-                    // Let taps fall through to selectable tabs. Once horizontal touch slop
-                    // is crossed, the indicator follows the finger continuously and the
-                    // nearest tab is committed on release; vertical motion remains scroll.
-                    val touchSlop = viewConfiguration.touchSlop
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        var dragging = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) {
-                                if (dragging) {
-                                    val slotWidthPx = ((size.width - slotInsetPx).coerceAtLeast(1f)) / LiquidPage.entries.size
-                                    val firstCenter = sideInsetPx + slotWidthPx / 2f
-                                    dockDragIndex = ((change.position.x - firstCenter) / slotWidthPx)
-                                        .coerceIn(0f, LiquidPage.entries.lastIndex.toFloat())
-                                    val targetIndex = dockDragIndex.roundToInt().coerceIn(0, LiquidPage.entries.lastIndex)
-                                    animationScope.launch {
-                                        selectionAnimation.snapTo(dockDragIndex)
-                                        dockDragging = false
-                                        latestOnPageSelected.value(LiquidPage.entries[targetIndex])
-                                        if (targetIndex == latestIndex.value) {
-                                            selectionAnimation.animateTo(
-                                                targetIndex.toFloat(),
-                                                spring(dampingRatio = 0.78f, stiffness = 460f),
-                                            )
-                                        }
-                                    }
-                                }
-                                break
-                            }
-                            val dx = change.position.x - down.position.x
-                            val dy = change.position.y - down.position.y
-                            if (!dragging) {
-                                if (abs(dx) > touchSlop && abs(dx) > abs(dy) * 1.15f) {
-                                    dragging = true
-                                    dockDragging = true
-                                    change.consume()
-                                } else if (abs(dy) > touchSlop) {
-                                    break
-                                }
-                            } else {
-                                change.consume()
-                            }
-                            if (dragging) {
-                                val slotWidthPx = ((size.width - slotInsetPx).coerceAtLeast(1f)) / LiquidPage.entries.size
-                                val firstCenter = sideInsetPx + slotWidthPx / 2f
-                                dockDragIndex = ((change.position.x - firstCenter) / slotWidthPx)
-                                    .coerceIn(0f, LiquidPage.entries.lastIndex.toFloat())
-                            }
-                        }
-                    }
-                },
+                .height(64.dp)
+                .then(dampedDragAnimation.modifier),
         ) {
-            // The item row has 4dp outer padding on each side. Calculate indicator
-            // geometry from that same inner width, then leave a further 4dp inset on
-            // either side of each selected slot.
-            val slotWidth = (maxWidth - 8.dp) / LiquidPage.entries.size
-            val indicatorWidth = (slotWidth - 8.dp).coerceAtLeast(1.dp)
-            val indicatorModifier = Modifier
-                .align(Alignment.CenterStart)
-                .offset(x = 8.dp + slotWidth * animatedIndex)
-                .width(indicatorWidth)
-                .height(56.dp)
-                .graphicsLayer {
-                    scaleX = selectionScale
-                    scaleY = 2f - selectionScale
-                    // Pressing the dock pushes the lens down 1.5dp and lifts it on
-                    // release, so the selection reads as a physical capsule instead
-                    // of a flat highlight. 1.045 press scale and the y offset move
-                    // together; the spring above drives both.
-                    translationY = (1f - selectionScale) * with(density) { 22.dp.toPx() }
-                }
+            val tabWidth = with(density) {
+                (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / tabsCount
+            }
 
-            // Base surface first; the selected capsule is drawn on top of it.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(68.dp)
-                    .then(
-                        if (backdrop != null) {
-                            Modifier.drawBackdrop(
-                                backdrop = backdrop,
-                                shape = { Capsule() },
-                                effects = {
-                                    vibrancy()
-                                    blur(10.dp.toPx())
-                                    lens(18.dp.toPx(), 16.dp.toPx())
-                                },
-                                highlight = {
-                                    Highlight.Default.copy(alpha = if (dark) 0.28f else 0.40f)
-                                },
-                                shadow = {
-                                    Shadow(
-                                        radius = 20.dp,
-                                        color = Color.Black.copy(alpha = if (dark) 0.25f else 0.13f),
-                                    )
-                                },
-innerShadow = {
-                                    InnerShadow(
-                                        radius = 2.dp,
-                                        color = Color.White.copy(alpha = 0.13f),
-                                        alpha = 0.22f,
-                                    )
-                                },
-                                onDrawSurface = {
-                                    drawRect(Color.White.copy(alpha = if (dark) 0.05f else 0.12f))
-                                },
-                            )
-                        } else {
-                            Modifier
-                                .clip(Capsule())
-                                .background(if (dark) Color(0x991C2430) else Color(0x99F5F8FE))
-                        },
-                    ),
-            )
-
-            // The indicator is one translucent lens, not a white tile pasted over the dock.
-            Box(
-                modifier = if (backdrop != null) {
-                    indicatorModifier.drawBackdrop(
+            // --- Layer 1: Outer container glass ---
+            Row(
+                Modifier
+                    .graphicsLayer { translationX = panelOffset }
+                    .drawBackdrop(
                         backdrop = backdrop,
                         shape = { Capsule() },
                         effects = {
                             vibrancy()
-                            blur(7.dp.toPx())
-                            lens(13.dp.toPx(), 17.dp.toPx(), chromaticAberration = true)
+                            blur(with(density) { 8f.dp.toPx() })
+                            lens(with(density) { 24f.dp.toPx() }, with(density) { 24f.dp.toPx() })
                         },
-                        highlight = {
-                            Highlight.Default.copy(alpha = if (dockDragging) 0.72f else if (dark) 0.42f else 0.58f)
+                        layerBlock = {
+                            val progress = dampedDragAnimation.pressProgress
+                            val scale = lerp(1f, 1f + with(density) { 16f.dp.toPx() } / size.width.coerceAtLeast(1f), progress)
+                            scaleX = scale
+                            scaleY = scale
                         },
-                        shadow = {
-                            Shadow(
-                                radius = 10.dp,
-                                color = Color.Black.copy(alpha = if (dark) 0.22f else 0.12f),
-                            )
-                        },
-                        innerShadow = {
-                            InnerShadow(
-                                radius = 2.dp,
-                                color = Color.White.copy(alpha = 0.18f),
-                                alpha = 0.34f,
-                            )
-                        },
-                        onDrawSurface = {
-                            drawRect(Color.White.copy(alpha = if (dark) 0.06f else 0.12f))
-                        },
+                        onDrawSurface = { drawRect(containerColor) },
                     )
-                } else {
-                    indicatorModifier
-                        .clip(Capsule())
-                        .background(if (dark) Color.White.copy(alpha = 0.10f) else LiquidColors.blue.copy(alpha = 0.09f))
-                },
-            )
-
-            Row(
-                modifier = Modifier
+                    .height(64.dp)
                     .fillMaxWidth()
-                    .height(68.dp)
                     .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                LiquidPage.entries.forEach { page ->
+                LiquidPage.entries.forEachIndexed { i, page ->
                     val selected = currentPage == page
-                    val alpha by animateFloatAsState(
-                        targetValue = if (selected) 1f else 0.66f,
-                        animationSpec = spring(dampingRatio = 0.86f, stiffness = 520f),
-                        label = "dock_content_${page.name}",
-                    )
-                    val foreground by animateColorAsState(
+                    val fg by androidx.compose.animation.animateColorAsState(
                         targetValue = when {
-                            selected && !dark -> LiquidColors.blue
+                            selected && !dark -> accentColor
                             selected && dark -> Color.White
                             else -> textSecondary()
                         },
                         animationSpec = spring(dampingRatio = 0.92f, stiffness = 600f),
                         label = "dock_tint_${page.name}",
                     )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(60.dp)
-                            .clip(Capsule())
-                            .selectable(
-                                selected = selected,
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                role = Role.Tab,
-                                onClick = { onPageSelected(page) },
-                            ),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
+                    LiquidBottomTab(
+                        onClick = {
+                            currentIndex = i
+                            onPageSelected(page)
+                        },
                     ) {
                         Icon(
                             imageVector = page.icon,
                             contentDescription = page.label,
-                            tint = foreground,
-                            modifier = Modifier.graphicsLayer { this.alpha = alpha },
+                            tint = fg,
+                            modifier = Modifier.graphicsLayer {
+                                this.alpha = if (selected) 1f else 0.66f
+                            },
                         )
                         Text(
                             text = page.label,
                             fontSize = 10.sp,
                             lineHeight = 12.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            color = foreground,
+                            color = fg,
                             modifier = Modifier
                                 .padding(top = 3.dp)
-                                .graphicsLayer { this.alpha = alpha },
+                                .graphicsLayer { this.alpha = if (selected) 1f else 0.66f },
                         )
                     }
                 }
             }
+
+            // --- Layer 2: Hidden accent-tinted backdrop for indicator sampling ---
+            CompositionLocalProvider(
+                LocalLiquidBottomTabScale provides {
+                    lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
+                }
+            ) {
+                Row(
+                    Modifier
+                        .clearAndSetSemantics {}
+                        .alpha(0f)
+                        .layerBackdrop(tabsBackdrop)
+                        .graphicsLayer { translationX = panelOffset }
+                        .drawBackdrop(
+                            backdrop = backdrop,
+                            shape = { Capsule() },
+                            effects = {
+                                val progress = dampedDragAnimation.pressProgress
+                                vibrancy()
+                                blur(with(density) { 8f.dp.toPx() })
+                                lens(
+                                    with(density) { 24f.dp.toPx() } * progress,
+                                    with(density) { 24f.dp.toPx() } * progress,
+                                )
+                            },
+                            highlight = {
+                                Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
+                            },
+                            onDrawSurface = { drawRect(containerColor) },
+                        )
+                        .height(56.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp)
+                        .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    LiquidPage.entries.forEach { _ ->
+                        LiquidBottomTab(onClick = {}) {
+                            Box(Modifier.fillMaxHeight().weight(1f))
+                        }
+                    }
+                }
+            }
+
+            // --- Layer 3: Visible indicator lens ---
+            Box(
+                Modifier
+                    .padding(horizontal = 4.dp)
+                    .graphicsLayer {
+                        translationX = if (isLtr) {
+                            dampedDragAnimation.value * tabWidth + panelOffset
+                        } else {
+                            constraints.maxWidth.toFloat() -
+                                (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
+                        }
+                    }
+                    .drawBackdrop(
+                        backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
+                        shape = { Capsule() },
+                        effects = {
+                            val progress = dampedDragAnimation.pressProgress
+                            lens(
+                                with(density) { 10f.dp.toPx() } * progress,
+                                with(density) { 14f.dp.toPx() } * progress,
+                                chromaticAberration = true,
+                            )
+                        },
+                        highlight = {
+                            Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
+                        },
+                        shadow = {
+                            Shadow(alpha = dampedDragAnimation.pressProgress)
+                        },
+                        innerShadow = {
+                            val progress = dampedDragAnimation.pressProgress
+                            InnerShadow(
+                                radius = with(density) { 8f.dp } * progress,
+                                alpha = progress,
+                            )
+                        },
+                        layerBlock = {
+                            scaleX = dampedDragAnimation.scaleX
+                            scaleY = dampedDragAnimation.scaleY
+                            val velocity = dampedDragAnimation.velocity / 10f
+                            scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+                            scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+                        },
+                        onDrawSurface = {
+                            val progress = dampedDragAnimation.pressProgress
+                            drawRect(
+                                if (!dark) Color.Black.copy(0.1f) else Color.White.copy(0.1f),
+                                alpha = 1f - progress,
+                            )
+                            drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                        },
+                    )
+                    .height(56.dp)
+                    .fillMaxWidth(1f / tabsCount),
+            )
         }
     }
 }
