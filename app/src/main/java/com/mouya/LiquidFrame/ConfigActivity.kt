@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -93,6 +94,10 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 class ConfigActivity : ComponentActivity() {
+
+    private companion object {
+        const val TAG = "LiquidFrame"
+    }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val previewExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -191,7 +196,8 @@ class ConfigActivity : ComponentActivity() {
                         BitmapFactory.decodeStream(stream, null, options)
                     }
                 }
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                Log.w(TAG, "loadBackdrop decode failed: ${t.javaClass.simpleName}: ${t.message}")
                 null
             }
             val cropped = decoded?.let { centreCrop(it, PREVIEW_W, PREVIEW_H) }
@@ -218,7 +224,8 @@ class ConfigActivity : ComponentActivity() {
         val matrix = Matrix().apply { postScale(scale, scale) }
         val scaled = try {
             Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w(TAG, "centreCrop scale failed: ${t.javaClass.simpleName}")
             source
         }
         if (scaled !== source) source.recycle()
@@ -229,7 +236,8 @@ class ConfigActivity : ComponentActivity() {
             Bitmap.createBitmap(scaled, x, y, targetW, targetH).also {
                 if (it !== scaled) scaled.recycle()
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w(TAG, "centreCrop crop failed: ${t.javaClass.simpleName}")
             scaled
         }
     }
@@ -377,7 +385,8 @@ class ConfigActivity : ComponentActivity() {
                                                 .setPackage("com.android.camera")
                                             try {
                                                 context.sendBroadcast(restart)
-                                            } catch (_: Exception) {
+                                            } catch (t: Exception) {
+                                                Log.w(TAG, "restart broadcast failed: ${t.javaClass.simpleName}")
                                             }
                                             for (pkg in arrayOf("com.android.camera", "com.miui.camera")) {
                                                 try {
@@ -385,7 +394,8 @@ class ConfigActivity : ComponentActivity() {
                                                     pm.javaClass
                                                         .getMethod("forceStopPackage", String::class.java)
                                                         .invoke(pm, pkg)
-                                                } catch (_: Exception) {
+                                                } catch (t: Exception) {
+                                                    Log.w(TAG, "forceStopPackage $pkg failed: ${t.javaClass.simpleName}")
                                                 }
                                             }
                                         },
@@ -595,8 +605,16 @@ LiquidPage.About -> AboutPage(
         previewRunnable?.let(mainHandler::removeCallbacks)
         val scheduled = Runnable {
             val generation = previewGeneration.incrementAndGet()
-            val source = basePhoto ?: return@Runnable
-            val copy = try { source.copy(Bitmap.Config.ARGB_8888, true) } catch (_: Throwable) { null } ?: return@Runnable
+            val source = basePhoto
+            if (source == null || source.isRecycled) return@Runnable
+            val copy = try { source.copy(Bitmap.Config.ARGB_8888, true) } catch (t: Throwable) {
+                Log.w(TAG, "schedulePreview copy failed: ${t.javaClass.simpleName}: ${t.message}")
+                null
+            } ?: return@Runnable
+            if (copy.width <= 0 || copy.height <= 0) {
+                copy.recycle()
+                return@Runnable
+            }
             val params = ConfigStore.glassParams()
             previewExecutor.execute {
                 val outcome = renderPreview(copy, params)
@@ -653,7 +671,8 @@ LiquidPage.About -> AboutPage(
                     cropped
                 } else null
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w(TAG, "loadAssetBackdrop failed: ${t.javaClass.simpleName}: ${t.message}")
             null
         }
     }

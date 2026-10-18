@@ -316,14 +316,15 @@ object DexScan {
                     for (entry in entries) {
                         val bytes = try {
                             zip.getInputStream(entry).use { it.readBytes() }
-                        } catch (_: Throwable) {
+                        } catch (t: Throwable) {
+                            android.util.Log.w("LiquidFrame", "DexScanner: failed to read ${entry.name}: ${t.javaClass.simpleName}: ${t.message}")
                             continue
                         }
                         scanDex(bytes, found)
                     }
                 }
-            } catch (_: Throwable) {
-                // A missing or unreadable archive must not abort the whole discovery pass.
+            } catch (t: Throwable) {
+                android.util.Log.w("LiquidFrame", "DexScanner: archive $archive unreadable: ${t.javaClass.simpleName}: ${t.message}")
             }
         }
         return found

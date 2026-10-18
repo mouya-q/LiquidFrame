@@ -1,5 +1,6 @@
 package com.mouya.LiquidFrame
 
+import android.os.SystemClock
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
@@ -106,6 +107,19 @@ object WatermarkHooks {
 
     /** Working width for the pixel fallback, in pixels. Structure survives this comfortably. */
     private const val SCAN_WORK_WIDTH = 192
+
+    /**
+     * Maximum wall-clock time [process] may spend on a single composite before bailing out.
+     *
+     * The hook runs on the camera's capture thread; exceeding the system ANR threshold
+     * (5 s on foreground activities) would crash the host. 1200 ms is generous enough for a
+     * 4032 × 3024 panel crop with source-bitmap read, yet leaves headroom for the capture
+     * pipeline's own work.
+     */
+    private const val RENDER_TIME_BUDGET_MS = 1200L
+
+    /** Maximum log lines per second from the capture thread, to bound I/O on continuous shooting. */
+    private const val LOG_RATE_LIMIT = 15
 
     /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
     private const val PANEL_CROP_PAD_FRACTION = 0.55f
@@ -274,7 +288,8 @@ object WatermarkHooks {
                     p.args?.filterIsInstance<Bitmap>()
                         ?.filter { it !== out && !it.isRecycled && it.width >= 8 && it.height >= 8 }
                         ?.maxByOrNull { it.width.toLong() * it.height.toLong() }
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    log("src bitmap extraction failed: ${t.javaClass.simpleName}: ${t.message}")
                     null
                 }
                 try {
@@ -324,7 +339,8 @@ object WatermarkHooks {
     private fun findClass(name: String, loader: ClassLoader): Class<*>? =
         try {
             XposedHelpers.findClass(name, loader)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            log("findClass failed: $name: ${t.javaClass.simpleName}")
             null
         }
 
@@ -350,7 +366,8 @@ object WatermarkHooks {
             canvas.getMatrix(matrix)
             matrix.mapRect(out, local)
             if (out.width() <= 0f || out.height() <= 0f) local else out
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            log("absoluteRect matrix mapping failed: ${t.javaClass.simpleName}")
             local
         }
     }
@@ -364,7 +381,8 @@ object WatermarkHooks {
             val field = wrapper.javaClass.getDeclaredField("a")
             field.isAccessible = true
             field.get(wrapper) as? Canvas
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            log("canvasOf reflection failed: ${t.javaClass.simpleName}: ${t.message}")
             null
         }
     }
@@ -387,6 +405,7 @@ object WatermarkHooks {
     // ---------------------------------------------------------------------------------------
 
     private fun process(out: Bitmap, frame: Frame?, srcPhoto: Bitmap?) {
+        val startTime = SystemClock.elapsedRealtime()
         val w = out.width
         val h = out.height
         if (w < MIN_PANEL_WIDTH || h < 16) {
@@ -534,10 +553,20 @@ object WatermarkHooks {
                     photoTop = 0
                     photoW = cw
                     photoH = ch
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    log("photo pixel read failed: ${t.javaClass.simpleName}: ${t.message}")
                     // Falls back to the mirror path.
                 }
             }
+        }
+
+        // Time budget: if the pre-render work (scan + crop + photo read) already
+        // consumed most of the allowance, skip the expensive renderPanel pass
+        // rather than risk an ANR on the camera's capture thread.
+        val elapsed = SystemClock.elapsedRealtime() - startTime
+        if (elapsed > RENDER_TIME_BUDGET_MS) {
+            log("skip: time budget ${elapsed}ms > ${RENDER_TIME_BUDGET_MS}ms before render")
+            return
         }
 
         val result = if (photoPixels != null && photoW > 0 && photoH > 0) {
@@ -563,7 +592,7 @@ object WatermarkHooks {
         log("panel=${f(overlayPanel.left)},${f(overlayPanel.top)} " +
                 "${f(overlayPanel.width)}x${f(overlayPanel.height)} " +
                 "r=${f(overlayPanel.cornerRadiusPx)} src=${if (panel != null) "app" else "scan"} " +
-                "photo=${if (photoPixels != null) "yes" else "no"} shift=${if (shifted) "yes" else "no"} -> $result")
+                "photo=${if (photoPixels != null) "yes" else "no"} shift=${if (shifted) "yes" else "no"} ${elapsed}ms -> $result")
     }
 
     /**
@@ -803,8 +832,29 @@ object WatermarkHooks {
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
 
+    /** Rate-limited log: at most [LOG_RATE_LIMIT] lines per second, extras counted and summarised. */
+    private var logWindowStart = 0L
+    private var logCountInWindow = 0
+    private var logDroppedInWindow = 0
+
     private fun log(message: String) {
-        XposedBridge.log("$TAG: $message")
-        LogHelper.log(TAG, message)
+        val now = SystemClock.elapsedRealtime()
+        if (logWindowStart == 0L) logWindowStart = now
+        if (now - logWindowStart >= 1000L) {
+            if (logDroppedInWindow > 0) {
+                XposedBridge.log("$TAG: [${logDroppedInWindow} log lines dropped in last window]")
+                LogHelper.log(TAG, "[${logDroppedInWindow} log lines dropped in last window]")
+            }
+            logWindowStart = now
+            logCountInWindow = 0
+            logDroppedInWindow = 0
+        }
+        if (logCountInWindow < LOG_RATE_LIMIT) {
+            logCountInWindow++
+            XposedBridge.log("$TAG: $message")
+            LogHelper.log(TAG, message)
+        } else {
+            logDroppedInWindow++
+        }
     }
 }

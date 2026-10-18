@@ -31,7 +31,8 @@ class LiquidFrameHook : IXposedHookLoadPackage {
                 XposedHelpers.findClass("android.app.ActivityThread", param.classLoader),
                 "currentApplication",
             ) as? Context
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            XposedBridge.log("LiquidFrame: currentApplication failed: ${t.javaClass.simpleName}: ${t.message}")
             null
         }
         app?.let { ctx ->
@@ -45,7 +46,8 @@ class LiquidFrameHook : IXposedHookLoadPackage {
                                 BroadcastReceiver::class.java
                                     .getMethod("getSendingUid")
                                     .invoke(this) as? Int
-                            } catch (_: Throwable) {
+                            } catch (t: Throwable) {
+                                XposedBridge.log("LiquidFrame: getSendingUid failed: ${t.javaClass.simpleName}")
                                 null
                             }
                             val senderOk = uid != null && context.packageManager

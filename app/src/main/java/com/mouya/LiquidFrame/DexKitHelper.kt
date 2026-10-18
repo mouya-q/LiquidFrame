@@ -93,7 +93,8 @@ object DexKitHelper {
             XposedHelpers.findClass("android.app.ActivityThread", classLoader),
             "currentApplication"
         ) as? Context
-    } catch (_: Throwable) {
+    } catch (t: Throwable) {
+        log("currentApplication failed: ${t.javaClass.simpleName}: ${t.message}")
         null
     }
 
@@ -159,7 +160,8 @@ object DexKitHelper {
 
     private fun load(name: String, loader: ClassLoader): Class<*>? = try {
         Class.forName(name, false, loader)
-    } catch (_: Throwable) {
+    } catch (t: Throwable) {
+        log("class not found: $name: ${t.javaClass.simpleName}")
         null
     }
 
@@ -172,7 +174,8 @@ object DexKitHelper {
         try {
             info.splitSourceDirs?.forEach { it?.let(out::add) }
             info.splitPublicSourceDirs?.forEach { it?.let(out::add) }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            log("split apk paths failed: ${t.javaClass.simpleName}: ${t.message}")
         }
         return out.filter { it.isNotEmpty() }.toList()
     }

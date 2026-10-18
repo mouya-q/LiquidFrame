@@ -107,7 +107,8 @@ object ConfigStore {
                 else -> return
             }
             parse(source.readText())
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            LogHelper.log(TAG, "load failed: ${t.javaClass.simpleName}: ${t.message}")
             LinkedHashMap()
         }
     }
@@ -208,7 +209,8 @@ object ConfigStore {
         }
         val ok = try {
             runSu(script) == 0
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            LogHelper.log(TAG, "su script threw: ${t.javaClass.simpleName}: ${t.message}")
             false
         }
         if (!ok) return WRITE_FAIL
@@ -216,7 +218,8 @@ object ConfigStore {
         // Verify by reading the file back so the status we report is measured, not assumed.
         val readBack = try {
             target.exists() && parse(target.readText()).containsKey(KEY_ENABLED)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            LogHelper.log(TAG, "read-back verify failed: ${t.javaClass.simpleName}: ${t.message}")
             false
         }
         return if (readBack) WRITE_ROOT else WRITE_FAIL
@@ -229,9 +232,20 @@ object ConfigStore {
             try {
                 val process = ProcessBuilder(binary, "-c", script).redirectErrorStream(true).start()
                 // Drain stdout/stderr before waiting, otherwise a full pipe can deadlock the process.
-                val output = process.inputStream.readBytes()
+                // Cap output to 4 KB to avoid OOM on runaway commands.
+                val output = process.inputStream.use { stream ->
+                    val buf = ByteArray(4096)
+                    val n = stream.read(buf)
+                    if (n > 0) buf.copyOf(n) else ByteArray(0)
+                }
                 process.outputStream.close()
-                val code = process.waitFor()
+                // Bounded wait: 5 s ceiling prevents indefinite hang on a dead su binary.
+                if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    LogHelper.log(TAG, "su timed out after 5s")
+                    return -1
+                }
+                val code = process.exitValue()
                 if (code == 0) return 0
                 // Non-zero exit: try next binary.
                 val preview = String(output, Charsets.UTF_8).take(200)

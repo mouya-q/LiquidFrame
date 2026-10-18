@@ -79,11 +79,23 @@ object LogHelper {
         for (binary in listOf("su", "/system/bin/su", "/system/xbin/su")) {
             try {
                 val process = ProcessBuilder(binary, "-c", script).redirectErrorStream(true).start()
-                val output = process.inputStream.readBytes()
+                // Cap output to 4 KB to avoid OOM on runaway commands.
+                val output = process.inputStream.use { stream ->
+                    val buf = ByteArray(4096)
+                    val n = stream.read(buf)
+                    if (n > 0) buf.copyOf(n) else ByteArray(0)
+                }
                 process.outputStream.close()
-                val code = process.waitFor()
+                // Bounded wait: 5 s ceiling prevents indefinite hang on a dead su binary.
+                if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    log("LogHelper", "su timed out after 5s")
+                    return -1
+                }
+                val code = process.exitValue()
                 if (code == 0) return 0
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                log("LogHelper", "su failed: ${t.javaClass.simpleName}: ${t.message}")
                 // Try the next binary.
             }
         }

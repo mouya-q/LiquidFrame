@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.9.13 — Code quality audit: ANR guard, concurrency, error visibility
+
+### WatermarkHooks — ANR time budget (audit item A)
+- **`RENDER_TIME_BUDGET_MS = 1200L`** constant added. The `process()` entry now records `SystemClock.elapsedRealtime()` and checks the elapsed time before the `renderPanel` pass; if the pre-render work (scan + crop + photo read) exceeds 1200 ms, the render is skipped and logged, rather than risking an ANR on the camera's capture thread.
+- Per-composite log line now includes `${elapsed}ms` for regression monitoring.
+
+### WatermarkHooks — Log rate limiting (audit item F)
+- **`LOG_RATE_LIMIT = 15`** lines per second. The `log()` method now uses a 1-second sliding window; lines beyond the cap are counted and summarised in the next window as `[N log lines dropped in last window]`. This bounds I/O on continuous shooting (burst mode, video frame callbacks) without losing first-occurrence diagnostics.
+
+### ConfigActivity — Bitmap concurrency safety (audit item B)
+- `schedulePreview` now checks `source == null || source.isRecycled` before calling `source.copy()`, and validates `copy.width > 0 && copy.height > 0` before passing to the executor. The `catch` block now logs the failure type and message via `Log.w`.
+- `loadBackdrop` catch block now logs decode failures.
+- `centreCrop` catch blocks now log scale/crop failures.
+- `loadAssetBackdrop` catch block now logs asset read failures.
+- `sendBroadcast` / `forceStopPackage` catch blocks now log failure type.
+- `TAG` companion constant and `android.util.Log` import added.
+
+### ConfigStore — runSu timeout & bounded output (audit item C)
+- `runSu` now reads at most 4 KB of process output (was `readBytes()` — unbounded), and uses `process.waitFor(5, TimeUnit.SECONDS)` with `destroyForcibly()` on timeout (was indefinite `waitFor()`). Failure paths now log via `LogHelper.log`.
+- `load()`, `writeText()` su-throw, and read-back verify catch blocks now log failure type and message (audit item D).
+
+### LogHelper — runSu timeout & bounded output (audit item C)
+- `LogHelper.runSu` receives the same 4 KB cap and 5-second timeout treatment as `ConfigStore.runSu`. The `catch` block now logs via `log("LogHelper", ...)` instead of being empty.
+
+### DexKitHelper — Empty catch logging (audit item D)
+- `currentApplication()`, `load()`, and `apkPaths()` split-source catch blocks now log failure type and message via the existing `log()` method.
+- `InterruptedException` catch blocks in `awaitApplication` / `awaitDiscovery` are retained as-is (interrupt = bail, no logging needed).
+
+### DexScanner — Empty catch logging (audit item D)
+- `scan()` catch blocks for per-dex read failures and per-archive failures now log via `android.util.Log.w` with the entry/archive name and exception type.
+
+### LiquidFrameHook — Empty catch logging (audit item D)
+- `currentApplication()` and `getSendingUid()` reflection catch blocks now log via `XposedBridge.log`.
+
+### Audit items not implemented
+- **E (DexScanner OOM)**: assessed but not changed — the scanner already reads one dex at a time and releases it; peak memory is one dex, not the full APK. No further mitigation needed.
+- **G (Split large files)**: not changed — file sizes are within maintainable range; splitting would introduce import churn without proportional benefit.
+
+### Version
+- `1.9.13`, `versionCode 22`.
+
+---
+
 ## 1.9.12 — Bottom bar 1:1 alignment with kyant0 LiquidBottomTabs
 
 ### Bottom bar (GlassBottomBar)
