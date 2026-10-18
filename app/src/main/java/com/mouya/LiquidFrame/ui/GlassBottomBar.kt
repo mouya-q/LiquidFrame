@@ -35,9 +35,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -311,6 +313,7 @@ fun GlassBottomBar(
                     .layerBackdrop(tabsBackdrop)
                     .graphicsLayer {
                         translationX = panelOffset
+                        compositingStrategy = CompositingStrategy.Offscreen
                     }
                     .then(
                         if (backdrop != null) {
@@ -340,7 +343,14 @@ fun GlassBottomBar(
                     .height(56f.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4f.dp)
-                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                    // ColorFilter.tint(color) is a graphicsLayer parameter only on newer
+                    // Compose releases; on 1.7 the equivalent is an offscreen layer whose
+                    // drawn content is filled with the accent via SrcIn (keep dst alpha,
+                    // take src color — exactly what the tint filter does internally).
+                    .drawWithContent {
+                        drawContent()
+                        drawRect(accentColor, blendMode = BlendMode.SrcIn)
+                    },
                 verticalAlignment = Alignment.CenterVertically,
                 content = tabContent,
             )

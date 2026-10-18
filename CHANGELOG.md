@@ -12,8 +12,8 @@
 
 ### GlassBottomBar — single content declaration (470 → 416 lines)
 - Tab content previously declared twice (~92 duplicated lines: neutral ink in Layer 1, full-accent in Layer 2) is now one shared `tabContent` lambda consumed by both layers.
-- Layer 2 now tints via `.graphicsLayer(colorFilter = ColorFilter.tint(accentColor))` before recording into `tabsBackdrop`, so the active capsule — sampling `rememberCombinedBackdrop(backdrop, tabsBackdrop)` — reveals tinted tab content, exactly the original three-layer mechanism.
-- Unused imports removed (`drawWithContent`, `BlendMode`).
+- Layer 2 now tints via an offscreen compositing layer plus a `drawWithContent` `SrcIn` fill — the internal semantics of `ColorFilter.tint(accentColor)` — before recording into `tabsBackdrop`, so the active capsule — sampling `rememberCombinedBackdrop(backdrop, tabsBackdrop)` — reveals tinted tab content, exactly the original three-layer mechanism. (`ColorFilter.tint` is not a `graphicsLayer` parameter on Compose 1.7; the direct port failed CI with `NO_VALUE_FOR_PARAMETER`.)
+- Unused import churn cleaned up during the rewrite; the tint fix re-adds `drawWithContent`/`BlendMode` (both now load-bearing in the Offscreen+SrcIn path).
 
 ### Version
 - `1.9.14`, `versionCode 23`.
