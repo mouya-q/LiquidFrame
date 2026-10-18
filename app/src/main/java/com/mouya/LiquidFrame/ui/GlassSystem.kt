@@ -3,6 +3,7 @@ package com.mouya.LiquidFrame.ui
 import android.os.Build
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -12,6 +13,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -20,12 +23,10 @@ import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtMost
-import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -67,14 +68,32 @@ fun LiquidBackdropProvider(
     val backdrop = rememberLayerBackdrop()
     val dark = isSystemInDarkTheme()
     Box(modifier.fillMaxSize()) {
-        // Record a restrained, spatially varied background as the actual backdrop source.
-        // A flat solid-color layer technically supports lens shaders but has nothing to refract,
-        // which made the dock look like a frosted white sticker. These static ambient fields give
-        // the glass real color transitions without adding per-frame animation cost.
+        // Record the real ambient field as the backdrop source. Frosted glass only
+        // looks like glass when there is actual color variation behind it to blur
+        // and refract; a flat solid sheet leaves blur and lens with nothing to work
+        // on, which is exactly why the old dock read as a frosted sticker. The
+        // field below is one vertical base gradient plus two large soft color
+        // pools drawn once inside the recording layer — no per-frame cost.
+        val base = if (dark) Color(0xFF0B0B0D) else Color(0xFFF2F2F7)
+        val baseDeep = if (dark) Color(0xFF0E0E12) else Color(0xFFECECF1)
         Canvas(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            // Pure white background for light mode; deep black for dark mode.
-            // No gradient tints — the glass material itself provides all visual depth.
-            drawRect(if (dark) Color(0xFF000000) else Color(0xFFFFFFFF))
+            drawRect(
+                brush = Brush.verticalGradient(
+                    listOf(base, baseDeep)
+                ),
+            )
+            val poolA = if (dark) Color(0xFF3B2E7A) else Color(0xFFD8E7FF)
+            val poolB = if (dark) Color(0xFF2A3B5E) else Color(0xFFFFF1D6)
+            drawCircle(
+                color = poolA.copy(alpha = 0.55f),
+                radius = size.minDimension * 0.95f,
+                center = Offset(size.width * 0.16f, size.height * 0.08f),
+            )
+            drawCircle(
+                color = poolB.copy(alpha = 0.45f),
+                radius = size.minDimension * 1.05f,
+                center = Offset(size.width * 0.88f, size.height * 0.86f),
+            )
         }
         CompositionLocalProvider(LocalLiquidBackdrop provides backdrop) {
             content()
@@ -148,6 +167,58 @@ data class LiquidGlassSpec(
         }
     }
 }
+
+// =====================================================================================
+// Frosted card material (matches the settings dashboard of the companion
+// haptic engine app: sampled backdrop + vibrancy + 18dp blur + gentle lens
+// + 0.72 glass fill)
+// =====================================================================================
+
+/**
+ * Frosted-glass card container that samples the real backdrop behind it.
+ *
+ * Effect chain: vibrancy -> 18dp blur -> lens(8f, 18f, depth on, no
+ * chromatic aberration) -> default highlight -> 22dp/0.42 shadow, topped
+ * with a 0.72-alpha glass fill. Falls back to a bordered translucent
+ * surface when no backdrop is available.
+ */
+@Composable
+fun Modifier.liquidGlassCard(
+    shape: Shape,
+    cornerRadius: Dp,
+    glass: Color,
+    border: Color = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f)
+    else Color.Black.copy(alpha = 0.06f),
+): Modifier {
+    val backdrop = liquidGlassBackdrop()
+    return if (backdrop != null) {
+        drawBackdrop(
+            backdrop = backdrop,
+            shape = { shape },
+            effects = {
+                vibrancy()
+                blur(18.dp.toPx())
+                lens(8f, 18f, depthEffect = true, chromaticAberration = false)
+            },
+            highlight = { Highlight.Default },
+            shadow = { Shadow(radius = 22.dp, alpha = 0.42f) },
+            onDrawSurface = {
+                drawRoundRect(glass, cornerRadius = CornerRadius(cornerRadius.toPx()))
+            },
+        )
+    } else {
+        clip(shape).background(glass).border(0.5.dp, border, shape)
+    }
+}
+
+/**
+ * Standard glass fill for card containers: 0.72-alpha white in light mode
+ * and 0.72-alpha #1C1C1E in dark mode, following the dashboard palette.
+ */
+@Composable
+fun glassContainer(): Color =
+    if (isSystemInDarkTheme()) Color(0xFF1C1C1E).copy(alpha = 0.72f)
+    else Color.White.copy(alpha = 0.72f)
 
 // =====================================================================================
 // Core glass surface modifier

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.9.14 — Frosted card material, deduplicated bottom bar, ambient backdrop field
+
+### GlassSystem — frosted card material (new API)
+- **`Modifier.liquidGlassCard(shape, cornerRadius, glass, border)`** added. Effect chain: `vibrancy → 18dp blur → lens(8f, 18f, depthEffect, no chromatic aberration) → default highlight → 22dp/0.42 shadow`, topped with a 0.72-alpha glass fill drawn in `onDrawSurface`. Falls back to `clip + background + 0.5dp border` when no backdrop is available (API < 33 or no hardware acceleration).
+- **`glassContainer()`** added as the standard card fill: `White/0.72` in light mode, `#1C1C1E/0.72` in dark mode (dashboard palette of the companion haptic engine app).
+- **`LiquidBackdropProvider`** now records a real ambient field into the backdrop layer — an opaque vertical base gradient (`#0B0B0D→#0E0E12` dark, `#F2F2F7→#ECECF1` light) plus two large soft color pools (`#D8E7FF` top-left / `#FFF1D6` bottom-right in light; `#3B2E7A` / `#2A3B5E` in dark) — instead of a flat solid sheet, so blur and lens refraction have actual color variation to work on. Also removed an ineffective full-screen `lerp(base, Transparent, 0f)` overlay that occluded the base gradient, plus two dead `lerp` imports.
+
+### LiquidComponents — containers on the new material
+- `GlassCard` (22dp corner) and `SettingSection` (16dp corner) switched from `liquidGlassSurface` to `liquidGlassCard` with `glassContainer()` fill. The old path stacked a 0.60/0.46-alpha `surfaceColor` veil over the blurred backdrop, which visually flattened the frosted blur; the new fill matches the dashboard recipe at 0.72 alpha.
+
+### GlassBottomBar — single content declaration (470 → 416 lines)
+- Tab content previously declared twice (~92 duplicated lines: neutral ink in Layer 1, full-accent in Layer 2) is now one shared `tabContent` lambda consumed by both layers.
+- Layer 2 now tints via `.graphicsLayer(colorFilter = ColorFilter.tint(accentColor))` before recording into `tabsBackdrop`, so the active capsule — sampling `rememberCombinedBackdrop(backdrop, tabsBackdrop)` — reveals tinted tab content, exactly the original three-layer mechanism.
+- Unused imports removed (`drawWithContent`, `BlendMode`).
+
+### Version
+- `1.9.14`, `versionCode 23`.
+
+---
+
 ## 1.9.13 — Code quality audit: ANR guard, concurrency, error visibility
 
 ### WatermarkHooks — ANR time budget (audit item A)

@@ -35,9 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
@@ -229,6 +227,41 @@ fun GlassBottomBar(
             )
         }
 
+        // Single content declaration shared by all three layers, following the
+        // original three-layer tabs: Layer1 renders it in neutral ink, Layer2
+        // records a tinted copy into tabsBackdrop, and Layer3's glass capsule
+        // reveals the tinted copy through the combined backdrop.
+        val tabContent: @Composable RowScope.() -> Unit = {
+            pages.forEach { page ->
+                LiquidBottomTab(
+                    onClick = {
+                        val idx = pages.indexOf(page)
+                        currentIndex = idx
+                        onPageSelected(page)
+                    },
+                ) {
+                    val contentColor = if (isLightTheme) Color.Black else Color.White
+                    val icon = when (page) {
+                        LiquidPage.Home -> android.R.drawable.ic_menu_camera
+                        LiquidPage.Glass -> android.R.drawable.ic_menu_preferences
+                        LiquidPage.About -> android.R.drawable.ic_menu_info_details
+                    }
+                    val label = when (page) {
+                        LiquidPage.Home -> "首页"
+                        LiquidPage.Glass -> "参数"
+                        LiquidPage.About -> "关于"
+                    }
+                    Icon(
+                        painter = painterResource(icon),
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Text(label, fontSize = 10.sp, color = contentColor)
+                }
+            }
+        }
+
         // --- Layer 1: Outer container glass ---
         Row(
             Modifier
@@ -262,53 +295,8 @@ fun GlassBottomBar(
                 .fillMaxWidth()
                 .padding(4f.dp),
             verticalAlignment = Alignment.CenterVertically,
-        ) {
-            pages.forEachIndexed { _, page ->
-                LiquidBottomTab(
-                    onClick = {
-                        val idx = pages.indexOf(page)
-                        currentIndex = idx
-                        onPageSelected(page)
-                    },
-                ) {
-                    val isActive = currentPage == page
-                    val tabIconColor = if (isActive) accentColor else
-                        (if (isLightTheme) Color(0xFF3C3C43).copy(0.6f) else Color(0xFFEBEBF5).copy(0.6f))
-                    val tabLabelColor = if (isActive) accentColor else
-                        (if (isLightTheme) Color(0xFF3C3C43).copy(0.6f) else Color(0xFFEBEBF5).copy(0.6f))
-
-                    when (page) {
-                        LiquidPage.Home -> {
-                            Icon(
-                                painter = painterResource(android.R.drawable.ic_menu_camera),
-                                contentDescription = null,
-                                tint = tabIconColor,
-                                modifier = Modifier.size(22.dp),
-                            )
-                            Text("首页", fontSize = 10.sp, color = tabLabelColor)
-                        }
-                        LiquidPage.Glass -> {
-                            Icon(
-                                painter = painterResource(android.R.drawable.ic_menu_preferences),
-                                contentDescription = null,
-                                tint = tabIconColor,
-                                modifier = Modifier.size(22.dp),
-                            )
-                            Text("参数", fontSize = 10.sp, color = tabLabelColor)
-                        }
-                        LiquidPage.About -> {
-                            Icon(
-                                painter = painterResource(android.R.drawable.ic_menu_info_details),
-                                contentDescription = null,
-                                tint = tabIconColor,
-                                modifier = Modifier.size(22.dp),
-                            )
-                            Text("关于", fontSize = 10.sp, color = tabLabelColor)
-                        }
-                    }
-                }
-            }
-        }
+            content = tabContent,
+        )
 
         // --- Layer 2: Hidden accent layer ---
         CompositionLocalProvider(
@@ -352,52 +340,10 @@ fun GlassBottomBar(
                     .height(56f.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4f.dp)
-                    .drawWithContent {
-                        drawContent()
-                        drawRect(
-                            color = accentColor,
-                            blendMode = BlendMode.Modulate,
-                        )
-                    },
+                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
                 verticalAlignment = Alignment.CenterVertically,
-            ) {
-                pages.forEachIndexed { _, page ->
-                    LiquidBottomTab(
-                        onClick = {},
-                    ) {
-                        val tabIconColor = accentColor
-                        when (page) {
-                            LiquidPage.Home -> {
-                                Icon(
-                                    painter = painterResource(android.R.drawable.ic_menu_camera),
-                                    contentDescription = null,
-                                    tint = tabIconColor,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                                Text("首页", fontSize = 10.sp, color = tabIconColor)
-                            }
-                            LiquidPage.Glass -> {
-                                Icon(
-                                    painter = painterResource(android.R.drawable.ic_menu_preferences),
-                                    contentDescription = null,
-                                    tint = tabIconColor,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                                Text("参数", fontSize = 10.sp, color = tabIconColor)
-                            }
-                            LiquidPage.About -> {
-                                Icon(
-                                    painter = painterResource(android.R.drawable.ic_menu_info_details),
-                                    contentDescription = null,
-                                    tint = tabIconColor,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                                Text("关于", fontSize = 10.sp, color = tabIconColor)
-                            }
-                        }
-                    }
-                }
-            }
+                content = tabContent,
+            )
         }
 
         // --- Layer 3: Active tab indicator ---

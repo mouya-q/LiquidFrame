@@ -86,11 +86,7 @@ fun GlassCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .liquidGlassSurface(
-                shape = LiquidShapes.card,
-                surfaceColor = if (isDark()) Color(0xFF1C1C1E).copy(alpha = 0.60f)
-                else Color.White.copy(alpha = 0.46f),
-            )
+            .liquidGlassCard(shape = LiquidShapes.card, cornerRadius = 22.dp, glass = glassContainer())
             .padding(16.dp),
         content = content,
     )
@@ -115,10 +111,7 @@ fun SettingSection(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassSurface(
-                    shape = LiquidShapes.compact,
-                    surfaceColor = surfaceColor().copy(alpha = 0.42f),
-                ),
+                .liquidGlassCard(shape = LiquidShapes.compact, cornerRadius = 16.dp, glass = glassContainer()),
             content = content,
         )
     }
