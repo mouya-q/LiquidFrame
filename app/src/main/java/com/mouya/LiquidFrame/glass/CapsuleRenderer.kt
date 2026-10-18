@@ -563,7 +563,7 @@ object CapsuleRenderer {
      * spread above [MAX_SPREAD] per channel means the "strip" is actually varied
      * scene content, and filling would destroy detail, so the routine refuses.
      */
-    fun eraseFlatRegion(pixels: IntArray, cw: Int, ch: Int, region: CropRect): Boolean {
+    internal fun eraseFlatRegion(pixels: IntArray, cw: Int, ch: Int, region: CropRect): Boolean {
         val left = region.left.coerceIn(0, cw - 1)
         val top = region.top.coerceIn(0, ch - 1)
         val right = region.right.coerceIn(left + 1, cw)
@@ -750,7 +750,7 @@ object CapsuleRenderer {
      * columns left/right of it. Used only where the source photo is unavailable;
      * the region is small and most of it ends up covered by the capsule anyway.
      */
-    fun inpaintRegion(pixels: IntArray, cw: Int, ch: Int, region: CropRect): Boolean {
+    internal fun inpaintRegion(pixels: IntArray, cw: Int, ch: Int, region: CropRect): Boolean {
         val left = (region.left + 1).coerceIn(1, max(1, cw - 2))
         val top = (region.top + 1).coerceIn(1, max(1, ch - 2))
         val right = (region.right - 1).coerceIn(left + 1, cw - 1)
