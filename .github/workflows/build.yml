@@ -30,16 +30,15 @@ jobs:
       - name: Build
         run: |
           chmod +x gradlew
-          # Build both debug and release; release uses a fixed debug keystore so every
-          # CI build is signed consistently and can update over a previous install.
-          ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
+          # Release only: the installed artifact is release, signed with the fixed
+          # keystore so any build updates over a previous install.
+          ./gradlew :app:assembleRelease --stacktrace --no-daemon
 
       - name: Upload APKs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: LiquidFrame
-          path: |
-            app/build/outputs/apk/**/*.apk
-            gallery/build/outputs/apk/**/*.apk
-          if-no-files-found: warn
+          path: app/build/outputs/apk/release/*.apk
+          # A green run with an empty artifact is a silent failure; make it loud.
+          if-no-files-found: error

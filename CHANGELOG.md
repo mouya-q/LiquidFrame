@@ -24,6 +24,7 @@
 - **`.backup/` (8.4 MB of host-application session JSON unrelated to the project) deleted**, the repo's only junk residue.
 - **`OPTIMIZATION_NOTES_CN.md` removed**: zero references anywhere in the repo, contents fully superseded by the changelog, carrying seven forbidden upstream-name links and claims ("Gradle cannot compile here") that CI has long falsified.
 - **Upstream references swept out of source comments and READMEs**: `GlassParams.kt`, `LiquidGlassOptics.kt`, `LiquidControls.kt`, `gallery/glass/Lens.kt`, `README.md` ×2, `README_CN.md` ×2. All wording now points at the `NOTICE` file, which remains the single legal Apache-2.0 §4(c) attribution block (the one sanctioned exception).
+- **CI builds and uploads the release artifact only** (debug cost CI minutes and was never the installed variant; the gallery path never produced output). The upload path is narrowed to the release output and a missing artifact now fails the run — a green run with an empty artifact must never happen again.
 
 ### Version
 - `1.9.16`, `versionCode 25`.
