@@ -1,8 +1,8 @@
 package com.mouya.LiquidFrame
 
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
@@ -17,7 +17,8 @@ import java.util.Locale
 object LogHelper {
     private const val LOG_FILE = "/data/local/tmp/lf_log.txt"
     private const val MAX_LOG_SIZE = 100 * 1024 // 100KB max
-    private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+    /** Immutable and thread-safe, unlike the SimpleDateFormat it replaces. */
+    private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.getDefault())
 
     /** In-memory mirror, so the UI has content even if the file cannot be written. */
     private val mirror = StringBuilder()
@@ -31,7 +32,7 @@ object LogHelper {
 
     fun log(tag: String, message: String) {
         try {
-            val line = "[${dateFormat.format(Date())}] $tag: $message\n"
+            val line = "[${LocalTime.now().format(timeFormat)}] $tag: $message\n"
             synchronized(mirror) {
                 mirror.append(line)
                 if (mirror.length > MAX_MIRROR) mirror.delete(0, mirror.length - MAX_MIRROR)

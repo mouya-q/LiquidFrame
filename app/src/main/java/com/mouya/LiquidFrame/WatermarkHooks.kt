@@ -1054,13 +1054,16 @@ object WatermarkHooks {
         val sh = h / step
         if (sw < 8 || sh < 8) return null
         return try {
-            // Bitmap.getPixels cannot stride, so the coarse grid is gathered pixel by pixel.
-            // At 192 px wide that is a few thousand reads, which is nothing next to a 12 MP
-            // buffer copy, and it needs no large allocation at all.
+            // Bitmap.getPixels cannot stride, so each sampled row is fetched in one bulk
+            // read — a single JNI crossing per row instead of one per pixel — and the
+            // coarse grid is decimated from a reusable row buffer on the Java side.
             val grid = IntArray(sw * sh)
+            val row = IntArray(w)
             for (sy in 0 until sh) {
                 val y = sy * step
-                for (sx in 0 until sw) grid[sy * sw + sx] = out.getPixel(sx * step, y)
+                out.getPixels(row, 0, w, 0, y, w, 1)
+                val base = sy * sw
+                for (sx in 0 until sw) grid[base + sx] = row[sx * step]
             }
             val rect = PanelScan.find(grid, sw, sh) ?: return null
 
@@ -1121,21 +1124,27 @@ object WatermarkHooks {
      * the entire canvas and the panel is already on the photograph.
      */
     private fun detectPhotoBottom(out: Bitmap, w: Int, h: Int, panel: PanelRect): Int {
+        // One bulk getPixels per scanned row: a single JNI crossing instead of one
+        // per sampled column, with the column stride applied on the Java side over
+        // a reusable row buffer — the boxed column list is gone too.
         val scanStep = maxOf(1, w / 64)
-        val sampleCols = (0 until w step scanStep).toList()
+        val row = IntArray(w)
         val startY = panel.top.toInt().coerceIn(1, h - 1)
         for (y in startY downTo 1) {
+            out.getPixels(row, 0, w, 0, y, w, 1)
             var sum = 0.0
             var sumSq = 0.0
             var n = 0
-            for (x in sampleCols) {
-                val p = out.getPixel(x, y)
+            var x = 0
+            while (x < w) {
+                val p = row[x]
                 val luma = (0.213f * ((p shr 16) and 0xFF) +
                         0.715f * ((p shr 8) and 0xFF) +
                         0.072f * (p and 0xFF))
                 sum += luma
                 sumSq += luma.toDouble() * luma
                 n++
+                x += scanStep
             }
             if (n == 0) continue
             val mean = sum / n

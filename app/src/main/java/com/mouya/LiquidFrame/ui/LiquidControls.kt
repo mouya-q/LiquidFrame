@@ -152,7 +152,7 @@ fun LiquidSlider(
         }
 
         LaunchedEffect(dampedDragAnimation) {
-            // Upstream AndroidLiquidGlass uses value: () -> Float here. The previous
+            // The upstream slider (attribution in NOTICE) uses value: () -> Float here. The previous
             // Float capture only observed the first composition, so the thumb could
             // keep animating toward stale state and appear impossible to drag.
             snapshotFlow { latestValue.value }

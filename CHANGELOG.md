@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.9.16 — Industrial-grade audit: wide-pixel batching, allocation and paint hygiene, capsule settings surface
+
+### WatermarkHooks — capture-thread performance (JNI crossings crushed)
+- **`detectPhotoBottom` now reads one full row per scanned line with a single bulk `getPixels`** instead of issuing a per-column `getPixel` (about 64 JNI crossings per row; tens of thousands on a no-fill worst case). The column stride is applied Java-side over a reusable row buffer, and the boxed per-frame `(0 until w step …).toList()` column list is gone. Selection semantics — luma mean/variance, thresholds, scan direction — are unchanged.
+- **`scanPanel` (the pixel fallback) batches the same way**: each sampled row of the coarse grid is one bulk read decimated into the grid buffer, replacing a per-pixel `getPixel` loop whose in-source justification ("a few thousand reads, nothing next to a 12 MP copy") understated the JNI per-call cost. Grid content, work resolution and the scale-back/label-confirmation steps are identical.
+
+### CapsuleRenderer — time formatting, paint and allocation hygiene
+- **`SimpleDateFormat` per capture is dead.** `formatTime` now formats with one file-level immutable `DateTimeFormatter` (`java.time`, minSdk 26), thread-safe across concurrent composites and free of repeated pattern parsing. Output format is byte-identical (`yyyy.MM.dd HH:mm:ss`, `Locale.US`, system zone).
+- **`measureCapsule` collapses two paints into one stack-local paint** re-keyed per line weight through a `preparePaint` helper — Paint carries heavyweight native resources and the object's contract forbids shared mutable state, so the paint lives on the stack, not in fields. The height pass caches each line's ascent/descent, so the baseline pass re-queries font metrics only in the rare half-height shrink path. Geometry output is unchanged.
+- **`drawTextLayer` likewise uses a single paint** (typeface and letter-spacing assigned per placed line) instead of constructing two identical-purpose paints per capture.
+- **Two loop-body `intArrayOf` allocations hoisted** out of the sampling loops in `eraseFlatRegion` and `fillColorFromStripTop`.
+
+### LogHelper — concurrent timestamp safety
+- **The shared `SimpleDateFormat` formatted log lines outside any lock** while camera threads and the settings screen log concurrently — a thread-unsafe formatter under real contention, with corrupted timestamps the visible symptom. Replaced with an immutable `java.time` `DateTimeFormatter`; the `HH:mm:ss.SSS` output shape is unchanged.
+
+### ConfigActivity — the seven capsule keys finally have a UI
+- **New "水印胶囊" section on the home page**: the master rebuild toggle, a three-way placement selector (居中/靠左/靠右, `center`/`left`/`right`), a single-line model-override field (32-char cap, empty = auto-detect), a 0.6×–2.0× size slider, and per-line toggles for the datetime, camera-parameter and GPS rows.
+- **Deliberate preview split**: capsule edits save through the same store but do not re-run the preview render — the preview pipeline shows the legacy watermark panel, so a capsule-driven preview would burn a render for an identical image. Material edits keep their existing preview behavior.
+- **"恢复默认参数" and the copied diagnostic log now cover all seven capsule keys** (previously the reset silently kept stale capsule values and the log hid the capsule state entirely).
+
+### Repository hygiene
+- **`.backup/` (8.4 MB of host-application session JSON unrelated to the project) deleted**, the repo's only junk residue.
+- **`OPTIMIZATION_NOTES_CN.md` removed**: zero references anywhere in the repo, contents fully superseded by the changelog, carrying seven forbidden upstream-name links and claims ("Gradle cannot compile here") that CI has long falsified.
+- **Upstream references swept out of source comments and READMEs**: `GlassParams.kt`, `LiquidGlassOptics.kt`, `LiquidControls.kt`, `gallery/glass/Lens.kt`, `README.md` ×2, `README_CN.md` ×2. All wording now points at the `NOTICE` file, which remains the single legal Apache-2.0 §4(c) attribution block (the one sanctioned exception).
+
+### Version
+- `1.9.16`, `versionCode 25`.
+
+---
+
 ## 1.9.15 — Rebuilt capsule: eradicate the stock plate, stamp a fresh glass capsule
 
 ### WatermarkHooks — the rebuilt-capsule pipeline (major rewrite)

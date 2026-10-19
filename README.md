@@ -162,7 +162,7 @@ clipboard.
 ### How it renders
 
 The optics are a port of the reference renderer used by the miuix ecosystem
-([Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass), Apache-2.0). The same
+(Apache-2.0; attribution and upstream link are recorded in the `NOTICE` file). The same
 mathematics exists in two backends, because the two places it must run have different constraints:
 
 - **`app/glass/LiquidGlassOptics.kt`** — a CPU implementation on integer pixel buffers. Xiaomi
@@ -356,8 +356,8 @@ without the material by design rather than crashing.
 
 ## Credits and licensing
 
-- The liquid glass optics are adapted from
-  [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache-2.0). The
+- All third-party attributions, licenses and upstream links are collected in the `NOTICE` file.
+  The liquid glass optics are adapted from an Apache-2.0 reference renderer (see `NOTICE`). The
   reference's shader source, constants and the `1.5 ×` gradient factor are used as-is; the CPU
   port and the analytic rim/inner-shadow models are this project's.
 - The companion app is built on
@@ -366,6 +366,5 @@ without the material by design rather than crashing.
 - The `lens()` and `vibrancy()` effects adapted into `gallery/glass/` follow miuix's own example
   implementations (`example/shared/.../component/liquid/`), which are themselves Apache-2.0.
 
-All adapted files carry their upstream attribution in a header comment.
-
-This project is licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
+All adapted files point at the `NOTICE` file, which carries the full upstream attributions
+and licenses. This project is licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).

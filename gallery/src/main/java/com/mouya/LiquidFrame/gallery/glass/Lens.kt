@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Adapted from compose-miuix-ui/miuix's example (`component/liquid/Lens.kt`), which is itself
-// adapted from Kyant0/AndroidLiquidGlass. Both are Apache-2.0. Kept here rather than imported
-// because miuix ships the backdrop engine but deliberately leaves the lens to the app.
+// adapted from a reference renderer that NOTICE attributes. Both are Apache-2.0. Kept here
+// rather than imported because miuix ships the backdrop engine but deliberately leaves the lens
+// to the app.
 
 package com.mouya.LiquidFrame.gallery.glass
 

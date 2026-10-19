@@ -22,6 +22,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -267,6 +269,13 @@ class ConfigActivity : ComponentActivity() {
         val initial = remember { ConfigStore.glassParams() }
 
         var enabled by remember { mutableStateOf(ConfigStore.isEnabled()) }
+        var capsuleEnabled by remember { mutableStateOf(ConfigStore.capsuleEnabled()) }
+        var capsulePos by remember { mutableStateOf(ConfigStore.capsulePos()) }
+        var capsuleModel by remember { mutableStateOf(ConfigStore.capsuleModel()) }
+        var capsuleShowDatetime by remember { mutableStateOf(ConfigStore.capsuleShowDatetime()) }
+        var capsuleShowExif by remember { mutableStateOf(ConfigStore.capsuleShowExif()) }
+        var capsuleShowGps by remember { mutableStateOf(ConfigStore.capsuleShowGps()) }
+        var capsuleScale by remember { mutableStateOf(ConfigStore.capsuleScale()) }
         var adaptive by remember { mutableStateOf(initial.adaptive) }
         var preserveContent by remember { mutableStateOf(initial.preserveContent) }
         var dispersion by remember { mutableStateOf(initial.chromaticAberration) }
@@ -320,6 +329,29 @@ class ConfigActivity : ComponentActivity() {
             }
         }
 
+        // Capsule settings write through the same store but do not re-run the
+        // preview: the preview pipeline is the legacy watermark panel, so a
+        // capsule edit would only burn a render for an identical image.
+        LaunchedEffect(
+            capsuleEnabled, capsulePos, capsuleModel,
+            capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleScale,
+        ) {
+            kotlinx.coroutines.delay(180)
+            val values = ConfigStore.snapshot().apply {
+                this[ConfigStore.KEY_CAPSULE_ENABLED] = capsuleEnabled.toString()
+                this[ConfigStore.KEY_CAPSULE_POS] = capsulePos
+                this[ConfigStore.KEY_CAPSULE_MODEL] = capsuleModel
+                this[ConfigStore.KEY_CAPSULE_DATETIME] = capsuleShowDatetime.toString()
+                this[ConfigStore.KEY_CAPSULE_EXIF] = capsuleShowExif.toString()
+                this[ConfigStore.KEY_CAPSULE_GPS] = capsuleShowGps.toString()
+                this[ConfigStore.KEY_CAPSULE_SCALE] = capsuleScale.toString()
+            }
+            writeStatus = withContext(Dispatchers.IO) {
+                ConfigStore.save(values)
+                ConfigStore.lastWriteStatus()
+            }
+        }
+
         fun resetDefaults() {
             val d = GlassParams.Default
             enabled = true
@@ -334,6 +366,13 @@ class ConfigActivity : ComponentActivity() {
             rim = d.rimAlpha
             angle = d.highlightAngleDeg
             depth = d.depthEffect
+            capsuleEnabled = true
+            capsulePos = "center"
+            capsuleModel = ""
+            capsuleShowDatetime = true
+            capsuleShowExif = true
+            capsuleShowGps = true
+            capsuleScale = 1f
         }
 
         Box(Modifier.fillMaxSize()) {
@@ -434,6 +473,47 @@ class ConfigActivity : ComponentActivity() {
                                 LiquidToggleRow("色散", dispersion, { dispersion = !dispersion }, "开启边缘的轻微彩色折射")
                             }
 
+                            SettingSection("水印胶囊") {
+                                LiquidToggleRow(
+                                    "重建胶囊",
+                                    capsuleEnabled,
+                                    { capsuleEnabled = !capsuleEnabled },
+                                    "拍照时擦除原水印，在照片内重建一枚液态玻璃胶囊",
+                                )
+                                SettingDivider()
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    CapsulePosOption("居中", "center", capsulePos, Modifier.weight(1f)) { capsulePos = it }
+                                    CapsulePosOption("靠左", "left", capsulePos, Modifier.weight(1f)) { capsulePos = it }
+                                    CapsulePosOption("靠右", "right", capsulePos, Modifier.weight(1f)) { capsulePos = it }
+                                }
+                                SettingDivider()
+                                OutlinedTextField(
+                                    value = capsuleModel,
+                                    onValueChange = { if (it.length <= 32) capsuleModel = it },
+                                    singleLine = true,
+                                    label = { Text("自定义机型文字", fontSize = 13.sp, color = textSecondary()) },
+                                    placeholder = { Text("留空则自动使用机型", fontSize = 13.sp, color = textSecondary()) },
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                )
+                                SettingDivider()
+                                LiquidSliderRow(
+                                    "胶囊大小",
+                                    capsuleScale,
+                                    0.6f..2.0f,
+                                    "",
+                                    valueLabel = String.format(java.util.Locale.ROOT, "%.2f×", capsuleScale),
+                                ) { capsuleScale = it }
+                                SettingDivider()
+                                LiquidToggleRow("日期时间行", capsuleShowDatetime, { capsuleShowDatetime = !capsuleShowDatetime }, "第二行：拍摄时间")
+                                SettingDivider()
+                                LiquidToggleRow("相机参数行", capsuleShowExif, { capsuleShowExif = !capsuleShowExif }, "第三行：焦距、光圈、快门、ISO")
+                                SettingDivider()
+                                LiquidToggleRow("位置信息行", capsuleShowGps, { capsuleShowGps = !capsuleShowGps }, "第四行：GPS 度分秒坐标")
+                            }
+
                             SettingSection("维护") {
                                 SettingRow(
                                     title = "恢复默认参数",
@@ -471,6 +551,14 @@ class ConfigActivity : ComponentActivity() {
                                             appendLine("angle=$angle")
                                             appendLine("depth=$depth")
                                             appendLine("dispersion=$dispersion")
+                                            appendLine("--- 水印胶囊 ---")
+                                            appendLine("capsuleEnabled=$capsuleEnabled")
+                                            appendLine("capsulePos=$capsulePos")
+                                            appendLine("capsuleModel=$capsuleModel")
+                                            appendLine("capsuleDatetime=$capsuleShowDatetime")
+                                            appendLine("capsuleExif=$capsuleShowExif")
+                                            appendLine("capsuleGps=$capsuleShowGps")
+                                            appendLine("capsuleScale=$capsuleScale")
                                         }
                                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                         clipboard.setPrimaryClip(
@@ -592,6 +680,40 @@ LiquidPage.About -> AboutPage(
                     )
                 }
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Capsule placement selector
+    // ---------------------------------------------------------------------------------------
+
+    /** One of the three horizontal placements for the rebuilt capsule. */
+    @Composable
+    private fun CapsulePosOption(
+        label: String,
+        value: String,
+        current: String,
+        modifier: Modifier = Modifier,
+        onSelect: (String) -> Unit,
+    ) {
+        val selected = current == value
+        Box(
+            modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    if (selected) LiquidColors.blue.copy(alpha = 0.18f)
+                    else ComposeColor.Transparent
+                )
+                .clickable { onSelect(value) }
+                .padding(vertical = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                fontSize = 13.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) LiquidColors.blue else textSecondary(),
+            )
         }
     }
 

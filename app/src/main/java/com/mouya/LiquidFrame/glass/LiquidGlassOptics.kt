@@ -8,8 +8,8 @@ import kotlin.math.sqrt
 /**
  * The liquid glass optics, with no Android dependency at all.
  *
- * Everything here is a faithful port of the reference renderer
- * (Kyant0/AndroidLiquidGlass, `backdrop` module, Apache-2.0), which runs as an AGSL
+ * Everything here is a faithful port of the reference renderer (Apache-2.0,
+ * attributed in the `NOTICE` file), which runs as an AGSL
  * `RuntimeShader` on Android 13+. A camera watermark, however, is produced while the camera
  * app composites a JPEG: there is no hardware-accelerated canvas and no live view hierarchy
  * to reflect, so the same optics are reproduced here on integer pixel buffers.

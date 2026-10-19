@@ -139,7 +139,7 @@ docs/                   参考渲染图
 
 ### 渲染方式
 
-光学是 miuix 生态参考渲染器（[Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)，Apache-2.0）的移植。同一套数学存在于两个后端，因其必须运行的两处约束不同：
+光学是 miuix 生态参考渲染器（Apache-2.0，归属与上游链接记录于 `NOTICE` 文件）的移植。同一套数学存在于两个后端，因其必须运行的两处约束不同：
 
 - **`app/glass/LiquidGlassOptics.kt`**——整数像素缓冲上的 CPU 实现。小米相机在产出 JPEG 的过程中合成水印：没有硬件加速画布，也没有可采样的实时视图层级，材质施加于成品位图。此文件**无任何 Android 依赖**，这正是光学可离设备测试的原因
 - **`gallery/glass/Lens.kt`**——AGSL `RuntimeShader`，经 miuix 背景引擎作为实时 `RenderEffect` 链应用。伴生应用的实时路径
@@ -253,10 +253,11 @@ CI 仅构建 `:app`。`gallery/` 需要 `compileSdk 37`，故本地构建，不�
 
 ## 致谢与许可
 
-- 液态玻璃光学改编自 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)（Apache-2.0）。参考的着色器源码、常量与 `1.5 ×` 梯度系数按原样使用；CPU 移植与解析式边缘/内阴影模型属本项目
+- 全部第三方归属、许可与上游链接统一收录于 `NOTICE` 文件
+- 液态玻璃光学改编自一个 Apache-2.0 参考渲染器（见 `NOTICE`）。参考的着色器源码、常量与 `1.5 ×` 梯度系数按原样使用；CPU 移植与解析式边缘/内阴影模型属本项目
 - 伴生应用基于 [compose-miuix-ui/miuix](https://github.com/compose-miuix-ui/miuix)（Apache-2.0），小米设计系统。其模糊引擎提供背景捕获与镜面边缘模型
 - `gallery/glass/` 中的 `lens()` 与 `vibrancy()` 效果改编自 miuix 自带示例实现（`example/shared/.../component/liquid/`），同为 Apache-2.0
 
-所有改编文件在头部注释保留上游署名
+所有改编文件的头部注释统一指向 `NOTICE`，完整上游归属与许可均记录于该文件
 
 本项目以 Apache License 2.0 许可——见 [LICENSE](LICENSE)

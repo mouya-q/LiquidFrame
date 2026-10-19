@@ -5,8 +5,10 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.location.Location
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
@@ -98,6 +100,9 @@ object CapsuleRenderer {
 
     /** Deep near-black with a few points of transparency, as on stock phone marks. */
     private const val TEXT_COLOR = 0xF21F1F26.toInt()
+
+    /** Immutable and thread-safe, so one shared instance serves every capture thread. */
+    private val TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss", Locale.US)
 
     private val TIME_RE = Regex(
         "(\\d{4})[.\\-/](\\d{1,2})[.\\-/](\\d{1,2})(?:[ T](\\d{1,2}):(\\d{2})(?::(\\d{2}))?)?"
@@ -357,7 +362,8 @@ object CapsuleRenderer {
     }
 
     private fun formatTime(millis: Long): String = try {
-        SimpleDateFormat("yyyy.MM.dd HH:mm:ss", Locale.US).format(Date(millis))
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault())
+            .format(TIME_FORMAT)
     } catch (t: Throwable) {
         ""
     }
@@ -417,13 +423,17 @@ object CapsuleRenderer {
         if (lines.isEmpty() || photoW < 64 || shortSide < 64) return null
         val unit = (shortSide / REFERENCE_SHORT_SIDE) * scale.coerceIn(0.6f, 2.0f)
         val widthAllowance = photoW * 0.94f
-
-        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.01f
-        }
-        val regularPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.DEFAULT
+        // One paint, re-keyed per line weight. Paint carries heavyweight native
+        // resources and the object's contract forbids shared mutable state, so it
+        // lives on the stack here; every Paint interaction goes through
+        // [preparePaint], and the height pass caches each line's font metrics so
+        // the baseline pass re-reads them only when the rare half-height shrink
+        // actually fired.
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        fun preparePaint(ln: Line, factor: Float) {
+            paint.typeface = if (ln.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            paint.letterSpacing = if (ln.bold) 0.01f else 0f
+            paint.textSize = ln.sizeRef * unit * factor
         }
 
         var k = 1f
@@ -431,9 +441,8 @@ object CapsuleRenderer {
         for (attempt in 0 until 2) {
             textW = 0f
             for (ln in lines) {
-                val p = if (ln.bold) boldPaint else regularPaint
-                p.textSize = ln.sizeRef * unit * k
-                textW = maxOf(textW, p.measureText(ln.text))
+                preparePaint(ln, k)
+                textW = maxOf(textW, paint.measureText(ln.text))
             }
             val candidate = textW + 2f * PAD_X_REF * unit * k
             if (candidate <= widthAllowance || attempt == 1) break
@@ -444,28 +453,38 @@ object CapsuleRenderer {
         val gap = LINE_GAP_REF * unit * k
         val capsuleW = textW + 2f * padX
 
+        val ascents = FloatArray(lines.size)
+        val descents = FloatArray(lines.size)
         var blockH = 0f
         for ((i, ln) in lines.withIndex()) {
-            val p = if (ln.bold) boldPaint else regularPaint
-            p.textSize = ln.sizeRef * unit * k
-            val fm = p.fontMetrics
-            blockH += (fm.descent - fm.ascent)
+            preparePaint(ln, k)
+            val fm = paint.fontMetrics
+            ascents[i] = -fm.ascent
+            descents[i] = fm.descent
+            blockH += descents[i] + ascents[i]
             if (i < lines.size - 1) blockH += gap
         }
         var capsuleH = blockH + 2f * padY
+        var shrunk = false
         if (capsuleH > shortSide * 0.5f) {
             val shrink = (shortSide * 0.5f) / capsuleH
             k *= shrink
             capsuleH *= shrink
+            shrunk = true
         }
 
         val placed = ArrayList<PlacedLine>(lines.size)
         var baseline = padY
         for ((i, ln) in lines.withIndex()) {
-            val p = if (ln.bold) boldPaint else regularPaint
-            p.textSize = ln.sizeRef * unit * k
-            val fm = p.fontMetrics
-            baseline += -fm.ascent
+            var asc = ascents[i]
+            var desc = descents[i]
+            if (shrunk) {
+                preparePaint(ln, k)
+                val fm = paint.fontMetrics
+                asc = -fm.ascent
+                desc = fm.descent
+            }
+            baseline += asc
             placed.add(
                 PlacedLine(
                     text = ln.text,
@@ -475,9 +494,10 @@ object CapsuleRenderer {
                     baselineY = baseline,
                 )
             )
-            baseline += fm.descent
+            baseline += desc
             if (i < lines.size - 1) baseline += LINE_GAP_REF * unit * k
         }
+
         return Metrics(placed, capsuleW, capsuleH, unit)
     }
 
@@ -496,21 +516,15 @@ object CapsuleRenderer {
         return try {
             bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
-            val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = TEXT_COLOR
                 textAlign = Paint.Align.CENTER
-                typeface = Typeface.DEFAULT_BOLD
-                letterSpacing = 0.01f
-            }
-            val regularPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = TEXT_COLOR
-                textAlign = Paint.Align.CENTER
-                typeface = Typeface.DEFAULT
             }
             for (pl in metrics.placed) {
-                val p = if (pl.bold) boldPaint else regularPaint
-                p.textSize = pl.sizePx
-                canvas.drawText(pl.text, capsule.left + pl.centerX, capsule.top + pl.baselineY, p)
+                paint.typeface = if (pl.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                paint.letterSpacing = if (pl.bold) 0.01f else 0f
+                paint.textSize = pl.sizePx
+                canvas.drawText(pl.text, capsule.left + pl.centerX, capsule.top + pl.baselineY, paint)
             }
             val out = IntArray(cw * ch)
             bmp.getPixels(out, 0, cw, 0, 0, cw, ch)
@@ -592,9 +606,10 @@ object CapsuleRenderer {
         var gMin = 255; var gMax = 0
         var bMin = 255; var bMax = 0
         var count = 0
+        val sampleColumns = intArrayOf(sampleA, sampleB)
         var y = top
         while (y < bottom) {
-            for (column in intArrayOf(sampleA, sampleB)) {
+            for (column in sampleColumns) {
                 val c = pixels[y * cw + column]
                 val r = rOf(c); val g = gOf(c); val b = bOf(c)
                 rSum += r; gSum += g; bSum += b
@@ -638,6 +653,7 @@ object CapsuleRenderer {
     fun fillColorFromStripTop(strip: IntArray, cw: Int): Int? {
         if (cw < 8 || strip.size < cw * 2) return null
         val xm = cw / 2
+        val columns = intArrayOf(xm - 1, xm, xm + 1)
         var rSum = 0L; var gSum = 0L; var bSum = 0L
         var rMin = 255; var rMax = 0
         var gMin = 255; var gMax = 0
@@ -649,7 +665,7 @@ object CapsuleRenderer {
         // after sit closest to the joint's edge gradient. The three-row skip
         // keeps a thin ripple from hiding behind two adjacent rows.
         while (y <= 16 && (y + 1) * cw + xm < strip.size + cw) {
-            for (x in intArrayOf(xm - 1, xm, xm + 1)) {
+            for (x in columns) {
                 val idx = y * cw + x
                 if (idx >= strip.size) continue
                 val c = strip[idx]

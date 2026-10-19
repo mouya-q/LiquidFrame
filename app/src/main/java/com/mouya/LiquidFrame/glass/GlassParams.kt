@@ -3,8 +3,8 @@ package com.mouya.LiquidFrame.glass
 /**
  * Every knob of the liquid glass material in one place.
  *
- * Defaults follow the reference implementation
- * (Kyant0/AndroidLiquidGlass, `backdrop` module, Apache-2.0) as its own components use it:
+ * Defaults follow the reference implementation (Apache-2.0, attributed in the
+ * `NOTICE` file) as its own components use it:
  *
  *   vibrancy()                -> saturation 1.5, luma weights 0.213/0.715/0.072
  *   blur(2.dp)                -> backdrop blur before the lens (documented order)
