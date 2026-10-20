@@ -174,29 +174,131 @@ object WatermarkHooks {
             val existing2 = cachedLogo
             if (existing2 != null) return existing2
             try {
-                // XposedBridge.getModulePath() is a runtime method not present in the
-                // compile-only API 82 JAR; use reflection to obtain the module APK path.
-                val apkPath: String? = try {
-                    val m = XposedBridge::class.java.getMethod("getModulePath")
-                    m.invoke(null) as? String
-                } catch (e: Throwable) { null }
-                if (apkPath == null) return null
+                val apkPath = resolveModuleApkPath()
+                if (apkPath == null) {
+                    log("loadLogo: module APK path not found")
+                    return null
+                }
                 val apk = java.io.File(apkPath)
-                if (!apk.isFile) return null
+                if (!apk.isFile) {
+                    log("loadLogo: module APK file does not exist: $apkPath")
+                    return null
+                }
                 val bmp: Bitmap? = java.util.zip.ZipFile(apk).use { z ->
                     val entry = z.getEntry("assets/leica_logo.png")
-                    if (entry == null) null else {
+                    if (entry == null) {
+                        log("loadLogo: leica_logo.png not found in APK assets")
+                        null
+                    } else {
                         z.getInputStream(entry).use { stream ->
                             android.graphics.BitmapFactory.decodeStream(stream)
                         }
                     }
                 }
+                if (bmp != null) log("loadLogo: decoded ${bmp.width}x${bmp.height}")
+                else log("loadLogo: BitmapFactory.decodeStream returned null")
                 cachedLogo = bmp
                 return bmp
             } catch (t: Throwable) {
+                log("loadLogo: ${t.javaClass.simpleName}: ${t.message}")
                 return null
             }
         }
+    }
+
+    /**
+     * Resolves the module's own APK path via multiple strategies, because
+     * XposedBridge.getModulePath() may return null in some LSPosed configurations.
+     *
+     * Strategy order:
+     *  1. XposedBridge.getModulePath() reflection (works on classic Xposed)
+     *  2. Stack-trace class loader resource (works in-process, LSPosed)
+     *  3. Thread context class loader resource
+     *  4. AndroidAppHelper.currentApplicationInfo().sourceDir (LSPosed injected)
+     */
+    private fun resolveModuleApkPath(): String? {
+        // Strategy 1: XposedBridge reflection.
+        try {
+            val m = XposedBridge::class.java.getMethod("getModulePath")
+            val p = m.invoke(null) as? String
+            if (p != null && java.io.File(p).isFile) return p
+        } catch (e: Throwable) { /* expected on LSPosed */ }
+
+        // Strategy 2: This class was loaded from the module APK — its class loader
+        // can provide the resource URL, from which we extract the file path.
+        try {
+            val res = javaClass.classLoader?.getResource("assets/leica_logo.png")
+            if (res != null) {
+                val path = extractApkFromUrl(res.toString())
+                if (path != null) return path
+            }
+        } catch (e: Throwable) { /* try next */ }
+
+        // Strategy 2b: Also try the protection domain code source.
+        try {
+            val pd = javaClass.protectionDomain?.codeSource
+            if (pd != null) {
+                val loc = pd.location
+                if (loc != null) {
+                    val p = loc.path
+                    if (p != null && java.io.File(p).isFile) return p
+                }
+            }
+        } catch (e: Throwable) { /* try next */ }
+
+        // Strategy 3: Thread context class loader.
+        try {
+            val tcl = Thread.currentThread().contextClassLoader
+            val res = tcl?.getResource("assets/leica_logo.png")
+            if (res != null) {
+                val path = extractApkFromUrl(res.toString())
+                if (path != null) return path
+            }
+        } catch (e: Throwable) { /* try next */ }
+
+        // Strategy 4: AndroidAppHelper.currentApplicationInfo().sourceDir.
+        // This gives the *host* app's APK path, not the module's, so it is not
+        // useful here. Instead, scan /data/adb/modules for our package.
+        try {
+            val pkg = "com.mouya.LiquidFrame"
+            val modDir = java.io.File("/data/adb/modules")
+            if (modDir.isDirectory) {
+                val propFile = java.io.File(modDir, "liquidframe/module.prop")
+                if (!propFile.isFile) {
+                    // Try LSPosed module directory layout
+                    modDir.listFiles()?.forEach { subdir ->
+                        if (subdir.isDirectory) {
+                            val prop = java.io.File(subdir, "module.prop")
+                            if (prop.isFile) {
+                                val text = prop.readText()
+                                if (text.contains("com.mouya.LiquidFrame")) {
+                                    val apk = java.io.File(subdir, "system/app/LiquidFrame/LiquidFrame.apk")
+                                    if (apk.isFile) return apk.path
+                                    val apk2 = java.io.File(subdir, "system/framework/LiquidFrame.apk")
+                                    if (apk2.isFile) return apk2.path
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) { /* last resort failed */ }
+
+        return null
+    }
+
+    /** Extracts the on-disk APK path from a jar:file:...!/entry URL string. */
+    private fun extractApkFromUrl(url: String): String? {
+        // URL format: jar:file:/data/.../module.apk!/assets/leica_logo.png
+        // or        : file:/data/.../module.apk
+        val prefix = "file:"
+        val idx = url.indexOf(prefix)
+        if (idx < 0) return null
+        val rest = url.substring(idx + prefix.length)
+        val bang = rest.indexOf("!/")
+        val path = if (bang >= 0) rest.substring(0, bang) else rest
+        // Strip leading slash on absolute paths — File handles both, but keep clean.
+        return try { java.io.File(path).absolutePath } catch (t: Throwable) { null }
     }
 
     fun install(param: XC_LoadPackage.LoadPackageParam) {
@@ -848,7 +950,10 @@ object WatermarkHooks {
         // photograph's end, and the clamp backer then amputates the lens's lower
         // sample window — the refraction band stretches and the bottom edge
         // washes out with fill-band white.
-        val protoCapsule = PanelRect(0f, 0f, capsuleW, capsuleH, capsuleH * 0.5f)
+        val cornerR = (CapsuleRenderer.CORNER_RADIUS_REF * metrics.unitPx)
+            .coerceAtLeast(1f)
+            .coerceAtMost(capsuleH * 0.5f)
+        val protoCapsule = PanelRect(0f, 0f, capsuleW, capsuleH, cornerR)
         val cropParams = GlassConfig.params()
         val padPx = maxOf(
             24f,
@@ -880,7 +985,7 @@ object WatermarkHooks {
             top = capsuleTop,
             width = capsuleW,
             height = capsuleH,
-            cornerRadiusPx = (capsuleH * 0.5f).coerceAtLeast(1f),
+            cornerRadiusPx = cornerR,
         )
 
         // ------------------------------------------------------------------

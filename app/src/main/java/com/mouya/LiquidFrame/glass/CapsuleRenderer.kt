@@ -108,22 +108,36 @@ object CapsuleRenderer {
 
     // ------------------------------------------------------------------
     // Design constants (1080-short-side reference units)
+    //
+    // Calibrated against the iOS liquid-glass watermark reference: a wide, short
+    // capsule floating at the bottom of the photograph, ~92 % of the frame width
+    // and ~56 dp tall (≈ 60 ref units at density 3 on a 1080-px short side).
     // ------------------------------------------------------------------
 
     private const val REFERENCE_SHORT_SIDE = 1080f
-    private const val MODEL_SIZE_REF = 42f
-    private const val BODY_SIZE_REF = 31f
-    private const val PAD_X_REF = 34f
-    private const val PAD_Y_REF = 22f
-    private const val LINE_GAP_REF = 15f
+
+    /** Capsule width as a fraction of the photo width (90–92 % per the reference). */
+    private const val TARGET_WIDTH_FRACTION = 0.92f
+
+    /** Target capsule height in reference units (≈ 56 dp at density 3). */
+    private const val TARGET_HEIGHT_REF = 60f
+
+    /** Corner radius in reference units (16–20 dp at density 3 → ~18 ref). */
+    const val CORNER_RADIUS_REF = 18f
+
+    private const val MODEL_SIZE_REF = 28f
+    private const val BODY_SIZE_REF = 22f
+    private const val PAD_X_REF = 24f
+    private const val PAD_Y_REF = 8f
+    private const val LINE_GAP_REF = 6f
 
     /** Horizontal gap between text columns and the centre logo slot. */
-    private const val COL_GAP_REF = 28f
+    private const val COL_GAP_REF = 20f
     /** Logo height as a fraction of the capsule's interior height. */
-    private const val LOGO_HEIGHT_FRACTION = 0.48f
+    private const val LOGO_HEIGHT_FRACTION = 0.50f
 
-    /** Gap between the photo's bottom edge and the capsule. */
-    const val BOX_INSET_REF = 42f
+    /** Gap between the photo's bottom edge and the capsule (≈ 15 dp at density 3). */
+    const val BOX_INSET_REF = 45f
 
     /** Text colour is chosen per-capsule by the caller based on backdrop brightness. */
     const val TEXT_COLOR_LIGHT = 0xF21F1F26.toInt()
@@ -442,14 +456,21 @@ object CapsuleRenderer {
     // ------------------------------------------------------------------
 
     /**
-     * Measures text columns and derives the capsule size for a three-column
-     * layout: left block (model + time), centre logo, right block (exif + gps).
+     * Fixed-dimension capsule layout matching the iOS liquid-glass reference.
      *
-     * When no logo is requested and only one column has content, falls back to
-     * the original single-column centred layout for backward compatibility.
+     * The capsule is a wide, shallow bar: ~92 % of the photo width and ~56 dp
+     * tall (TARGET_HEIGHT_REF ref units).  Text is scaled to fit inside this
+     * fixed box rather than the box being grown to fit the text, so the
+     * capsule's footprint is identical on every shot regardless of content
+     * length — exactly like the iOS watermark.
      *
-     * Two shrink passes keep the capsule within bounds: first to fit 94% of
-     * the photo width, then (rarely) to fit 50% of the short side height.
+     * Three columns inside the bar:
+     *   left   – model + time, left-aligned
+     *   centre – logo (when requested and available)
+     *   right  – exif + gps, right-aligned
+     *
+     * When no logo is present and only one column has content, the text is
+     * centred for backward compatibility.
      */
     fun measureCapsule(
         photoW: Int,
@@ -460,13 +481,13 @@ object CapsuleRenderer {
     ): Metrics? {
         if (lines.isEmpty() || photoW < 64 || shortSide < 64) return null
         val unit = (shortSide / REFERENCE_SHORT_SIDE) * scale.coerceIn(0.6f, 2.0f)
-        val widthAllowance = photoW * 0.94f
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        fun preparePaint(ln: Line, factor: Float) {
-            paint.typeface = if (ln.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            paint.letterSpacing = if (ln.bold) 0.01f else 0f
-            paint.textSize = ln.sizeRef * unit * factor
-        }
+
+        // Fixed capsule dimensions per the iOS reference.
+        val capsuleW = TARGET_WIDTH_FRACTION * photoW
+        val capsuleH = TARGET_HEIGHT_REF * unit
+        val padX = PAD_X_REF * unit
+        val padY = PAD_Y_REF * unit
+        val interiorH = capsuleH - 2f * padY
 
         val leftLines = lines.filter { it.column == 0 }
         val rightLines = lines.filter { it.column == 1 }
@@ -476,109 +497,84 @@ object CapsuleRenderer {
         val logoBmp = if (hasLogo) opts.logo else null
         val singleColumn = !hasLogo && (leftLines.isEmpty() || rightLines.isEmpty())
 
-        // --- Width + height pass (two attempts to fit width) ---
-        var k = 1f
-        var leftW = 0f
-        var rightW = 0f
-        var logoW = 0f
-        var logoH = 0f
-        var blockH = 0f
-        var leftH = 0f
-        var rightH = 0f
+        // Logo geometry from the fixed capsule height.
+        val logoH = if (hasLogo && logoBmp != null && interiorH > 0) {
+            LOGO_HEIGHT_FRACTION * interiorH
+        } else 0f
+        val logoW = if (logoH > 0 && logoBmp != null) {
+            logoH * (logoBmp.width.toFloat() / logoBmp.height.toFloat())
+        } else 0f
 
-        for (attempt in 0 until 2) {
-            leftW = 0f; rightW = 0f; leftH = 0f; rightH = 0f
+        val colGap = COL_GAP_REF * unit
+
+        // --- Text shrink pass: fit all text inside the fixed box ---
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        fun preparePaint(ln: Line, factor: Float) {
+            paint.typeface = if (ln.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            paint.letterSpacing = if (ln.bold) 0.01f else 0f
+            paint.textSize = ln.sizeRef * unit * factor
+        }
+
+        // Compute the available width for each text column.
+        val availableW: Float = if (singleColumn || !hasLogo) {
+            capsuleW - 2f * padX
+        } else {
+            ((capsuleW - 2f * padX - logoW - 2f * colGap) * 0.5f).coerceAtLeast(40f)
+        }
+
+        var k = 1f
+        for (attempt in 0 until 4) {
+            var maxW = 0f
             for (ln in leftLines) {
                 preparePaint(ln, k)
-                leftW = maxOf(leftW, paint.measureText(ln.text))
+                maxW = maxOf(maxW, paint.measureText(ln.text))
             }
             for (ln in rightLines) {
                 preparePaint(ln, k)
-                rightW = maxOf(rightW, paint.measureText(ln.text))
+                maxW = maxOf(maxW, paint.measureText(ln.text))
             }
-            for ((i, ln) in leftLines.withIndex()) {
-                preparePaint(ln, k)
-                val fm = paint.fontMetrics
-                leftH += -fm.ascent + fm.descent
-                if (i < leftLines.size - 1) leftH += LINE_GAP_REF * unit * k
-            }
-            for ((i, ln) in rightLines.withIndex()) {
-                preparePaint(ln, k)
-                val fm = paint.fontMetrics
-                rightH += -fm.ascent + fm.descent
-                if (i < rightLines.size - 1) rightH += LINE_GAP_REF * unit * k
-            }
-            blockH = when {
-                leftH == 0f -> rightH
-                rightH == 0f -> leftH
-                else -> maxOf(leftH, rightH)
-            }
-            if (hasLogo && logoBmp != null && blockH > 0) {
-                logoH = LOGO_HEIGHT_FRACTION * blockH
-                logoW = logoH * (logoBmp.width.toFloat() / logoBmp.height.toFloat())
-            }
-            val padX = PAD_X_REF * unit * k
-            val colGap = COL_GAP_REF * unit * k
-            val contentW = if (singleColumn) {
-                maxOf(leftW, rightW)
-            } else {
-                var w = leftW
-                if (logoW > 0) {
-                    w += colGap + logoW
-                    if (rightW > 0) w += colGap + rightW
-                } else if (rightW > 0) {
-                    w += colGap + rightW
-                }
-                w
-            }
-            val candidate = contentW + 2f * padX
-            if (candidate <= widthAllowance || attempt == 1) break
-            k *= widthAllowance / candidate
+            if (maxW <= availableW || k < 0.3f) break
+            k *= availableW / maxW
         }
 
-        // --- Capsule dimensions ---
-        var padX = PAD_X_REF * unit * k
-        var padY = PAD_Y_REF * unit * k
-        val contentW = if (singleColumn) {
-            maxOf(leftW, rightW)
-        } else {
-            var w = leftW
-            val colGap = COL_GAP_REF * unit * k
-            if (logoW > 0) {
-                w += colGap + logoW
-                if (rightW > 0) w += colGap + rightW
-            } else if (rightW > 0) {
-                w += colGap + rightW
-            }
-            w
+        // --- Measure placed line heights ---
+        var leftH = 0f
+        var rightH = 0f
+        for ((i, ln) in leftLines.withIndex()) {
+            preparePaint(ln, k)
+            val fm = paint.fontMetrics
+            leftH += -fm.ascent + fm.descent
+            if (i < leftLines.size - 1) leftH += LINE_GAP_REF * unit * k
         }
-        var capsuleW = contentW + 2f * padX
-        var capsuleH = blockH + 2f * padY
+        for ((i, ln) in rightLines.withIndex()) {
+            preparePaint(ln, k)
+            val fm = paint.fontMetrics
+            rightH += -fm.ascent + fm.descent
+            if (i < rightLines.size - 1) rightH += LINE_GAP_REF * unit * k
+        }
 
-        // --- Height shrink (rare: capsule taller than half the short side) ---
-        var shrunk = false
-        if (capsuleH > shortSide * 0.5f) {
-            val shrink = (shortSide * 0.5f) / capsuleH
+        // If text is too tall for the fixed capsule, shrink further.
+        val blockH = maxOf(leftH, rightH)
+        if (blockH > interiorH && blockH > 0) {
+            val shrink = interiorH / blockH
             k *= shrink
-            capsuleH *= shrink
-            capsuleW *= shrink
-            padX *= shrink
-            padY *= shrink
-            logoW *= shrink
-            logoH *= shrink
-            leftW *= shrink
-            rightW *= shrink
             leftH *= shrink
             rightH *= shrink
-            blockH *= shrink
-            shrunk = true
         }
 
         // --- Place lines ---
         val placed = ArrayList<PlacedLine>(lines.size)
         if (singleColumn) {
             val allLines = if (leftLines.isNotEmpty()) leftLines else rightLines
-            var baseline = padY
+            // Re-measure after final k
+            var totalH = 0f
+            for ((i, ln) in allLines.withIndex()) {
+                preparePaint(ln, k)
+                val fm = paint.fontMetrics
+                totalH += -fm.ascent + fm.descent
+                if (i < allLines.size - 1) totalH += LINE_GAP_REF * unit * k
+            }
+            var baseline = padY + (interiorH - totalH) / 2f
             for ((i, ln) in allLines.withIndex()) {
                 preparePaint(ln, k)
                 val fm = paint.fontMetrics
@@ -596,8 +592,8 @@ object CapsuleRenderer {
                 if (i < allLines.size - 1) baseline += LINE_GAP_REF * unit * k
             }
         } else {
-            // Left block: left-aligned at padX
-            var baseline = padY + (blockH - leftH) / 2f
+            // Left block: left-aligned at padX, vertically centred
+            var baseline = padY + (interiorH - leftH) / 2f
             for ((i, ln) in leftLines.withIndex()) {
                 preparePaint(ln, k)
                 val fm = paint.fontMetrics
@@ -614,8 +610,8 @@ object CapsuleRenderer {
                 baseline += fm.descent
                 if (i < leftLines.size - 1) baseline += LINE_GAP_REF * unit * k
             }
-            // Right block: right-aligned at capsuleW - padX
-            baseline = padY + (blockH - rightH) / 2f
+            // Right block: right-aligned at capsuleW - padX, vertically centred
+            baseline = padY + (interiorH - rightH) / 2f
             for ((i, ln) in rightLines.withIndex()) {
                 preparePaint(ln, k)
                 val fm = paint.fontMetrics
@@ -637,9 +633,8 @@ object CapsuleRenderer {
         // Logo placement (centre column, vertically centred)
         var logoPlacement: LogoPlacement? = null
         if (hasLogo && logoW > 0 && logoH > 0 && !singleColumn) {
-            val colGap = COL_GAP_REF * unit * k
-            val logoLeft = padX + leftW + colGap
-            val logoTop = padY + (blockH - logoH) / 2f
+            val logoLeft = padX + (capsuleW - 2f * padX - logoW) * 0.5f
+            val logoTop = padY + (interiorH - logoH) / 2f
             logoPlacement = LogoPlacement(logoLeft, logoTop, logoW, logoH)
         }
 

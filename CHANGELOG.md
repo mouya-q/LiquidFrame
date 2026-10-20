@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.9.18 — Fixed-dimension capsule layout and logo path resolution
+
+### CapsuleRenderer — fixed-dimension layout matching the iOS reference
+- **`measureCapsule` rewritten** from content-driven to fixed-dimension: the capsule width is `TARGET_WIDTH_FRACTION × photoW` (92%) and height is `TARGET_HEIGHT_REF × unit` (~56 dp at density 3), so every shot has the same footprint regardless of text length — matching the iOS liquid-glass watermark.
+- **Four-pass text shrink**: text is iteratively scaled down (up to 4 rounds, floor at 30%) to fit inside the fixed box, with a secondary height-based shrink when the text block exceeds the interior.
+- **Logo geometry** derived from fixed capsule height (`LOGO_HEIGHT_FRACTION × interiorH`) instead of text height, so the logo size is consistent across shots.
+- **Logo centring** computed from overall available width `(capsuleW - 2×padX - logoW) × 0.5`, placing the logo in the true centre of the bar.
+- **Text vertical centring** based on `interiorH` rather than accumulated text height, keeping content vertically stable.
+- **New design constants**: `TARGET_WIDTH_FRACTION=0.92f`, `TARGET_HEIGHT_REF=60f`, `CORNER_RADIUS_REF=18f` (now public, exported for use by the hook layer). `MODEL_SIZE_REF` 42→28, `BODY_SIZE_REF` 31→22, `PAD_X_REF` 34→24, `PAD_Y_REF` 22→8, `LINE_GAP_REF` 15→6, `COL_GAP_REF` 28→20, `LOGO_HEIGHT_FRACTION` 0.48→0.50, `BOX_INSET_REF` 42→45.
+
+### WatermarkHooks — logo loading robustness
+- **`loadLogo()` rewritten** with `resolveModuleApkPath()` multi-strategy path resolution, replacing the sole `XposedBridge.getModulePath()` reflection that returned null in LSPosed environments. Strategies: (1) XposedBridge reflection, (2) class-loader resource URL, (2b) protection-domain code source, (3) thread context class-loader resource, (4) Magisk/LSPosed module directory scan. Diagnostic logging at every failure point.
+- **`extractApkFromUrl()`** helper parses `jar:file:...!/entry` and `file:...` URL formats to extract the on-disk APK path.
+
+### WatermarkHooks — capsule corner radius
+- **Corner radius** changed from `capsuleH × 0.5f` (full pill shape) to `CORNER_RADIUS_REF × unitPx` (≈18 dp), coerced to `[1, capsuleH × 0.5]`. Applied to both the proto-capsule (padding calculation) and the final capsule PanelRect. Matches the iOS reference's rounded-rectangle (not pill) shape.
+
 ## 1.9.17 — Three-column capsule with centre logo
 
 ### CapsuleRenderer — three-column layout
