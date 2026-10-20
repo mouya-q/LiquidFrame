@@ -346,13 +346,7 @@ fun GlassBottomBar(
                     .then(interactiveHighlight.modifier)
                     .height(56f.dp)
                     .fillMaxWidth()
-                    .padding(horizontal = 4f.dp)
-                    // Tint belongs to this layer alone: as a graphics-layer color
-                    // filter it applies to what this Row draws (the tab glyphs),
-                    // never to the whole recording that drawBackdrop captured.
-                    .graphicsLayer {
-                        colorFilter = ColorFilter.tint(accentColor)
-                    },
+                    .padding(horizontal = 4f.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 content = tabContent,
             )
