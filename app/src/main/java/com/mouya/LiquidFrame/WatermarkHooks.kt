@@ -168,21 +168,31 @@ object WatermarkHooks {
     private val logoLock = Any()
 
     private fun loadLogo(): Bitmap? {
-        cachedLogo?.let { return it }
+        val existing = cachedLogo
+        if (existing != null) return existing
         synchronized(logoLock) {
-            cachedLogo?.let { return it }
+            val existing2 = cachedLogo
+            if (existing2 != null) return existing2
             try {
-                val apkPath = XposedBridge.getModulePath ?: return null
+                // XposedBridge.getModulePath() is a runtime method not present in the
+                // compile-only API 82 JAR; use reflection to obtain the module APK path.
+                val apkPath: String? = try {
+                    val m = XposedBridge::class.java.getMethod("getModulePath")
+                    m.invoke(null) as? String
+                } catch (e: Throwable) { null }
+                if (apkPath == null) return null
                 val apk = java.io.File(apkPath)
                 if (!apk.isFile) return null
-                java.util.zip.ZipFile(apk).use { z ->
-                    val entry = z.getEntry("assets/leica_logo.png") ?: return null
-                    z.getInputStream(entry).use { stream ->
-                        val bmp = android.graphics.BitmapFactory.decodeStream(stream)
-                        cachedLogo = bmp
-                        return bmp
+                val bmp: Bitmap? = java.util.zip.ZipFile(apk).use { z ->
+                    val entry = z.getEntry("assets/leica_logo.png")
+                    if (entry == null) null else {
+                        z.getInputStream(entry).use { stream ->
+                            android.graphics.BitmapFactory.decodeStream(stream)
+                        }
                     }
                 }
+                cachedLogo = bmp
+                return bmp
             } catch (t: Throwable) {
                 return null
             }

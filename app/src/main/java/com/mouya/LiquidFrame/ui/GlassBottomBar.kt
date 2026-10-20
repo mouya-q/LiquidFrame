@@ -350,7 +350,9 @@ fun GlassBottomBar(
                     // Tint belongs to this layer alone: as a graphics-layer color
                     // filter it applies to what this Row draws (the tab glyphs),
                     // never to the whole recording that drawBackdrop captured.
-                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                    .graphicsLayer {
+                        colorFilter = ColorFilter.tint(accentColor)
+                    },
                 verticalAlignment = Alignment.CenterVertically,
                 content = tabContent,
             )
