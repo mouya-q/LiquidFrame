@@ -1,59 +1,44 @@
 package com.mouya.LiquidFrame
 
-import com.mouya.LiquidFrame.glass.GlassParams
+import android.graphics.Bitmap
+import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
+import de.robv.android.xposed.XposedHelpers
+import de.robv.android.xposed.callbacks.XC_LoadPackage
 
-/**
- * The module's view of the current settings, inside the camera process.
- *
- * The config UI runs in the module's own process, so nothing here is shared memory: values are
- * read from [ConfigStore] at a bounded interval, which lets a slider take effect without
- * restarting the camera.
- */
 object GlassConfig {
 
     private const val TAG = "LiquidFrame"
 
-    /** Serve the user's settings. */
-    var masterEnabled: Boolean = true
-        private set
+    var masterEnabled = true
+    var radiusDp = 24f
+    var refractionHeightPx = 28f
+    var refractionAmountPx = 90f
+    var highlightStrength = 1.0f
+    var tintAlpha = 0.10f
 
-    /** Let the scene decide tint, veil and rim strength. */
-    var adaptiveGlass: Boolean = true
-        private set
-
-    private var cachedParams: GlassParams = GlassParams.Default
+    // Adaptive glass: detect scene type for tint
+    var adaptiveGlass = true
+    var lightTintAlpha = 0.12f
+    var darkTintAlpha = 0.25f
+    var darkHighlightStrength = 0.5f
 
     fun init(classLoader: ClassLoader) {
-        refresh(force = true)
+        // Load preferences if needed
     }
 
-    /** Re-reads settings when the cache has expired. Cheap enough to call per capture. */
-    fun refresh(force: Boolean = false) {
-        if (force) ConfigStore.load() else ConfigStore.loadIfStale()
-        masterEnabled = ConfigStore.isEnabled()
-        cachedParams = ConfigStore.glassParams()
-        adaptiveGlass = cachedParams.adaptive
-
-        // The settings screen has no way to prove the camera actually received a change other
-        // than this line, so every refresh that observes a different `enabled` than the last one
-        // is announced. If the user's toggle never shows up here, the file is not being read.
-        if (masterEnabled != lastReportedEnabled) {
-            lastReportedEnabled = masterEnabled
-            LogHelper.log(
-                TAG,
-                "settings received: enabled=$masterEnabled adaptive=$adaptiveGlass " +
-                        "band=${cachedParams.refractionHeightFraction} " +
-                        "amount=${cachedParams.refractionAmountFraction} " +
-                        "blur=${cachedParams.blurFraction}",
-            )
+    fun isDarkScene(bitmap: Bitmap): Boolean {
+        // Quick brightness sampling
+        val step = maxOf(1, bitmap.width / 10)
+        var totalBrightness = 0
+        var count = 0
+        for (x in 0 until bitmap.width step step) {
+            for (y in 0 until bitmap.height step step) {
+                val pixel = bitmap.getPixel(x, y)
+                totalBrightness += ((pixel shr 16) and 0xFF) + ((pixel shr 8) and 0xFF) + (pixel and 0xFF)
+                count++
+            }
         }
-    }
-
-    private var lastReportedEnabled: Boolean? = null
-
-    /** The material parameters for this capture. */
-    fun params(): GlassParams {
-        refresh()
-        return cachedParams
+        return if (count > 0) (totalBrightness / count) < 384 else false
     }
 }
