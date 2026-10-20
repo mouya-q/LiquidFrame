@@ -159,7 +159,14 @@ object DexKitHelper {
     }
 
     private fun load(name: String, loader: ClassLoader): Class<*>? = try {
-        Class.forName(name, false, loader)
+        // DexScan returns DEX type descriptors (Lpe/o;), but Class.forName
+        // needs the Java binary name (pe.o). Strip the L prefix and ; suffix.
+        val javaName = if (name.startsWith("L") && name.endsWith(";") && name.length > 2) {
+            name.substring(1, name.length - 1).replace('/', '.')
+        } else {
+            name
+        }
+        Class.forName(javaName, false, loader)
     } catch (t: Throwable) {
         log("class not found: $name: ${t.javaClass.simpleName}")
         null

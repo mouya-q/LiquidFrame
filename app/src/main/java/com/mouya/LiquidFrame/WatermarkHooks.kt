@@ -438,13 +438,18 @@ object WatermarkHooks {
                 // drawRect capture timing at all — the largest bitmap argument that is not
                 // the destination is the photo.
                 val src = try {
-                    p.args?.filterIsInstance<Bitmap>()
-                        ?.filter { it !== out && !it.isRecycled && it.width >= 8 && it.height >= 8 }
-                        ?.maxByOrNull { it.width.toLong() * it.height.toLong() }
+                    val allBmps = p.args?.filterIsInstance<Bitmap>()
+                        ?.filter { !it.isRecycled && it.width >= 8 && it.height >= 8 }
+                    val nonOut = allBmps?.filter { it !== out }
+                    // When the composite mutates the input bitmap in place, the only
+                    // bitmap argument *is* the output. In that case there is no separate
+                    // source to reconstruct from — the over-photo erase path handles it.
+                    nonOut?.maxByOrNull { it.width.toLong() * it.height.toLong() }
                 } catch (t: Throwable) {
                     log("src bitmap extraction failed: ${t.javaClass.simpleName}: ${t.message}")
                     null
                 }
+                log("composite: ${out.width}x${out.height} mutable=${out.isMutable} src=${src?.let { "${it.width}x${it.height}" } ?: "null"}")
                 try {
                     process(out, frame, src, p.thisObject, p.args)
                 } catch (t: Throwable) {
@@ -874,20 +879,63 @@ object WatermarkHooks {
                     val ok = CapsuleRenderer.patchCropFromSource(
                         patch, ppw, pph, pl, pt, w, h, srcPhoto,
                     )
-                    // patchCropFromSource rewrites only rows the source can
-                    // truly serve and leaves the rest untouched in the buffer,
-                    // so writing back is safe whether or not it succeeded.
                     out.setPixels(patch, 0, ppw, pl, pt, ppw, pph)
                     if (ok) eraseMode = "plate-patch"
                 }
             }
+            // Over-photo layout without a source bitmap: the plate was painted
+            // directly on the photograph. There is no strip fill to detect and
+            // no source bitmap to reconstruct from, so the only honest repair is
+            // to sample the scene just above and below the plate and inpaint the
+            // plate rectangle with that averaged colour. The variance gate from
+            // eraseFlatRegion is too strict for photographic content, so this
+            // path bypasses it and fills unconditionally — a flat-ish inpaint is
+            // always better than leaving the stock watermark glyphs standing.
+            if (eraseMode == "none" && !isStripLayout && srcPhoto == null) {
+                val pad = 8
+                val pl = (plate.left - pad).toInt().coerceIn(0, w - 1)
+                val pt = (plate.top - pad).toInt().coerceIn(0, h - 1)
+                val pr = (plate.right + pad).toInt().coerceIn(pl + 1, w)
+                val pb = (plate.bottom + pad).toInt().coerceIn(pt + 1, h)
+                val ppw = pr - pl
+                val pph = pb - pt
+                if (ppw >= 8 && pph >= 8) {
+                    val patch = IntArray(ppw * pph)
+                    out.getPixels(patch, 0, ppw, pl, pt, ppw, pph)
+                    // Sample rows just above and just below the plate to build
+                    // a representative fill colour for this region of the scene.
+                    val sampleRows = mutableListOf<Int>()
+                    val aboveRow = ((plate.top - pad - 2).toInt()).coerceAtLeast(0)
+                    val belowRow = ((plate.bottom + pad + 2).toInt()).coerceAtMost(h - 1)
+                    if (aboveRow >= 0 && aboveRow < h) {
+                        for (x in pl until pr) {
+                            sampleRows.add(out.getPixel(x.coerceIn(0, w - 1), aboveRow))
+                        }
+                    }
+                    if (belowRow >= 0 && belowRow < h && belowRow != aboveRow) {
+                        for (x in pl until pr) {
+                            sampleRows.add(out.getPixel(x.coerceIn(0, w - 1), belowRow))
+                        }
+                    }
+                    if (sampleRows.isNotEmpty()) {
+                        var rSum = 0L; var gSum = 0L; var bSum = 0L
+                        for (c in sampleRows) {
+                            rSum += (c shr 16) and 0xFF
+                            gSum += (c shr 8) and 0xFF
+                            bSum += c and 0xFF
+                        }
+                        val n = sampleRows.size
+                        val fill = (0xFF000000.toInt()) or
+                                (((rSum / n).toInt()) shl 16) or
+                                (((gSum / n).toInt()) shl 8) or
+                                ((bSum / n).toInt())
+                        for (i in patch.indices) patch[i] = fill
+                        out.setPixels(patch, 0, ppw, pl, pt, ppw, pph)
+                        eraseMode = "over-photo"
+                    }
+                }
+            }
             if (eraseMode == "none") {
-                // Last resort, any layout: erase only the plate's own band
-                // with the colour sampled just left and right of it. In an
-                // over-photo layout those samples are scene and the routine
-                // refuses on its own variance gate; in a band layout they are
-                // fill, and the stock plate disappears without ever touching
-                // the photograph above the boundary.
                 val pTop = (plate.top.toInt() - 1).coerceAtLeast(0)
                 val pBot = (plate.bottom.toInt() + 24).coerceAtMost(h).coerceAtLeast(pTop + 8)
                 if (pBot <= h && pBot - pTop >= 8 && w >= 8) {
@@ -959,20 +1007,16 @@ object WatermarkHooks {
             24f,
             PANEL_CROP_PAD_FRACTION * minOf(capsuleW, capsuleH),
             LiquidGlassOptics.requiredPanelPaddingPx(protoCapsule, cropParams).toFloat(),
-        )
+        ).coerceAtMost(capsuleH * 0.5f)
         val inset = (CapsuleRenderer.BOX_INSET_REF * metrics.unitPx)
             .coerceAtLeast(padPx + 6f)
-        // Placement cap. In the strip layout the photograph's bottom edge is the
-        // ceiling. When the eradicate refused (eraseMode still "none") the stock
-        // plate is still standing; the capsule — including its optics pad — must
-        // then stay clear of it, because a fresh capsule stamped onto the
-        // surviving stock mark reads worse than the mark alone. With the plate
-        // eradicated the ceiling moves back to the photo's bottom edge.
-        val placementCap = when {
-            isStripLayout -> anchorY
-            eraseMode == "none" -> (plate.top - inset - 8f).coerceAtLeast(0f)
-            else -> anchorY
-        }
+            .coerceAtMost(shortSide * 0.12f)
+        // Placement cap. The capsule's bottom edge sits at [placementCap - inset],
+        // so the capsule is always inside the photograph. When the stock plate
+        // survived (eraseMode still "none") the capsule must stay clear of it,
+        // but the gap is the inset itself — the capsule's bottom is already inset
+        // above the photo's bottom edge, which is at or above the plate's top.
+        val placementCap = anchorY
         val capsuleBottom = (placementCap - inset).coerceAtLeast(capsuleH + 4f)
         val capsuleTop = capsuleBottom - capsuleH
         val capsuleLeft = when (opts.position) {

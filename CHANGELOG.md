@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.19 — Root-cause fix: eradicate failure, capsule position, DexScan class-name format
+
+### WatermarkHooks — over-photo erase path (root cause 1: `eradicate: mode=none`)
+- **New "over-photo" erase path** added to `processCapsule`: when the camera paints the watermark plate directly on the photograph (not on a strip below it) and no source bitmap is available for reconstruction, the plate rectangle is inpainted with the averaged colour sampled from rows just above and below the plate. This path bypasses the strict variance gate of `eraseFlatRegion` because a flat-ish inpaint is always better than leaving the stock watermark glyphs standing.
+- **Erase path priority** is now: strip-fill → plate-patch (srcPhoto available) → over-photo (no srcPhoto, over-photo layout) → plate-flat (last resort with variance gate).
+- **`hookComposite` src extraction** improved: previously filtered `it !== out` before checking recyclability, which could miss the case where the composite mutates the input bitmap in place. Now all valid bitmaps are collected first, then filtered against `out`. Diagnostic log added: `composite: WxH mutable=... src=...`.
+- **`placementCap` simplified**: the old `when` branch that pushed the capsule above the plate when erase failed (`eraseMode == "none" → plate.top - inset - 8f`) caused the capsule to render at y=80 instead of near the photo bottom. Now `placementCap` is always `anchorY` (photo bottom), and the inset cap ensures the capsule stays within the photo.
+
+### WatermarkHooks — capsule position fix (root cause 2: capsule at y=80)
+- **`padPx` capped** to `capsuleH × 0.5f`: previously `requiredPanelPaddingPx` could return extremely large values (displacement = band × amountFraction where amountFraction defaults to 3), pushing padPx to ~473px on a 720px short side, which in turn pushed `inset` to the same value and placed the capsule near the top of the photo.
+- **`inset` capped** to `shortSide × 0.12f`: even if the optics padding calculation returns a large value, the inset from the photo's bottom edge is now bounded to 12% of the short side (~86px at 720px), keeping the capsule near the bottom where it belongs.
+
+### DexKitHelper — class-name format fix (root cause 3: `ClassNotFoundException: LFe/a;`)
+- **`load()` method** now converts DEX type descriptors (`Lpe/o;`) to Java binary names (`pe.o`) before calling `Class.forName`. DexScan returns class names in DEX descriptor format (with `L` prefix and `;` suffix), but `Class.forName` expects the Java format. This caused the runtime discovery upgrade path to fail silently — `Class.forName("LFe/a;")` always threw `ClassNotFoundException`, so even when DexScan found the correct candidates, `pick()` returned `null` and the module stayed on hardcoded fallback names forever.
+
+
 ## 1.9.18 — Fixed-dimension capsule layout and logo path resolution
 
 ### CapsuleRenderer — fixed-dimension layout matching the iOS reference
