@@ -34,7 +34,7 @@ import java.util.Locale
 /** Palette, shapes and shared settings-row components for the config UI. */
 object LiquidColors {
     val blue = Color(0xFF007AFF)
-    val lightBg = Color(0xFFF2F2F7)
+    val lightBg = Color(0xFFFFFFFF)
     val darkBg = Color(0xFF0B0B0D)
     val lightSurface = Color(0xFFFFFFFF)
     val darkSurface = Color(0xFF1C1C1E)

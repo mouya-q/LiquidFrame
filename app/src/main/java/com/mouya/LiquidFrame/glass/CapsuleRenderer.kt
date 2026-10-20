@@ -125,8 +125,9 @@ object CapsuleRenderer {
     /** Gap between the photo's bottom edge and the capsule. */
     const val BOX_INSET_REF = 42f
 
-    /** Deep near-black with a few points of transparency, as on stock phone marks. */
-    private const val TEXT_COLOR = 0xF21F1F26.toInt()
+    /** Text colour is chosen per-capsule by the caller based on backdrop brightness. */
+    const val TEXT_COLOR_LIGHT = 0xF21F1F26.toInt()
+    const val TEXT_COLOR_DARK = 0xF2FFFFFF.toInt()
 
     /** Immutable and thread-safe, so one shared instance serves every capture thread. */
     private val TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss", Locale.US)
@@ -654,14 +655,14 @@ object CapsuleRenderer {
      * crop, positioned at [capsule]'s crop-local rectangle. Returns raw pixels,
      * or null when the layer could not be created.
      */
-    fun drawTextLayer(cw: Int, ch: Int, capsule: PanelRect, metrics: Metrics): IntArray? {
+    fun drawTextLayer(cw: Int, ch: Int, capsule: PanelRect, metrics: Metrics, textColor: Int = TEXT_COLOR_LIGHT): IntArray? {
         if (cw <= 0 || ch <= 0 || metrics.placed.isEmpty()) return null
         var bmp: Bitmap? = null
         return try {
             bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = TEXT_COLOR
+                color = textColor
             }
             for (pl in metrics.placed) {
                 paint.typeface = if (pl.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT

@@ -317,77 +317,24 @@ private fun AboutHero(
                 },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // The gradient field exports itself as a layer backdrop so the capsule
-            // samples these exact pixels.
-            val fieldBackdrop = rememberLayerBackdrop()
-            Box(Modifier.fillMaxWidth().height(200.dp).layerBackdrop(fieldBackdrop)) {
-                AnimatedGradientField(
-                    animationTime = animationTime,
-                    colors = gradientColors,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
+            // App icon: the vector mark, no glass capsule wrapper.
+            Image(
+                painter = painterResource(R.drawable.ic_liquidframe),
+                contentDescription = null,
+                modifier = Modifier.size(72.dp),
+            )
 
             Spacer(Modifier.height(18.dp))
 
-            // The name capsule: the same material chain as the watermark panel, at hero
-            // scale. Wider than before so the wordmark reads as part of the material
-            // instead of a caption glued on top.
-            val pageBackdrop = liquidGlassBackdrop()
-            val backdrop = if (pageBackdrop != null) {
-                rememberCombinedBackdrop(pageBackdrop, fieldBackdrop)
-            } else {
-                fieldBackdrop
-            }
-            Box(
-                modifier = Modifier
-                    .size(width = 232.dp, height = 68.dp)
-                    .drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { Capsule() },
-                        effects = {
-                            vibrancy()
-                            blur(4.dp.toPx())
-                            lens(16.dp.toPx(), 22.dp.toPx(), chromaticAberration = true)
-                        },
-                        highlight = {
-                            Highlight.Default.copy(
-                                alpha = if (dark) 0.42f else 0.60f,
-                                width = Highlight.Default.width * 1.25f,
-                            )
-                        },
-                        shadow = {
-                            Shadow(
-                                radius = 20.dp,
-                                color = Color.Black.copy(alpha = if (dark) 0.28f else 0.20f),
-                            )
-                        },
-                        onDrawSurface = {
-                            // A whisper of frost keeps the wordmark legible over bright
-                            // gradients without becoming the old opaque white mask.
-                            drawRect(Color.White.copy(alpha = if (dark) 0.05f else 0.09f))
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_liquidframe),
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                    )
-                    Text(
-                        "liquidFrame",
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 0.25.sp,
-                        color = if (dark) Color.White else Color(0xFF111113),
-                    )
-                }
-            }
+            // The name as plain material text, not a glass capsule. The icon already
+            // carries the mark; the wordmark sits below it as typography.
+            Text(
+                "liquidFrame",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.5).sp,
+                color = if (dark) Color.White else Color(0xFF111113),
+            )
 
             Spacer(Modifier.height(10.dp))
             Text(

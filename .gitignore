@@ -1,32 +1,5 @@
-# Build outputs
-*.apk
-*.ap_
-*.dex
-*.class
-
-# Gradle
-.gradle/
+.backup/
 build/
-local.properties
-
-# IDE
+.gradle/
 .idea/
-.vscode/
-*.iml
-*.iws
-*.ipr
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Large decoded/jadx directories (too big for git)
-decoded_camera/
-jadx_camera/
-jadx_out/
-
-# NDK / C++ intermediates
-.cxx/
-
-# Kotlin compiler session files
-.kotlin/
+local.properties

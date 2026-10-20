@@ -17,12 +17,12 @@
 
     <!-- Liquid capsule: the watermark the module draws, floating low in the frame. -->
     <path
-        android:pathData="M44,63 h16 c3.3,0 6,2.7 6,6 s-2.7,6 -6,6 h-16 c-3.3,0 -6,-2.7 -6,-6 s2.7,-6 6,-6 z"
+        android:pathData="M46,58 h16 c3.3,0 6,2.7 6,6 s-2.7,6 -6,6 h-16 c-3.3,0 -6,-2.7 -6,-6 s2.7,-6 6,-6 z"
         android:fillColor="#5AA9FF" />
 
     <!-- Specular highlight: one short gloss line on the capsule. -->
     <path
-        android:pathData="M45,64.6 h10"
+        android:pathData="M49,59.6 h10"
         android:strokeColor="#FFFFFF"
         android:strokeWidth="1.6"
         android:strokeLineCap="round"

@@ -68,32 +68,13 @@ fun LiquidBackdropProvider(
     val backdrop = rememberLayerBackdrop()
     val dark = isSystemInDarkTheme()
     Box(modifier.fillMaxSize()) {
-        // Record the real ambient field as the backdrop source. Frosted glass only
-        // looks like glass when there is actual color variation behind it to blur
-        // and refract; a flat solid sheet leaves blur and lens with nothing to work
-        // on, which is exactly why the old dock read as a frosted sticker. The
-        // field below is one vertical base gradient plus two large soft color
-        // pools drawn once inside the recording layer — no per-frame cost.
-        val base = if (dark) Color(0xFF0B0B0D) else Color(0xFFF2F2F7)
-        val baseDeep = if (dark) Color(0xFF0E0E12) else Color(0xFFECECF1)
+        // Pure flat background: white in light mode, near-black in dark.
+        // Glass controls sample this uniform field — blur and lens still work
+        // because the controls themselves draw varied content (text, icons)
+        // into the recording layer.
+        val base = if (dark) Color(0xFF0B0B0D) else Color(0xFFFFFFFF)
         Canvas(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    listOf(base, baseDeep)
-                ),
-            )
-            val poolA = if (dark) Color(0xFF3B2E7A) else Color(0xFFD8E7FF)
-            val poolB = if (dark) Color(0xFF2A3B5E) else Color(0xFFFFF1D6)
-            drawCircle(
-                color = poolA.copy(alpha = 0.55f),
-                radius = size.minDimension * 0.95f,
-                center = Offset(size.width * 0.16f, size.height * 0.08f),
-            )
-            drawCircle(
-                color = poolB.copy(alpha = 0.45f),
-                radius = size.minDimension * 1.05f,
-                center = Offset(size.width * 0.88f, size.height * 0.86f),
-            )
+            drawRect(base)
         }
         CompositionLocalProvider(LocalLiquidBackdrop provides backdrop) {
             content()

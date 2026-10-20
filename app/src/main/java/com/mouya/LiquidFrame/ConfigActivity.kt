@@ -273,6 +273,7 @@ class ConfigActivity : ComponentActivity() {
         var capsuleEnabled by remember { mutableStateOf(ConfigStore.capsuleEnabled()) }
         var capsulePos by remember { mutableStateOf(ConfigStore.capsulePos()) }
         var capsuleModel by remember { mutableStateOf(ConfigStore.capsuleModel()) }
+        var capsuleModelEnabled by remember { mutableStateOf(capsuleModel.isNotEmpty()) }
         var capsuleShowDatetime by remember { mutableStateOf(ConfigStore.capsuleShowDatetime()) }
         var capsuleShowExif by remember { mutableStateOf(ConfigStore.capsuleShowExif()) }
         var capsuleShowGps by remember { mutableStateOf(ConfigStore.capsuleShowGps()) }
@@ -335,14 +336,15 @@ class ConfigActivity : ComponentActivity() {
         // preview: the preview pipeline is the legacy watermark panel, so a
         // capsule edit would only burn a render for an identical image.
         LaunchedEffect(
-            capsuleEnabled, capsulePos, capsuleModel,
+            capsuleEnabled, capsulePos, capsuleModel, capsuleModelEnabled,
             capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleShowLogo, capsuleScale,
         ) {
             kotlinx.coroutines.delay(180)
+            val effectiveModel = if (capsuleModelEnabled) capsuleModel else ""
             val values = ConfigStore.snapshot().apply {
                 this[ConfigStore.KEY_CAPSULE_ENABLED] = capsuleEnabled.toString()
                 this[ConfigStore.KEY_CAPSULE_POS] = capsulePos
-                this[ConfigStore.KEY_CAPSULE_MODEL] = capsuleModel
+                this[ConfigStore.KEY_CAPSULE_MODEL] = effectiveModel
                 this[ConfigStore.KEY_CAPSULE_DATETIME] = capsuleShowDatetime.toString()
                 this[ConfigStore.KEY_CAPSULE_EXIF] = capsuleShowExif.toString()
                 this[ConfigStore.KEY_CAPSULE_GPS] = capsuleShowGps.toString()
@@ -372,6 +374,7 @@ class ConfigActivity : ComponentActivity() {
             capsuleEnabled = true
             capsulePos = "center"
             capsuleModel = ""
+            capsuleModelEnabled = false
             capsuleShowDatetime = true
             capsuleShowExif = true
             capsuleShowGps = true
@@ -485,23 +488,30 @@ class ConfigActivity : ComponentActivity() {
                                     "拍照时擦除原水印，在照片内重建一枚液态玻璃胶囊",
                                 )
                                 SettingDivider()
-                                Row(
-                                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    CapsulePosOption("居中", "center", capsulePos, Modifier.weight(1f)) { capsulePos = it }
-                                    CapsulePosOption("靠左", "left", capsulePos, Modifier.weight(1f)) { capsulePos = it }
-                                    CapsulePosOption("靠右", "right", capsulePos, Modifier.weight(1f)) { capsulePos = it }
+                                LiquidToggleRow("徕卡标", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "胶囊中央显示徕卡标")
+                                SettingDivider()
+                                LiquidToggleRow(
+                                    "自定义设备名称",
+                                    capsuleModelEnabled,
+                                    { capsuleModelEnabled = !capsuleModelEnabled },
+                                    "使用自定义文字替代系统机型名",
+                                )
+                                if (capsuleModelEnabled) {
+                                    OutlinedTextField(
+                                        value = capsuleModel,
+                                        onValueChange = { if (it.length <= 32) capsuleModel = it },
+                                        singleLine = true,
+                                        label = { Text("设备名称", fontSize = 13.sp, color = textSecondary()) },
+                                        placeholder = { Text("输入自定义机型文字", fontSize = 13.sp, color = textSecondary()) },
+                                        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+                                    )
                                 }
                                 SettingDivider()
-                                OutlinedTextField(
-                                    value = capsuleModel,
-                                    onValueChange = { if (it.length <= 32) capsuleModel = it },
-                                    singleLine = true,
-                                    label = { Text("自定义机型文字", fontSize = 13.sp, color = textSecondary()) },
-                                    placeholder = { Text("留空则自动使用机型", fontSize = 13.sp, color = textSecondary()) },
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                )
+                                LiquidToggleRow("日期时间", capsuleShowDatetime, { capsuleShowDatetime = !capsuleShowDatetime }, "左列第二行：拍摄时间")
+                                SettingDivider()
+                                LiquidToggleRow("相机参数", capsuleShowExif, { capsuleShowExif = !capsuleShowExif }, "右列第一行：焦距、光圈、快门、ISO")
+                                SettingDivider()
+                                LiquidToggleRow("位置信息", capsuleShowGps, { capsuleShowGps = !capsuleShowGps }, "右列第二行：GPS 度分秒坐标")
                                 SettingDivider()
                                 LiquidSliderRow(
                                     "胶囊大小",
@@ -510,14 +520,6 @@ class ConfigActivity : ComponentActivity() {
                                     "",
                                     valueLabel = String.format(java.util.Locale.ROOT, "%.2f×", capsuleScale),
                                 ) { capsuleScale = it }
-                                SettingDivider()
-                                LiquidToggleRow("日期时间行", capsuleShowDatetime, { capsuleShowDatetime = !capsuleShowDatetime }, "第二行：拍摄时间")
-                                SettingDivider()
-                                LiquidToggleRow("相机参数行", capsuleShowExif, { capsuleShowExif = !capsuleShowExif }, "第三行：焦距、光圈、快门、ISO")
-                                SettingDivider()
-                                LiquidToggleRow("位置信息行", capsuleShowGps, { capsuleShowGps = !capsuleShowGps }, "第四行：GPS 度分秒坐标")
-                                SettingDivider()
-                                LiquidToggleRow("徕卡标", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "胶囊中央显示徕卡标")
                             }
 
                             SettingSection("维护") {
@@ -560,7 +562,7 @@ class ConfigActivity : ComponentActivity() {
                                             appendLine("--- 水印胶囊 ---")
                                             appendLine("capsuleEnabled=$capsuleEnabled")
                                             appendLine("capsulePos=$capsulePos")
-                                            appendLine("capsuleModel=$capsuleModel")
+                                            appendLine("capsuleModel=${if (capsuleModelEnabled) capsuleModel else "(disabled)"}")
                                             appendLine("capsuleDatetime=$capsuleShowDatetime")
                                             appendLine("capsuleExif=$capsuleShowExif")
                                             appendLine("capsuleGps=$capsuleShowGps")
@@ -692,40 +694,6 @@ LiquidPage.About -> AboutPage(
                     )
                 }
             }
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Capsule placement selector
-    // ---------------------------------------------------------------------------------------
-
-    /** One of the three horizontal placements for the rebuilt capsule. */
-    @Composable
-    private fun CapsulePosOption(
-        label: String,
-        value: String,
-        current: String,
-        modifier: Modifier = Modifier,
-        onSelect: (String) -> Unit,
-    ) {
-        val selected = current == value
-        Box(
-            modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(
-                    if (selected) LiquidColors.blue.copy(alpha = 0.18f)
-                    else ComposeColor.Transparent
-                )
-                .clickable { onSelect(value) }
-                .padding(vertical = 10.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                label,
-                fontSize = 13.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) LiquidColors.blue else textSecondary(),
-            )
         }
     }
 

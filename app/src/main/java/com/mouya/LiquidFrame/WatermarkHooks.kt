@@ -949,7 +949,15 @@ object WatermarkHooks {
         // the finished glass, so the glyphs never bend with the refraction the
         // way the scene does — they sit on the surface, as stamped ink.
         // ------------------------------------------------------------------
-        val textLayer = CapsuleRenderer.drawTextLayer(cw2, ch2, localCapsule, metrics)
+        // Choose text colour by backdrop brightness: white on dark scenes,
+        // dark on bright scenes — same logic the settings resolveParams uses.
+        val sampleBrightness = measureBrightness(pixels, cw2, ch2, localCapsule)
+        val textColor = if (sampleBrightness < 0.42f)
+            CapsuleRenderer.TEXT_COLOR_DARK
+        else
+            CapsuleRenderer.TEXT_COLOR_LIGHT
+
+        val textLayer = CapsuleRenderer.drawTextLayer(cw2, ch2, localCapsule, metrics, textColor)
         if (textLayer != null) {
             CapsuleRenderer.blendTextOver(pixels, textLayer)
         }
@@ -1204,6 +1212,32 @@ object WatermarkHooks {
         // is white fill, which means the photo does not extend here at all.
         // Return -1 so the caller knows there is no photo boundary to use.
         return -1
+    }
+
+    /**
+     * Average luminance of the capsule region in the pixel buffer, used to pick
+     * text colour (dark text on bright backdrops, white text on dark ones).
+     */
+    private fun measureBrightness(pixels: IntArray, w: Int, h: Int, panel: PanelRect): Double {
+        val left = panel.left.toInt().coerceIn(0, w - 1)
+        val top = panel.top.toInt().coerceIn(0, h - 1)
+        val right = panel.right.toInt().coerceIn(left + 1, w)
+        val bottom = panel.bottom.toInt().coerceIn(top + 1, h)
+        var total = 0.0
+        var count = 0
+        for (y in top until bottom) {
+            val row = y * w
+            var x = left
+            while (x < right) {
+                val p = pixels[row + x]
+                total += 0.213 * ((p shr 16) and 0xFF) +
+                        0.715 * ((p shr 8) and 0xFF) +
+                        0.072 * (p and 0xFF)
+                count++
+                x += 2
+            }
+        }
+        return if (count == 0) 0.5 else total / count / 255.0
     }
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
