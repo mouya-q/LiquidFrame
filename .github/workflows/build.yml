@@ -1,10 +1,11 @@
-name: Build LiquidFrame
+name: Build
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+  pull_request:
 
 jobs:
   build:
@@ -16,23 +17,28 @@ jobs:
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: temurin
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      # The gallery compiles against API 37, which needs an SDK platform the runner image may
+      # not carry yet.
+      - name: Install Android SDK platform 37
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" > /dev/null 2>&1 || true
 
-      - name: Build APK
+      - name: Build
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          # Release only: the installed artifact is release, signed with the fixed
+          # keystore so any build updates over a previous install.
+          ./gradlew :app:assembleRelease --stacktrace --no-daemon
 
-      - name: Upload APK
+      - name: Upload APKs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: LiquidFrame
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          path: app/build/outputs/apk/release/*.apk
+          # A green run with an empty artifact is a silent failure; make it loud.
+          if-no-files-found: error

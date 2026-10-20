@@ -1,0 +1,7 @@
+photo 900x400, watermark layer 660x150, panel 640x60 at (130,190) r=20.0
+- 01-watermark-only: ok: panel=640x60 r=18 band=2 px=38164 content=0 flat=false u=0.42 tone=242 adapt=1.00
+- 02-frosted-only: ok: panel=640x60 r=18 band=2 px=38164 content=0 flat=false u=0.42 tone=242 adapt=1.00
+- 03-liquid-glass: ok: panel=640x60 r=18 band=10 px=38164 content=0 flat=false u=0.42 tone=242 adapt=1.00
+- 04-high-dispersion: ok: panel=640x60 r=18 band=14 px=38164 content=0 flat=false u=0.42 tone=242 adapt=1.00
+- 05-tiles-liquid-glass: ok: panel=640x60 r=18 band=10 px=38164 content=0 flat=false u=0.47 tone=242 adapt=1.00
+- 06-tiles-frosted-only: ok: panel=640x60 r=18 band=2 px=38164 content=0 flat=false u=0.47 tone=242 adapt=1.00

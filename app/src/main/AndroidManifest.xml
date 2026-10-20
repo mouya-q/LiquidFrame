@@ -3,9 +3,11 @@
 
     <application
         android:allowBackup="true"
-        android:label="LiquidFrame"
+        android:label="liquidFrame"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light">
+        android:icon="@mipmap/ic_liquidframe"
+        android:roundIcon="@mipmap/ic_liquidframe"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <meta-data
             android:name="xposedmodule"
@@ -23,7 +25,7 @@
         <activity
             android:name=".ConfigActivity"
             android:exported="true"
-            android:label="LiquidFrame 设置">
+            android:label="liquidFrame 设置">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

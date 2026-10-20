@@ -1,0 +1,68 @@
+// Miuix (Xiaomi's HyperOS design system) + liquid glass component gallery.
+//
+// This is a standalone app rather than something injected into the camera: the camera app is
+// built with classic View-based miuix and contains no Compose runtime at all (verified against
+// both extracted APKs — zero `androidx/compose` references), so a Compose UI cannot be hosted
+// inside it. Keeping the gallery in its own module also avoids dragging the Compose runtime
+// into the camera process just to draw a settings screen.
+//
+// miuix-blur needs RuntimeShader, which is API 33+, so the gallery is API 33+.
+plugins {
+    id 'com.android.application'
+    // AGP 9 supplies Kotlin itself, but the Compose compiler plugin is still applied separately
+    // (and must match the Kotlin version AGP embeds).
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+android {
+    namespace "com.mouya.LiquidFrame.gallery"
+    // miuix 0.9.4's AAR metadata requires consumers to compile against API 37 or later.
+    compileSdk 37
+
+    defaultConfig {
+        applicationId "com.mouya.LiquidFrame.gallery"
+        minSdk 33
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    packaging {
+        resources {
+            excludes += ["/META-INF/{AL2.0,LGPL2.1}"]
+        }
+    }
+}
+
+dependencies {
+    // Xiaomi's own design system. miuix-ui brings miuix-core and miuix-squircle with it.
+    implementation "top.yukonga.miuix.kmp:miuix-ui:${miuixVersion}"
+    // The backdrop/blur engine: backdrop capture, blur, the Apple-style bloom rim and the
+    // runtimeShaderEffect extension point this app's lens shader plugs into.
+    implementation "top.yukonga.miuix.kmp:miuix-blur:${miuixVersion}"
+    implementation "top.yukonga.miuix.kmp:miuix-icons:${miuixVersion}"
+
+    implementation "androidx.activity:activity-compose:1.9.3"
+    implementation "androidx.compose.foundation:foundation:1.7.6"
+    implementation "androidx.compose.ui:ui:1.7.6"
+    implementation "androidx.compose.ui:ui-graphics:1.7.6"
+    implementation "androidx.compose.material:material-icons-core:1.7.6"
+}

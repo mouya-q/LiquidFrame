@@ -1,0 +1,16 @@
+LiquidFrame
+Copyright 2026, LiquidFrame contributors
+
+This product includes software developed as part of the following open-source
+projects, both licensed under the Apache License, Version 2.0:
+
+  - AndroidLiquidGlass (https://github.com/Kyant0/AndroidLiquidGlass)
+    The liquid glass optics (SDF refraction, dispersion, vibrancy, rim model)
+    are adapted from this project's shader source and constants.
+
+  - Miuix / compose-miuix-ui (https://github.com/compose-miuix-ui/miuix)
+    The companion app builds on this design system; its blur module supplies the
+    backdrop capture engine and the specular rim model. The `lens()` and
+    `vibrancy()` effects follow miuix's own example implementations.
+
+The Apache License, Version 2.0 is reproduced in the LICENSE file.

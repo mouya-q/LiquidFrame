@@ -27,3 +27,6 @@ jadx_out/
 
 # NDK / C++ intermediates
 .cxx/
+
+# Kotlin compiler session files
+.kotlin/
