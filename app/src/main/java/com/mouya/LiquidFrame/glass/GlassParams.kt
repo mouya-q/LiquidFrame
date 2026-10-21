@@ -70,8 +70,9 @@ data class GlassParams(
     /** Alpha of the tint's normal-blend pass. */
     val tintAlpha: Float = 0.08f,
 
-    /** Additional flat white veil; the reference's `surfaceColor`. */
-    val surfaceAlpha: Float = 0.04f,
+    /** Additional flat white veil; the reference's `surfaceColor`.
+     * Set to 0.15 per the iOS reference analysis (background transparency ≈ 15%). */
+    val surfaceAlpha: Float = 0.15f,
 
     /**
      * Additive frosted lift applied across the whole panel, in 0-255 units.
@@ -102,8 +103,9 @@ data class GlassParams(
 
     // ---- rim highlight ------------------------------------------------------------------
 
-    /** The reference's `Highlight` modifier: 0.5.dp white stroke at [rimAlpha]. */
-    val rimAlpha: Float = 0.50f,
+    /** The reference's `Highlight` modifier: 0.5.dp white stroke at [rimAlpha].
+     * Set to 0.30 per the iOS reference analysis (edge highlight opacity ≈ 30%). */
+    val rimAlpha: Float = 0.30f,
 
     /** Stroke width, as a fraction of the refraction band. */
     val rimWidthFraction: Float = 0.22f,

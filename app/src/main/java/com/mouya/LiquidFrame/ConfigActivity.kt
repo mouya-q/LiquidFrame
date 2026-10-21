@@ -103,9 +103,12 @@ class ConfigActivity : ComponentActivity() {
         const val PREVIEW_W = 900
         const val PREVIEW_H = 420
 
-        const val PREVIEW_PANEL_H_FRACTION = 0.065f
-        const val PREVIEW_SIDE_FRACTION = 0.05f
-        const val PREVIEW_BOTTOM_FRACTION = 0.028f
+        // Panel height ≈ 7% of photo width (matches TARGET_HEIGHT_REF / REFERENCE_SHORT_SIDE).
+        const val PREVIEW_PANEL_H_FRACTION = 0.07f
+        // Side margin ≈ 4% of photo width (matches (1 - TARGET_WIDTH_FRACTION) / 2).
+        const val PREVIEW_SIDE_FRACTION = 0.04f
+        // Bottom inset ≈ 4.8% of photo height (matches BOX_INSET_REF / REFERENCE_SHORT_SIDE).
+        const val PREVIEW_BOTTOM_FRACTION = 0.048f
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())

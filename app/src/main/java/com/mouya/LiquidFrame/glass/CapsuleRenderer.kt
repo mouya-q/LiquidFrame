@@ -116,28 +116,32 @@ object CapsuleRenderer {
 
     private const val REFERENCE_SHORT_SIDE = 1080f
 
-    /** Capsule width as a fraction of the photo width (90 % per the reference). */
-    private const val TARGET_WIDTH_FRACTION = 0.90f
+    /** Capsule width as a fraction of the photo width (92 % per the reference). */
+    private const val TARGET_WIDTH_FRACTION = 0.92f
 
-    /** Target capsule height in reference units (≈ 65 dp at density 3). */
-    private const val TARGET_HEIGHT_REF = 70f
+    /** Target capsule height ≈ 7% of photo height (0.07 × 1080 ≈ 76 ref units). */
+    private const val TARGET_HEIGHT_REF = 76f
 
-    /** Corner radius in reference units (≈ 26 dp at density 3 → pill-like). */
-    const val CORNER_RADIUS_REF = 30f
+    /** Corner radius ≈ 0.5 × capsule height → pill shape (38 ref units). */
+    const val CORNER_RADIUS_REF = 38f
+
+    /** Horizontal padding as a fraction of capsule width (6% per the reference). */
+    private const val PAD_X_FRACTION = 0.06f
+
+    /** Vertical padding as a fraction of capsule height (10% per side). */
+    private const val PAD_Y_FRACTION = 0.10f
 
     private const val MODEL_SIZE_REF = 30f
     private const val BODY_SIZE_REF = 24f
-    private const val PAD_X_REF = 26f
-    private const val PAD_Y_REF = 10f
-    private const val LINE_GAP_REF = 7f
+    private const val LINE_GAP_REF = 6f
 
     /** Horizontal gap between text columns and the centre logo slot. */
     private const val COL_GAP_REF = 24f
     /** Logo height as a fraction of the capsule's interior height. */
     private const val LOGO_HEIGHT_FRACTION = 0.42f
 
-    /** Gap between the photo's bottom edge and the capsule (≈ 10 dp at density 3). */
-    const val BOX_INSET_REF = 30f
+    /** Bottom inset ≈ 4.8% of photo height (0.048 × 1080 ≈ 52 ref units). */
+    const val BOX_INSET_REF = 52f
 
     /** Text colour is chosen per-capsule by the caller based on backdrop brightness. */
     const val TEXT_COLOR_LIGHT = 0xF21F1F26.toInt()
@@ -485,8 +489,8 @@ object CapsuleRenderer {
         // Fixed capsule dimensions per the iOS reference.
         val capsuleW = TARGET_WIDTH_FRACTION * photoW
         val capsuleH = TARGET_HEIGHT_REF * unit
-        val padX = PAD_X_REF * unit
-        val padY = PAD_Y_REF * unit
+        val padX = PAD_X_FRACTION * capsuleW
+        val padY = PAD_Y_FRACTION * capsuleH
         val interiorH = capsuleH - 2f * padY
 
         val leftLines = lines.filter { it.column == 0 }

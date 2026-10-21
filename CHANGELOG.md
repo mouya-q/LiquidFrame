@@ -1,6 +1,27 @@
 # Changelog
 
-## 1.9.20 — Layout calibration to match the reference watermark exactly
+## 1.9.21 — Recalibrated against precise iOS watermark geometry analysis
+
+### CapsuleRenderer — geometry corrected to match the iOS reference math
+- **Capsule width** restored to `0.92` (was wrongly reduced to 0.90 in 1.9.20): the reference watermark is 92% of the photo width.
+- **Capsule height** `TARGET_HEIGHT_REF` 70 → 76: ≈ 7% of photo height (0.07 × 1080).
+- **Corner radius** `CORNER_RADIUS_REF` 30 → 38: ≈ 0.5 × capsule height → pill shape.
+- **Horizontal padding** changed from fixed ref units to fraction: `PAD_X_FRACTION = 0.06` (6% of capsule width). This scales correctly with any photo resolution.
+- **Vertical padding** changed from fixed ref units to fraction: `PAD_Y_FRACTION = 0.10` (10% of capsule height per side).
+- **Bottom inset** `BOX_INSET_REF` 30 → 52: ≈ 4.8% of photo height (0.048 × 1080), matching the golden-ratio placement.
+- **Line gap** 7 → 6: restored to match the reference's tighter text spacing.
+- **Logo height fraction** stays at 0.42: ~42% of interior height, matching the reference logo size.
+
+### GlassParams — material parameters adjusted
+- **`surfaceAlpha`** 0.04 → 0.15: the iOS reference's background transparency is ≈ 15%, not the previous 4%.
+- **`rimAlpha`** 0.50 → 0.30: the iOS reference's edge highlight opacity is ≈ 30%, not the previous 50%.
+- **`refractionAmountFraction`** stays at 1.5 (reduced from 3.0 in 1.9.20): the reference shows a gentle frosted bend, not a strong lens.
+
+### WatermarkHooks — inset stays decoupled
+- **`inset`** calculation keeps the fix from 1.9.20: `BOX_INSET_REF × unitPx` clamped to `[4, shortSide × 0.12]`, no longer inflated by `padPx`.
+
+### ConfigActivity — preview parameters corrected
+- `PREVIEW_PANEL_H_FRACTION` 0.065 → 0.07, `PREVIEW_SIDE_FRACTION` 0.05 → 0.04, `PREVIEW_BOTTOM_FRACTION` 0.028 → 0.048: all now match the real capsule's proportions exactly.
 
 ### CapsuleRenderer — design constants recalibrated
 - **Capsule width** `TARGET_WIDTH_FRACTION` 0.92 → 0.90: the reference watermark is 90% of the photo width, not 92%.
