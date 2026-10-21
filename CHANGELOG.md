@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.23 — Adapt to camera 6.4.x composite signature
+
+### Composite hook compatibility
+- `DexScanner.hasComposite()` no longer requires `ColorSpace` in the parameter list or a `Bitmap` return type. On camera 6.4.000250.2 the composite method (`Fe/a->j`) returns a `WatermarkRemover$b` wrapper instead of a raw `Bitmap`, and drops the `ColorSpace` parameter entirely. The scanner now matches on: static + has `Bitmap` parameter + returns either `Bitmap` or a `WatermarkRemover`-typed wrapper.
+- `hookCompositeFallback` similarly accepts methods whose return type is a `WatermarkRemover` wrapper, not just `Bitmap`.
+- `hookComposite.afterHookedMethod` now calls `unwrapBitmap()` which handles both the legacy direct `Bitmap` result and the 6.4.x wrapper by reflectively scanning the wrapper's declared fields for the first `Bitmap`. This restores the entire post-composite pipeline (white-strip removal, liquid-glass capsule rendering, EXIF/GPS text overlay) on 6.4.x builds.
+
 ## 1.9.22 — Rebuilt the capsule around the supplied iOS reference
 
 ### Watermark geometry and layout

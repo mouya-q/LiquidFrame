@@ -418,7 +418,13 @@ object WatermarkHooks {
         if (!hookedComposites.add(method.declaringClass.name + "#" + method.name)) return
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(p: MethodHookParam) {
-                val out = p.result as? Bitmap ?: return
+                // 6.4.x returns WatermarkRemover$b instead of a raw Bitmap.
+                // Unwrap it: try direct cast first, then reflect into the wrapper
+                // for a Bitmap field.
+                val out = unwrapBitmap(p.result) ?: run {
+                    log("composite result is not a bitmap: ${p.result?.javaClass?.name}")
+                    return
+                }
                 val frame = framesByBitmap.remove(out)
                 // Refresh before the fast disabled path. Otherwise a camera process that
                 // starts disabled can never observe the UI enabling the module: params()
@@ -476,10 +482,13 @@ object WatermarkHooks {
             log("class $className not found")
             return
         }
+        // 6.4.x changed the return type from Bitmap to a wrapper (WatermarkRemover$b),
+        // so accept either a Bitmap return or any non-void return that wraps one.
         val target = cls.declaredMethods.firstOrNull { method ->
             method.name == methodName &&
-                    Bitmap::class.java.isAssignableFrom(method.returnType) &&
-                    method.parameterTypes.any { Bitmap::class.java.isAssignableFrom(it) }
+                    method.parameterTypes.any { Bitmap::class.java.isAssignableFrom(it) } &&
+                    (Bitmap::class.java.isAssignableFrom(method.returnType) ||
+                     method.returnType.name.contains("WatermarkRemover"))
         }
         if (target == null) {
             log(
@@ -490,6 +499,28 @@ object WatermarkHooks {
         }
         hookComposite(target)
         log("hooked $className->$methodName (${target.parameterTypes.size} params)")
+    }
+
+    /**
+     * Unwraps the composite result to a Bitmap. On 6.2.x/6.7.x the result is already
+     * a Bitmap. On 6.4.x the composite returns a `WatermarkRemover$b` wrapper — scan
+     * its declared fields for the first Bitmap.
+     */
+    private fun unwrapBitmap(result: Any?): Bitmap? {
+        if (result == null) return null
+        if (result is Bitmap) return result
+        // Wrapper object — reflectively find the Bitmap field.
+        return try {
+            result.javaClass.declaredFields.firstNotNullOfOrNull { f ->
+                if (Bitmap::class.java.isAssignableFrom(f.type)) {
+                    f.isAccessible = true
+                    f.get(result) as? Bitmap
+                } else null
+            }
+        } catch (t: Throwable) {
+            log("unwrapBitmap failed: ${t.javaClass.simpleName}: ${t.message}")
+            null
+        }
     }
 
     private fun findClass(name: String, loader: ClassLoader): Class<*>? =

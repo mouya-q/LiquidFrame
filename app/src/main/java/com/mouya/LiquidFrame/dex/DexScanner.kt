@@ -355,17 +355,16 @@ object DexScan {
     }
 
     /**
-     * A composite is recognised by: static, returns Bitmap, and the parameter list
-     * contains both a Bitmap and a ColorSpace. The exact arity differs between
-     * camera builds (6.7.x has 6 params, 6.2.x has 4), so matching on the
-     * conjunction of Bitmap + ColorSpace is specific enough while staying
-     * forward- and backward-compatible.
+     * A composite is recognised by: static, takes a Bitmap parameter, and either
+     * returns a Bitmap (6.2.x/6.7.x style) or returns a wrapper object whose name
+     * contains "WatermarkRemover" (6.4.x style — `Fe/a->j` returns `WatermarkRemover$b`
+     * instead of the raw Bitmap). The ColorSpace parameter was dropped in 6.4.x, so
+     * requiring it would miss the new signature entirely.
      */
     private fun hasComposite(cls: DexClass): Boolean =
         cls.methods.any { m ->
             m.isStatic &&
-            m.returnType == BITMAP &&
             BITMAP in m.params &&
-            COLOR_SPACE in m.params
+            (m.returnType == BITMAP || m.returnType.contains("WatermarkRemover"))
         }
 }
