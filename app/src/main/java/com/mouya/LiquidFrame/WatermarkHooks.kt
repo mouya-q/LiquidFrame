@@ -1009,8 +1009,7 @@ object WatermarkHooks {
             LiquidGlassOptics.requiredPanelPaddingPx(protoCapsule, cropParams).toFloat(),
         ).coerceAtMost(capsuleH * 0.5f)
         val inset = (CapsuleRenderer.BOX_INSET_REF * metrics.unitPx)
-            .coerceAtLeast(padPx + 6f)
-            .coerceAtMost(shortSide * 0.12f)
+            .coerceIn(4f, shortSide * 0.12f)
         // Placement cap. The capsule's bottom edge sits at [placementCap - inset],
         // so the capsule is always inside the photograph. When the stock plate
         // survived (eraseMode still "none") the capsule must stay clear of it,

@@ -34,11 +34,11 @@ data class GlassParams(
     /**
      * Peak displacement, as a fraction of the refraction band.
      *
-     * The same comparison uses `inputInnerRefractionAmount = -60` with a height of 20, so
-     * the lens pulls the backdrop three band-widths inward at the silhouette. That ratio is
-     * what gives the material its strong edge magnification.
+     * Lowered from 3.0 to 1.5: the watermark capsule is much wider than tall,
+     * and at 3.0 the lens distortion at the short edges was excessive — the
+     * reference watermark shows only a gentle frosted bend, not a strong lens.
      */
-    val refractionAmountFraction: Float = 3.0f,
+    val refractionAmountFraction: Float = 1.5f,
 
     /** Corner radius as a fraction of the panel's short side, when it cannot be measured. */
     val cornerRadiusFraction: Float = 0.5f,

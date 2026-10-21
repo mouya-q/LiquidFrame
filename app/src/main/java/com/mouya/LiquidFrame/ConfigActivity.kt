@@ -103,9 +103,9 @@ class ConfigActivity : ComponentActivity() {
         const val PREVIEW_W = 900
         const val PREVIEW_H = 420
 
-        const val PREVIEW_PANEL_H_FRACTION = 0.0986f
-        const val PREVIEW_SIDE_FRACTION = 0.004f
-        const val PREVIEW_BOTTOM_FRACTION = 0.0128f
+        const val PREVIEW_PANEL_H_FRACTION = 0.065f
+        const val PREVIEW_SIDE_FRACTION = 0.05f
+        const val PREVIEW_BOTTOM_FRACTION = 0.028f
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())

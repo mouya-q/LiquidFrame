@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.9.20 — Layout calibration to match the reference watermark exactly
+
+### CapsuleRenderer — design constants recalibrated
+- **Capsule width** `TARGET_WIDTH_FRACTION` 0.92 → 0.90: the reference watermark is 90% of the photo width, not 92%.
+- **Capsule height** `TARGET_HEIGHT_REF` 60 → 70: the reference capsule is taller (~65 dp at density 3), giving text more vertical breathing room.
+- **Corner radius** `CORNER_RADIUS_REF` 18 → 30: the reference capsule has a pill-like radius (~43% of its height), not a subtle 18 ref units.
+- **Model text size** `MODEL_SIZE_REF` 28 → 30: the device name is the largest text element and should dominate the left column.
+- **Body text size** `BODY_SIZE_REF` 22 → 24: date/time, EXIF and GPS lines should be clearly readable, matching the reference proportions.
+- **Horizontal padding** `PAD_X_REF` 24 → 26: slightly more inset from the capsule's left/right edges.
+- **Vertical padding** `PAD_Y_REF` 8 → 10: slightly more inset from the capsule's top/bottom edges.
+- **Line gap** `LINE_GAP_REF` 6 → 7: slightly more vertical spacing between stacked text lines.
+- **Column gap** `COL_GAP_REF` 20 → 24: more separation between the text columns and the centre logo slot.
+- **Logo height fraction** `LOGO_HEIGHT_FRACTION` 0.50 → 0.42: the reference logo occupies about 42% of the capsule's interior height, not the full half.
+- **Bottom inset** `BOX_INSET_REF` 45 → 30: the reference capsule floats closer to the photo's bottom edge (~10 dp at density 3), not 15 dp.
+
+### GlassParams — refraction amount reduced
+- **`refractionAmountFraction`** default 3.0 → 1.5: the watermark capsule is much wider than tall, and at 3.0 the lens distortion at the short edges was excessive. The reference watermark shows only a gentle frosted bend, not a strong lens. This also dramatically reduces `requiredPanelPaddingPx`, which was the root cause of the inflated `padPx` and `inset` values.
+
+### WatermarkHooks — inset decoupled from padPx
+- **`inset` calculation** no longer uses `.coerceAtLeast(padPx + 6f)`: previously the optics padding (which could reach ~473px due to `amountFraction=3`) was used as a floor for the inset, pulling the capsule far from the photo's bottom. Now `inset` is simply `BOX_INSET_REF × unitPx` clamped to `[4, shortSide × 0.12]`, placing the capsule exactly where the reference shows it.
+
+### ConfigActivity — preview parameters synced
+- **`PREVIEW_PANEL_H_FRACTION`** 0.0986 → 0.065: the preview capsule height now matches the real capsule's proportions.
+- **`PREVIEW_SIDE_FRACTION`** 0.004 → 0.05: the preview capsule horizontal inset now matches the real capsule's 5% margin.
+- **`PREVIEW_BOTTOM_FRACTION`** 0.0128 → 0.028: the preview capsule bottom inset now matches the real capsule's closer-to-bottom placement.
+
+
 ## 1.9.19 — Root-cause fix: eradicate failure, capsule position, DexScan class-name format
 
 ### WatermarkHooks — over-photo erase path (root cause 1: `eradicate: mode=none`)

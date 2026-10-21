@@ -116,28 +116,28 @@ object CapsuleRenderer {
 
     private const val REFERENCE_SHORT_SIDE = 1080f
 
-    /** Capsule width as a fraction of the photo width (90–92 % per the reference). */
-    private const val TARGET_WIDTH_FRACTION = 0.92f
+    /** Capsule width as a fraction of the photo width (90 % per the reference). */
+    private const val TARGET_WIDTH_FRACTION = 0.90f
 
-    /** Target capsule height in reference units (≈ 56 dp at density 3). */
-    private const val TARGET_HEIGHT_REF = 60f
+    /** Target capsule height in reference units (≈ 65 dp at density 3). */
+    private const val TARGET_HEIGHT_REF = 70f
 
-    /** Corner radius in reference units (16–20 dp at density 3 → ~18 ref). */
-    const val CORNER_RADIUS_REF = 18f
+    /** Corner radius in reference units (≈ 26 dp at density 3 → pill-like). */
+    const val CORNER_RADIUS_REF = 30f
 
-    private const val MODEL_SIZE_REF = 28f
-    private const val BODY_SIZE_REF = 22f
-    private const val PAD_X_REF = 24f
-    private const val PAD_Y_REF = 8f
-    private const val LINE_GAP_REF = 6f
+    private const val MODEL_SIZE_REF = 30f
+    private const val BODY_SIZE_REF = 24f
+    private const val PAD_X_REF = 26f
+    private const val PAD_Y_REF = 10f
+    private const val LINE_GAP_REF = 7f
 
     /** Horizontal gap between text columns and the centre logo slot. */
-    private const val COL_GAP_REF = 20f
+    private const val COL_GAP_REF = 24f
     /** Logo height as a fraction of the capsule's interior height. */
-    private const val LOGO_HEIGHT_FRACTION = 0.50f
+    private const val LOGO_HEIGHT_FRACTION = 0.42f
 
-    /** Gap between the photo's bottom edge and the capsule (≈ 15 dp at density 3). */
-    const val BOX_INSET_REF = 45f
+    /** Gap between the photo's bottom edge and the capsule (≈ 10 dp at density 3). */
+    const val BOX_INSET_REF = 30f
 
     /** Text colour is chosen per-capsule by the caller based on backdrop brightness. */
     const val TEXT_COLOR_LIGHT = 0xF21F1F26.toInt()
