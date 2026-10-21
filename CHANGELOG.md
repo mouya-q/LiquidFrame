@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.9.22 — Rebuilt the capsule around the supplied iOS reference
+
+### Watermark geometry and layout
+- Replaced the equal-ish three-column layout with reference-proportioned zones: left-aligned model/time, a monochrome Leica wordmark near 63.5% of the capsule width, a thin vertical separator near 68.5%, and right-aligned EXIF/GPS details.
+- Calibrated the capsule to about 90% of the frame width and 12% of the short side in height, with a 50%-height corner radius, a ~1% left inset, and a ~9.6%-short-side bottom inset.
+- Fitted the left and right text groups independently; long EXIF/GPS lines no longer shrink the device name.
+- Added a fine, rounded separator and restrained text/wordmark shadows; labels remain white like the reference instead of flipping to dark text based on average scene brightness.
+- Added a transparent, white Leica wordmark asset. The original red badge remains as a fallback for packaging or decoding failures.
+- Migrated the legacy implicit `center` capsule position to `left` because the position was not exposed as a user setting.
+
+### Liquid-glass defaults and preview
+- Reduced the refraction band, displacement and blur to gentler values (`0.08`, `1.2×`, `0.14×`) that avoid the strong lens warp and oversized blur band of the former defaults.
+- Aligned the optics fallback values with `GlassParams.Default`, avoiding a different material when a non-finite setting is encountered.
+- Updated the in-app material preview to use the same pill proportions, edge alignment and bottom inset as the capture renderer.
+
 ## 1.9.21 — Recalibrated against precise iOS watermark geometry analysis
 
 ### CapsuleRenderer — geometry corrected to match the iOS reference math
@@ -263,7 +278,7 @@
 ## 1.9.2 — Photo-anchored watermark, dock spring and identity polish
 
 ### Watermark rendering
-- **Photo-anchored glass (根治镜像/白边/尺寸三病灶)**: the composite's first plate draw now captures the real photograph *before* the plate is painted over it. The optics receive that pre-plate snapshot as backdrop, so the glass refracts the actual scene under the panel instead of the camera's baked plate — no mirroring, no white corners, and the watermark no longer changes the photo's scale.
+- **Photo-anchored glass **: the composite's first plate draw now captures the real photograph *before* the plate is painted over it. The optics receive that pre-plate snapshot as backdrop, so the glass refracts the actual scene under the panel instead of the camera's baked plate — no mirroring, no white corners, and the watermark no longer changes the photo's scale.
 - Capture is cropped to the first panel rectangle plus padding (≈ hundreds of KB per shot instead of a full 48 MB frame), with a silent fallback to the existing mirror path if the capture fails.
 - Reordered the backdrop build: mirror fills the whole plate rectangle first (clearing white corners), then the snapshot overwrites the panel interior with true photo content.
 

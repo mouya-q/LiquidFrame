@@ -103,12 +103,13 @@ class ConfigActivity : ComponentActivity() {
         const val PREVIEW_W = 900
         const val PREVIEW_H = 420
 
-        // Panel height ≈ 7% of photo width (matches TARGET_HEIGHT_REF / REFERENCE_SHORT_SIDE).
-        const val PREVIEW_PANEL_H_FRACTION = 0.07f
-        // Side margin ≈ 4% of photo width (matches (1 - TARGET_WIDTH_FRACTION) / 2).
-        const val PREVIEW_SIDE_FRACTION = 0.04f
-        // Bottom inset ≈ 4.8% of photo height (matches BOX_INSET_REF / REFERENCE_SHORT_SIDE).
-        const val PREVIEW_BOTTOM_FRACTION = 0.048f
+        // The reference panel is about 12% of the photo's short side, not of its width.
+        const val PREVIEW_PANEL_H_FRACTION = 0.12f
+        // Asymmetric leading inset: the pill is aligned near the left edge, not centred.
+        const val PREVIEW_SIDE_FRACTION = 0.01f
+        // 104 / 1080 short-side units, matching BOX_INSET_REF in the camera hook.
+        const val PREVIEW_BOTTOM_FRACTION = 0.0963f
+        const val PREVIEW_WIDTH_FRACTION = 0.90f
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -375,7 +376,7 @@ class ConfigActivity : ComponentActivity() {
             angle = d.highlightAngleDeg
             depth = d.depthEffect
             capsuleEnabled = true
-            capsulePos = "center"
+            capsulePos = "left"
             capsuleModel = ""
             capsuleModelEnabled = false
             capsuleShowDatetime = true
@@ -491,7 +492,7 @@ class ConfigActivity : ComponentActivity() {
                                     "拍照时擦除原水印，在照片内重建一枚液态玻璃胶囊",
                                 )
                                 SettingDivider()
-                                LiquidToggleRow("徕卡标", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "胶囊中央显示徕卡标")
+                                LiquidToggleRow("徕卡标", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "徕卡字标位于胶囊中右部，右侧参数由细竖线分隔")
                                 SettingDivider()
                                 LiquidToggleRow(
                                     "自定义设备名称",
@@ -743,13 +744,15 @@ LiquidPage.About -> AboutPage(
     }
 
     private fun renderPreview(bitmap: Bitmap, params: GlassParams): String {
-        val panelH = (bitmap.width * PREVIEW_PANEL_H_FRACTION).toInt().coerceAtLeast(48)
+        val shortSide = minOf(bitmap.width, bitmap.height)
+        val panelH = (shortSide * PREVIEW_PANEL_H_FRACTION).toInt().coerceAtLeast(48)
         val side = (bitmap.width * PREVIEW_SIDE_FRACTION).toInt()
-        val bottomMargin = (bitmap.height * PREVIEW_BOTTOM_FRACTION).toInt()
+        val panelW = (bitmap.width * PREVIEW_WIDTH_FRACTION).toInt().coerceAtLeast(1)
+        val bottomMargin = (shortSide * PREVIEW_BOTTOM_FRACTION).toInt()
         val panel = PanelRect(
             left = side.toFloat(),
             top = (bitmap.height - bottomMargin - panelH).toFloat(),
-            width = (bitmap.width - side * 2).toFloat(),
+            width = panelW.toFloat(),
             height = panelH.toFloat(),
             cornerRadiusPx = panelH * 0.5f,
         )

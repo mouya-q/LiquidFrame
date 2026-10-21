@@ -82,11 +82,11 @@ object LiquidGlassOptics {
         val maxBand = maxOf(1f, shortSide * 0.55f)
         val minBand = minOf(MIN_BAND_PX.toFloat(), maxBand)
         val heightFraction = params.refractionHeightFraction
-            .takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: 0.18f
+            .takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: GlassParams.Default.refractionHeightFraction
         val amountFraction = params.refractionAmountFraction
-            .takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 3f
+            .takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: GlassParams.Default.refractionAmountFraction
         val blurFraction = params.blurFraction
-            .takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: 0.25f
+            .takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: GlassParams.Default.blurFraction
         val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
         val displacement = band * amountFraction
         val blurRadius = band * blurFraction
@@ -142,9 +142,9 @@ object LiquidGlassOptics {
         }
         val maxBand = maxOf(1f, shortSide * 0.55f)
         val minBand = minOf(MIN_BAND_PX.toFloat(), maxBand)
-        val heightFraction = params.refractionHeightFraction.takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: 0.18f
-        val amountFraction = params.refractionAmountFraction.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 3f
-        val blurFraction = params.blurFraction.takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: 0.25f
+        val heightFraction = params.refractionHeightFraction.takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: GlassParams.Default.refractionHeightFraction
+        val amountFraction = params.refractionAmountFraction.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: GlassParams.Default.refractionAmountFraction
+        val blurFraction = params.blurFraction.takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: GlassParams.Default.blurFraction
         val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
         val amount = band * amountFraction
         val blurRadius = blurFraction * band
@@ -825,9 +825,9 @@ object LiquidGlassOptics {
         val radius = panel.cornerRadiusPx.coerceIn(0f, shortSide * 0.5f)
         val maxBand = maxOf(1f, shortSide * 0.5f)
         val minBand = minOf(MIN_BAND_PX.toFloat(), maxBand)
-        val heightFraction = params.refractionHeightFraction.takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: 0.18f
-        val amountFraction = params.refractionAmountFraction.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 3f
-        val blurFraction = params.blurFraction.takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: 0.25f
+        val heightFraction = params.refractionHeightFraction.takeIf { it.isFinite() }?.coerceIn(0.005f, 0.45f) ?: GlassParams.Default.refractionHeightFraction
+        val amountFraction = params.refractionAmountFraction.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: GlassParams.Default.refractionAmountFraction
+        val blurFraction = params.blurFraction.takeIf { it.isFinite() }?.coerceIn(0f, 1.5f) ?: GlassParams.Default.blurFraction
         val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
         val amount = band * amountFraction
 

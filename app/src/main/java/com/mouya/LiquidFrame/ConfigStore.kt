@@ -351,8 +351,12 @@ object ConfigStore {
 
     fun capsuleModel(): String = cached[KEY_CAPSULE_MODEL]?.trim().orEmpty()
 
-    fun capsulePos(): String =
-        (cached[KEY_CAPSULE_POS] ?: "center").lowercase(Locale.US)
+    fun capsulePos(): String {
+        val configured = cached[KEY_CAPSULE_POS]?.lowercase(Locale.US)
+        // Position has never been exposed as a user control; "center" was only the old implicit
+        // default. Migrate that legacy value to the reference's bottom-left anchor.
+        return if (configured == null || configured == "center") "left" else configured
+    }
 
     fun capsuleShowDatetime(): Boolean = bool(KEY_CAPSULE_DATETIME, true)
     fun capsuleShowExif(): Boolean = bool(KEY_CAPSULE_EXIF, true)

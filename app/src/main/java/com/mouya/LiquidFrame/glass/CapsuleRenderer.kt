@@ -43,8 +43,8 @@ object CapsuleRenderer {
     /** Normalized per-shot configuration, assembled by the hook layer. */
     class Options(
         val modelOverride: String,
-        /** Anchor of the capsule: "left", "center" (default) or "right". */
-        val position: String,
+        /** Anchor of the capsule: "left" (reference default), "center" or "right". */
+        val position: String = "left",
         val showDateTime: Boolean,
         val showExif: Boolean,
         val showGps: Boolean,
@@ -94,6 +94,14 @@ object CapsuleRenderer {
         val height: Float,
     )
 
+    /** Thin separator geometry, also expressed in capsule-local coordinates. */
+    class DividerPlacement(
+        val x: Float,
+        val top: Float,
+        val bottom: Float,
+        val strokeWidth: Float,
+    )
+
     class Metrics(
         val placed: List<PlacedLine>,
         val capsuleWidth: Float,
@@ -104,48 +112,45 @@ object CapsuleRenderer {
         val logo: LogoPlacement? = null,
         /** The logo bitmap reference, for drawing in the text layer. */
         val logoBitmap: Bitmap? = null,
+        /** The reference's fine vertical separator, if the right metadata column is visible. */
+        val divider: DividerPlacement? = null,
     )
 
     // ------------------------------------------------------------------
     // Design constants (1080-short-side reference units)
-    //
-    // Calibrated against the iOS liquid-glass watermark reference: a wide, short
-    // capsule floating at the bottom of the photograph, ~92 % of the frame width
-    // and ~56 dp tall (≈ 60 ref units at density 3 on a 1080-px short side).
     // ------------------------------------------------------------------
 
     private const val REFERENCE_SHORT_SIDE = 1080f
 
-    /** Capsule width as a fraction of the photo width (92 % per the reference). */
-    private const val TARGET_WIDTH_FRACTION = 0.92f
-
-    /** Target capsule height ≈ 7% of photo height (0.07 × 1080 ≈ 76 ref units). */
-    private const val TARGET_HEIGHT_REF = 76f
-
-    /** Corner radius ≈ 0.5 × capsule height → pill shape (38 ref units). */
-    const val CORNER_RADIUS_REF = 38f
-
-    /** Horizontal padding as a fraction of capsule width (6% per the reference). */
-    private const val PAD_X_FRACTION = 0.06f
-
-    /** Vertical padding as a fraction of capsule height (10% per side). */
+    // Measured from the supplied 1536 × 1152 reference: ~90% frame width, ~12% height,
+    // a 1%-width leading inset and about 9.5% of the image left below the capsule.
+    private const val TARGET_WIDTH_FRACTION = 0.90f
+    private const val TARGET_HEIGHT_REF = 128f
+    const val CORNER_RADIUS_REF = 64f
+    private const val PAD_X_FRACTION = 0.05f
     private const val PAD_Y_FRACTION = 0.10f
+    const val HORIZONTAL_EDGE_INSET_FRACTION = 0.01f
 
     private const val MODEL_SIZE_REF = 30f
     private const val BODY_SIZE_REF = 24f
     private const val LINE_GAP_REF = 6f
 
-    /** Horizontal gap between text columns and the centre logo slot. */
-    private const val COL_GAP_REF = 24f
-    /** Logo height as a fraction of the capsule's interior height. */
+    // The reference is deliberately asymmetrical, not a three-equal-column layout:
+    // the Leica mark sits around 63.5%, the divider around 68.5%, and the specs hug right.
+    private const val LOGO_CENTER_X_FRACTION = 0.635f
     private const val LOGO_HEIGHT_FRACTION = 0.42f
+    private const val DIVIDER_X_FRACTION = 0.685f
+    private const val DIVIDER_HEIGHT_FRACTION = 0.42f
+    private const val DIVIDER_GAP_REF = 16f
 
-    /** Bottom inset ≈ 4.8% of photo height (0.048 × 1080 ≈ 52 ref units). */
-    const val BOX_INSET_REF = 52f
+    /** Bottom inset measured from the reference; horizontally the capsule has its own inset. */
+    const val BOX_INSET_REF = 104f
 
-    /** Text colour is chosen per-capsule by the caller based on backdrop brightness. */
+    /** White iOS-style lettering, with a restrained shadow added at raster time for contrast. */
+    const val TEXT_COLOR_WHITE = 0xF2FFFFFF.toInt()
     const val TEXT_COLOR_LIGHT = 0xF21F1F26.toInt()
-    const val TEXT_COLOR_DARK = 0xF2FFFFFF.toInt()
+    const val TEXT_COLOR_DARK = TEXT_COLOR_WHITE
+    private const val DIVIDER_COLOR = 0xB8FFFFFF.toInt()
 
     /** Immutable and thread-safe, so one shared instance serves every capture thread. */
     private val TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss", Locale.US)
@@ -462,188 +467,142 @@ object CapsuleRenderer {
     /**
      * Fixed-dimension capsule layout matching the iOS liquid-glass reference.
      *
-     * The capsule is a wide, shallow bar: ~92 % of the photo width and ~56 dp
-     * tall (TARGET_HEIGHT_REF ref units).  Text is scaled to fit inside this
-     * fixed box rather than the box being grown to fit the text, so the
-     * capsule's footprint is identical on every shot regardless of content
-     * length — exactly like the iOS watermark.
-     *
-     * Three columns inside the bar:
-     *   left   – model + time, left-aligned
-     *   centre – logo (when requested and available)
-     *   right  – exif + gps, right-aligned
-     *
-     * When no logo is present and only one column has content, the text is
-     * centred for backward compatibility.
+     * Uses the reference's fixed, asymmetric composition: a ~90%-width, ~12%-of-short-side
+     * capsule, left-aligned to the photo edge; a broad left text area; a wordmark near 63.5%;
+     * a hairline separator near 68.5%; and a compact right-aligned metadata block. The footprint
+     * stays stable across shots while each text block independently fits its own reserved area.
      */
     fun measureCapsule(
         photoW: Int,
         shortSide: Int,
         scale: Float,
         lines: List<Line>,
-        opts: Options = Options("", "center", true, true, true, 1f),
+        opts: Options = Options("", "left", true, true, true, 1f),
     ): Metrics? {
         if (lines.isEmpty() || photoW < 64 || shortSide < 64) return null
         val unit = (shortSide / REFERENCE_SHORT_SIDE) * scale.coerceIn(0.6f, 2.0f)
-
-        // Fixed capsule dimensions per the iOS reference.
         val capsuleW = TARGET_WIDTH_FRACTION * photoW
         val capsuleH = TARGET_HEIGHT_REF * unit
+        if (capsuleW <= 0f || capsuleH <= 0f) return null
+
         val padX = PAD_X_FRACTION * capsuleW
         val padY = PAD_Y_FRACTION * capsuleH
-        val interiorH = capsuleH - 2f * padY
-
+        val interiorH = (capsuleH - 2f * padY).coerceAtLeast(1f)
         val leftLines = lines.filter { it.column == 0 }
         val rightLines = lines.filter { it.column == 1 }
         if (leftLines.isEmpty() && rightLines.isEmpty()) return null
 
-        val hasLogo = opts.showLogo && opts.logo != null && !opts.logo.isRecycled
-        val logoBmp = if (hasLogo) opts.logo else null
-        val singleColumn = !hasLogo && (leftLines.isEmpty() || rightLines.isEmpty())
-
-        // Logo geometry from the fixed capsule height.
-        val logoH = if (hasLogo && logoBmp != null && interiorH > 0) {
-            LOGO_HEIGHT_FRACTION * interiorH
+        val logoBmp = opts.logo?.takeIf { opts.showLogo && !it.isRecycled && it.width > 0 && it.height > 0 }
+        val hasLogo = logoBmp != null
+        val colGap = DIVIDER_GAP_REF * unit
+        val logoH = if (hasLogo) LOGO_HEIGHT_FRACTION * interiorH else 0f
+        val logoW = if (logoH > 0f && logoBmp != null) {
+            (logoH * logoBmp.width.toFloat() / logoBmp.height.toFloat()).coerceAtMost(capsuleW * 0.15f)
         } else 0f
-        val logoW = if (logoH > 0 && logoBmp != null) {
-            logoH * (logoBmp.width.toFloat() / logoBmp.height.toFloat())
-        } else 0f
+        val logoCenterX = LOGO_CENTER_X_FRACTION * capsuleW
+        val logoLeft = logoCenterX - logoW * 0.5f
+        val dividerX = DIVIDER_X_FRACTION * capsuleW
 
-        val colGap = COL_GAP_REF * unit
+        // Reserve real, fixed zones instead of splitting the capsule into equal columns.
+        // This is the defining geometry in the photo: broad breathing room before the mark,
+        // then a compact separator-to-specs region on the right.
+        val leftAvailableW = if (hasLogo) {
+            (logoLeft - colGap - padX).coerceAtLeast(1f)
+        } else if (rightLines.isNotEmpty()) {
+            (dividerX - colGap - padX).coerceAtLeast(1f)
+        } else {
+            (capsuleW - 2f * padX).coerceAtLeast(1f)
+        }
+        val rightAvailableW = (capsuleW - padX - dividerX - colGap).coerceAtLeast(1f)
 
-        // --- Text shrink pass: fit all text inside the fixed box ---
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         fun preparePaint(ln: Line, factor: Float) {
-            paint.typeface = if (ln.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            paint.letterSpacing = if (ln.bold) 0.01f else 0f
+            paint.typeface = typefaceFor(ln.bold)
+            paint.letterSpacing = if (ln.bold) 0.005f else 0f
             paint.textSize = ln.sizeRef * unit * factor
         }
-
-        // Compute the available width for each text column.
-        val availableW: Float = if (singleColumn || !hasLogo) {
-            capsuleW - 2f * padX
-        } else {
-            ((capsuleW - 2f * padX - logoW - 2f * colGap) * 0.5f).coerceAtLeast(40f)
-        }
-
-        var k = 1f
-        for (attempt in 0 until 4) {
-            var maxW = 0f
-            for (ln in leftLines) {
-                preparePaint(ln, k)
-                maxW = maxOf(maxW, paint.measureText(ln.text))
+        fun fitWidth(columnLines: List<Line>, availableW: Float): Float {
+            if (columnLines.isEmpty()) return 1f
+            var maxWidth = 0f
+            for (ln in columnLines) {
+                preparePaint(ln, 1f)
+                maxWidth = maxOf(maxWidth, paint.measureText(ln.text))
             }
-            for (ln in rightLines) {
-                preparePaint(ln, k)
-                maxW = maxOf(maxW, paint.measureText(ln.text))
+            return if (maxWidth > availableW && maxWidth > 0f) {
+                (availableW / maxWidth).coerceIn(0.48f, 1f)
+            } else 1f
+        }
+        fun blockHeight(columnLines: List<Line>, factor: Float): Float {
+            var height = 0f
+            for ((i, ln) in columnLines.withIndex()) {
+                preparePaint(ln, factor)
+                val fm = paint.fontMetrics
+                height += -fm.ascent + fm.descent
+                if (i < columnLines.size - 1) height += LINE_GAP_REF * unit * factor
             }
-            if (maxW <= availableW || k < 0.3f) break
-            k *= availableW / maxW
+            return height
+        }
+        fun fitHeight(columnLines: List<Line>, widthFit: Float): Float {
+            val height = blockHeight(columnLines, widthFit)
+            if (height <= interiorH || height <= 0f) return widthFit
+            return widthFit * (interiorH / height).coerceIn(0.35f, 1f)
         }
 
-        // --- Measure placed line heights ---
-        var leftH = 0f
-        var rightH = 0f
-        for ((i, ln) in leftLines.withIndex()) {
-            preparePaint(ln, k)
-            val fm = paint.fontMetrics
-            leftH += -fm.ascent + fm.descent
-            if (i < leftLines.size - 1) leftH += LINE_GAP_REF * unit * k
-        }
-        for ((i, ln) in rightLines.withIndex()) {
-            preparePaint(ln, k)
-            val fm = paint.fontMetrics
-            rightH += -fm.ascent + fm.descent
-            if (i < rightLines.size - 1) rightH += LINE_GAP_REF * unit * k
-        }
-
-        // If text is too tall for the fixed capsule, shrink further.
-        val blockH = maxOf(leftH, rightH)
-        if (blockH > interiorH && blockH > 0) {
-            val shrink = interiorH / blockH
-            k *= shrink
-            leftH *= shrink
-            rightH *= shrink
-        }
-
-        // --- Place lines ---
+        // Fit the two text blocks independently so a long GPS/spec line never makes the
+        // device name look visibly smaller. Each block retains its own consistent line scale.
+        val leftScale = fitHeight(leftLines, fitWidth(leftLines, leftAvailableW))
+        val rightScale = fitHeight(rightLines, fitWidth(rightLines, rightAvailableW))
         val placed = ArrayList<PlacedLine>(lines.size)
-        if (singleColumn) {
-            val allLines = if (leftLines.isNotEmpty()) leftLines else rightLines
-            // Re-measure after final k
-            var totalH = 0f
-            for ((i, ln) in allLines.withIndex()) {
-                preparePaint(ln, k)
-                val fm = paint.fontMetrics
-                totalH += -fm.ascent + fm.descent
-                if (i < allLines.size - 1) totalH += LINE_GAP_REF * unit * k
-            }
-            var baseline = padY + (interiorH - totalH) / 2f
-            for ((i, ln) in allLines.withIndex()) {
-                preparePaint(ln, k)
+
+        fun placeBlock(columnLines: List<Line>, factor: Float, rightAligned: Boolean) {
+            if (columnLines.isEmpty()) return
+            val height = blockHeight(columnLines, factor)
+            var baseline = padY + (interiorH - height) * 0.5f
+            for ((i, ln) in columnLines.withIndex()) {
+                preparePaint(ln, factor)
                 val fm = paint.fontMetrics
                 baseline += -fm.ascent
-                placed.add(PlacedLine(
-                    text = ln.text,
-                    bold = ln.bold,
-                    sizePx = ln.sizeRef * unit * k,
-                    centerX = capsuleW * 0.5f,
-                    baselineY = baseline,
-                    leftX = 0f,
-                    align = 2,
-                ))
+                placed.add(
+                    PlacedLine(
+                        text = ln.text,
+                        bold = ln.bold,
+                        sizePx = ln.sizeRef * unit * factor,
+                        centerX = 0f,
+                        baselineY = baseline,
+                        leftX = if (rightAligned) capsuleW - padX else padX,
+                        align = if (rightAligned) 1 else 0,
+                    ),
+                )
                 baseline += fm.descent
-                if (i < allLines.size - 1) baseline += LINE_GAP_REF * unit * k
-            }
-        } else {
-            // Left block: left-aligned at padX, vertically centred
-            var baseline = padY + (interiorH - leftH) / 2f
-            for ((i, ln) in leftLines.withIndex()) {
-                preparePaint(ln, k)
-                val fm = paint.fontMetrics
-                baseline += -fm.ascent
-                placed.add(PlacedLine(
-                    text = ln.text,
-                    bold = ln.bold,
-                    sizePx = ln.sizeRef * unit * k,
-                    centerX = 0f,
-                    baselineY = baseline,
-                    leftX = padX,
-                    align = 0,
-                ))
-                baseline += fm.descent
-                if (i < leftLines.size - 1) baseline += LINE_GAP_REF * unit * k
-            }
-            // Right block: right-aligned at capsuleW - padX, vertically centred
-            baseline = padY + (interiorH - rightH) / 2f
-            for ((i, ln) in rightLines.withIndex()) {
-                preparePaint(ln, k)
-                val fm = paint.fontMetrics
-                baseline += -fm.ascent
-                placed.add(PlacedLine(
-                    text = ln.text,
-                    bold = ln.bold,
-                    sizePx = ln.sizeRef * unit * k,
-                    centerX = 0f,
-                    baselineY = baseline,
-                    leftX = capsuleW - padX,
-                    align = 1,
-                ))
-                baseline += fm.descent
-                if (i < rightLines.size - 1) baseline += LINE_GAP_REF * unit * k
+                if (i < columnLines.size - 1) baseline += LINE_GAP_REF * unit * factor
             }
         }
+        placeBlock(leftLines, leftScale, rightAligned = false)
+        placeBlock(rightLines, rightScale, rightAligned = true)
 
-        // Logo placement (centre column, vertically centred)
-        var logoPlacement: LogoPlacement? = null
-        if (hasLogo && logoW > 0 && logoH > 0 && !singleColumn) {
-            val logoLeft = padX + (capsuleW - 2f * padX - logoW) * 0.5f
-            val logoTop = padY + (interiorH - logoH) / 2f
-            logoPlacement = LogoPlacement(logoLeft, logoTop, logoW, logoH)
-        }
-
-        return Metrics(placed, capsuleW, capsuleH, unit, logoPlacement, logoBmp)
+        val logoPlacement = if (hasLogo && logoW > 0f && logoH > 0f) {
+            LogoPlacement(
+                left = logoLeft,
+                top = (capsuleH - logoH) * 0.5f,
+                width = logoW,
+                height = logoH,
+            )
+        } else null
+        val divider = if (rightLines.isNotEmpty()) {
+            val dividerH = capsuleH * DIVIDER_HEIGHT_FRACTION
+            DividerPlacement(
+                x = dividerX,
+                top = (capsuleH - dividerH) * 0.5f,
+                bottom = (capsuleH + dividerH) * 0.5f,
+                strokeWidth = (unit * 0.8f).coerceAtLeast(0.75f),
+            )
+        } else null
+        return Metrics(placed, capsuleW, capsuleH, unit, logoPlacement, logoBmp, divider)
     }
+
+    private fun typefaceFor(bold: Boolean): Typeface =
+        if (bold) Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        else Typeface.create("sans-serif", Typeface.NORMAL)
 
     // ------------------------------------------------------------------
     // Text raster and compositing
@@ -654,18 +613,64 @@ object CapsuleRenderer {
      * crop, positioned at [capsule]'s crop-local rectangle. Returns raw pixels,
      * or null when the layer could not be created.
      */
-    fun drawTextLayer(cw: Int, ch: Int, capsule: PanelRect, metrics: Metrics, textColor: Int = TEXT_COLOR_LIGHT): IntArray? {
-        if (cw <= 0 || ch <= 0 || metrics.placed.isEmpty()) return null
+    fun drawTextLayer(
+        cw: Int,
+        ch: Int,
+        capsule: PanelRect,
+        metrics: Metrics,
+        textColor: Int = TEXT_COLOR_WHITE,
+    ): IntArray? {
+        if (cw <= 0 || ch <= 0 || (metrics.placed.isEmpty() && metrics.logo == null && metrics.divider == null)) {
+            return null
+        }
         var bmp: Bitmap? = null
         return try {
             bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
+
+            // Keep the divider and mark optically attached to the material, not to the scene.
+            val divider = metrics.divider
+            if (divider != null) {
+                val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = DIVIDER_COLOR
+                    style = Paint.Style.STROKE
+                    strokeCap = Paint.Cap.ROUND
+                    strokeWidth = divider.strokeWidth
+                    setShadowLayer(metrics.unitPx * 0.65f, 0f, 0f, 0x36000000)
+                }
+                canvas.drawLine(
+                    capsule.left + divider.x,
+                    capsule.top + divider.top,
+                    capsule.left + divider.x,
+                    capsule.top + divider.bottom,
+                    dividerPaint,
+                )
+                dividerPaint.clearShadowLayer()
+            }
+
+            val logoPlacement = metrics.logo
+            val logoBitmap = metrics.logoBitmap
+            if (logoPlacement != null && logoBitmap != null && !logoBitmap.isRecycled) {
+                val dst = RectF(
+                    capsule.left + logoPlacement.left,
+                    capsule.top + logoPlacement.top,
+                    capsule.left + logoPlacement.left + logoPlacement.width,
+                    capsule.top + logoPlacement.top + logoPlacement.height,
+                )
+                val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                    setShadowLayer(metrics.unitPx * 0.9f, 0f, metrics.unitPx * 0.2f, 0x52000000)
+                }
+                canvas.drawBitmap(logoBitmap, null, dst, logoPaint)
+                logoPaint.clearShadowLayer()
+            }
+
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = textColor
+                setShadowLayer(metrics.unitPx * 0.85f, 0f, metrics.unitPx * 0.22f, 0x62000000)
             }
             for (pl in metrics.placed) {
-                paint.typeface = if (pl.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                paint.letterSpacing = if (pl.bold) 0.01f else 0f
+                paint.typeface = typefaceFor(pl.bold)
+                paint.letterSpacing = if (pl.bold) 0.005f else 0f
                 paint.textSize = pl.sizePx
                 val x: Float
                 when (pl.align) {
@@ -675,18 +680,7 @@ object CapsuleRenderer {
                 }
                 canvas.drawText(pl.text, x, capsule.top + pl.baselineY, paint)
             }
-            // Draw logo into the same layer so it gets blended by blendTextOver
-            val lp = metrics.logo
-            val lb = metrics.logoBitmap
-            if (lp != null && lb != null && !lb.isRecycled && lp.width > 0 && lp.height > 0) {
-                val dst = RectF(
-                    capsule.left + lp.left,
-                    capsule.top + lp.top,
-                    capsule.left + lp.left + lp.width,
-                    capsule.top + lp.top + lp.height,
-                )
-                canvas.drawBitmap(lb, null, dst, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
-            }
+            paint.clearShadowLayer()
             val out = IntArray(cw * ch)
             bmp.getPixels(out, 0, cw, 0, 0, cw, ch)
             out
@@ -697,7 +691,6 @@ object CapsuleRenderer {
         }
     }
 
-    /** Straight-alpha "over" of a text layer onto the glass pixels, in place. */
     fun blendTextOver(target: IntArray, text: IntArray) {
         if (target.size != text.size || target.isEmpty()) return
         var i = 0
@@ -971,7 +964,7 @@ object CapsuleRenderer {
         return true
     }
 
-    /** Mean colour of rows [y0..y1] at column [x], each row index clamped. */
+    /** Mean colour of rows from y0 through y1 at column x, each row index clamped. */
     private fun meanOfColumn(pixels: IntArray, cw: Int, ch: Int, x: Int, y0: Int, y1: Int): Int {
         var rSum = 0L; var gSum = 0L; var bSum = 0L
         var n = 0
@@ -988,7 +981,7 @@ object CapsuleRenderer {
         return pack((rSum / n).toInt(), (gSum / n).toInt(), (bSum / n).toInt())
     }
 
-    /** Mean colour of columns [x0..x1] at row [y], each column index clamped. */
+    /** Mean colour of columns from x0 through x1 at row y, each column index clamped. */
     private fun meanOfRow(pixels: IntArray, cw: Int, ch: Int, x0: Int, x1: Int, y: Int): Int {
         var rSum = 0L; var gSum = 0L; var bSum = 0L
         var n = 0

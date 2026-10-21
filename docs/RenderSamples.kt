@@ -18,6 +18,10 @@ import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.PanelRect
 import java.awt.RenderingHints
+import java.awt.AlphaComposite
+import java.awt.BasicStroke
+import java.awt.Font
+import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
@@ -27,11 +31,17 @@ import kotlin.math.sin
 private const val PHOTO_W = 900
 private const val PHOTO_H = 400
 private const val UNIT = PHOTO_H / 1080f
-private const val PAD_X = (34f * UNIT).toInt().coerceAtLeast(6)
-private const val PAD_Y = (22f * UNIT).toInt().coerceAtLeast(4)
-private const val LINE_GAP = (15f * UNIT).toInt().coerceAtLeast(3)
-private const val BOX_INSET = (42f * UNIT).toInt().coerceAtLeast(6)
-private const val TEXT_COLOR = 0xF21F1F26.toInt()
+private const val CAPSULE_WIDTH_FRACTION = 0.90f
+private const val CAPSULE_HEIGHT_REF = 128f
+private const val PAD_X_FRACTION = 0.05f
+private const val PAD_Y_FRACTION = 0.10f
+private const val LINE_GAP_REF = 6f
+private const val BOX_INSET_REF = 104f
+private const val LOGO_CENTER_X_FRACTION = 0.635f
+private const val DIVIDER_X_FRACTION = 0.685f
+private const val DIVIDER_HEIGHT_FRACTION = 0.42f
+private const val DIVIDER_GAP_REF = 16f
+private const val TEXT_COLOR = 0xF2FFFFFF.toInt()
 
 private fun argb(a: Int, r: Int, g: Int, b: Int) =
     (a shl 24) or (r.coerceIn(0, 255) shl 16) or (g.coerceIn(0, 255) shl 8) or b.coerceIn(0, 255)
@@ -74,23 +84,76 @@ private fun backdrop(kind: String): IntArray {
     return px
 }
 
-/** Draws a capsule's four text lines with a real font, like CapsuleRenderer. */
-private fun drawCapsuleTexts(img: BufferedImage, lines: List<Pair<String, Boolean>>, left: Int, top: Int) {
+/** Draws the same asymmetric text/logo/divider composition used by the capture renderer. */
+private fun drawCapsuleTexts(img: BufferedImage, left: Int, top: Int, capsuleW: Int, capsuleH: Int) {
     val g = img.createGraphics()
     g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
     g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-    val baseSize = (31f * UNIT).toInt().coerceAtLeast(9)
-    var y = top + PAD_Y
-    for ((text, bold) in lines) {
-        val font = if (bold) {
-            java.awt.Font("Dialog.bold", java.awt.Font.BOLD, (baseSize * 1.35f).toInt())
-        } else {
-            java.awt.Font("Dialog.plain", java.awt.Font.PLAIN, baseSize)
-        }
+    g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+
+    val padX = capsuleW * PAD_X_FRACTION
+    val padY = capsuleH * PAD_Y_FRACTION
+    val lineGap = LINE_GAP_REF * UNIT
+    val modelFont = Font(Font.SANS_SERIF, Font.BOLD, (30f * UNIT).toInt().coerceAtLeast(9))
+    val bodyFont = Font(Font.SANS_SERIF, Font.PLAIN, (24f * UNIT).toInt().coerceAtLeast(7))
+
+    fun drawLabel(text: String, x: Float, baseline: Float, font: Font, alignRight: Boolean = false) {
         g.font = font
-        g.paint = java.awt.Color(0xF21F1F26.toInt(), true)
-        g.drawString(text, (left + PAD_X + 6).toFloat(), (y + font.size2D).toFloat())
-        y += font.size2D.toInt() + LINE_GAP
+        val width = g.fontMetrics.stringWidth(text).toFloat()
+        val tx = if (alignRight) x - width else x
+        g.color = Color(0, 0, 0, 100)
+        g.drawString(text, tx + UNIT * 0.25f, baseline + UNIT * 0.25f)
+        g.color = Color(255, 255, 255, 242)
+        g.drawString(text, tx, baseline)
+    }
+
+    val model = "2X 2312RAACG"
+    val time = "2026.10.02 19:30:17"
+    val exif = "48mm f/1.78 1/1070s ISO64"
+    val gps = "30°15'45\"N 120°8'30\"E"
+    val leftH = g.getFontMetrics(modelFont).height + lineGap + g.getFontMetrics(bodyFont).height
+    var baseline = top + padY + (capsuleH - 2f * padY - leftH) * 0.5f
+    g.font = modelFont
+    baseline += g.fontMetrics.ascent
+    drawLabel(model, left + padX, baseline, modelFont)
+    baseline += g.fontMetrics.descent + lineGap
+    g.font = bodyFont
+    baseline += g.fontMetrics.ascent
+    drawLabel(time, left + padX, baseline, bodyFont)
+
+    // The logo asset is the same transparent white wordmark shipped in the Android module.
+    val logoFile = File("app/src/main/assets/leica_wordmark_white.png")
+    val logo = if (logoFile.isFile) runCatching { ImageIO.read(logoFile) }.getOrNull() else null
+    if (logo != null) {
+        val interiorH = capsuleH - 2f * padY
+        val logoH = interiorH * 0.42f
+        val logoW = logoH * logo.width.toFloat() / logo.height.toFloat()
+        val cx = left + capsuleW * LOGO_CENTER_X_FRACTION
+        val ly = top + (capsuleH - logoH) * 0.5f
+        g.composite = AlphaComposite.SrcOver
+        g.drawImage(logo, (cx - logoW * 0.5f).toInt(), ly.toInt(), logoW.toInt(), logoH.toInt(), null)
+    } else {
+        drawLabel("Leica", left + capsuleW * (LOGO_CENTER_X_FRACTION - 0.035f), top + capsuleH * 0.61f,
+            Font(Font.SERIF, Font.ITALIC, (18f * UNIT).toInt().coerceAtLeast(8)))
+    }
+
+    val dividerX = left + capsuleW * DIVIDER_X_FRACTION
+    val dividerH = capsuleH * DIVIDER_HEIGHT_FRACTION
+    g.stroke = BasicStroke((UNIT * 0.8f).coerceAtLeast(0.6f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+    g.color = Color(255, 255, 255, 184)
+    g.drawLine(dividerX.toInt(), (top + (capsuleH - dividerH) * 0.5f).toInt(),
+        dividerX.toInt(), (top + (capsuleH + dividerH) * 0.5f).toInt())
+
+    val rightEdge = left + capsuleW - padX
+    val rightX = left + capsuleW * DIVIDER_X_FRACTION + DIVIDER_GAP_REF * UNIT
+    val rightAvailable = rightEdge - rightX
+    for ((text, row) in listOf(exif to 0, gps to 1)) {
+        g.font = bodyFont
+        val scale = minOf(1f, rightAvailable / g.fontMetrics.stringWidth(text).coerceAtLeast(1))
+        val drawFont = if (scale < 0.995f) bodyFont.deriveFont(bodyFont.size2D * scale) else bodyFont
+        val blockH = g.getFontMetrics(drawFont).height * 2f + lineGap
+        val firstBaseline = top + (capsuleH - blockH) * 0.5f + g.getFontMetrics(drawFont).ascent
+        drawLabel(text, rightEdge, firstBaseline + row * (g.getFontMetrics(drawFont).height + lineGap), drawFont, alignRight = true)
     }
     g.dispose()
 }
@@ -132,22 +195,11 @@ fun main(args: Array<String>) {
     val outDir = File(if (args.isNotEmpty()) args[0] else "docs")
     outDir.mkdirs()
 
-    // The capsule is placed the way the module places it (scale 1.0, position
-    // centred): horizontally centred, near the photo's bottom with BOX_INSET.
-    val lines = listOf(
-        "2X 2312RAACG" to true,
-        "2026.10.02 19:30:17" to false,
-        "9/100s F1.69 ISO50 23mm" to false,
-        "GPS OFF" to false,
-    )
-    val baseSize = (31f * UNIT).toInt().coerceAtLeast(9)
-    val boldSize = (baseSize * 1.35f).toInt()
-    val textW = 19 * baseSize  // "9/100s F1.69 ISO50 23mm" is the longest line.
-    val textH = boldSize + 3 * (baseSize + LINE_GAP)
-    val capsuleW = textW + 2 * PAD_X + 6
-    val capsuleH = textH + 2 * PAD_Y
-    val capsuleLeft = (PHOTO_W - capsuleW) / 2
-    val capsuleTop = PHOTO_H - BOX_INSET - capsuleH
+    // Fixed geometry, matching the asymmetric capsule in WatermarkHooks.
+    val capsuleW = (PHOTO_W * CAPSULE_WIDTH_FRACTION).toInt()
+    val capsuleH = (PHOTO_H * CAPSULE_HEIGHT_REF / 1080f).toInt()
+    val capsuleLeft = (PHOTO_W * 0.01f).toInt()
+    val capsuleTop = PHOTO_H - (BOX_INSET_REF * UNIT).toInt() - capsuleH
     val panel = PanelRect(
         left = capsuleLeft.toFloat(),
         top = capsuleTop.toFloat(),
@@ -158,8 +210,7 @@ fun main(args: Array<String>) {
 
     val summary = StringBuilder()
     summary.appendLine("photo ${PHOTO_W}x$PHOTO_H, capsule ${capsuleW}x${capsuleH} " +
-            "at ($capsuleLeft,$capsuleTop) r=H/2, text lines ${lines.size}, " +
-            "font ${boldSize}/${baseSize}px")
+            "at ($capsuleLeft,$capsuleTop) r=H/2, asymmetric text/logo/divider layout")
 
     for (c in cases()) {
         val photo = backdrop(c.scene)
@@ -175,7 +226,7 @@ fun main(args: Array<String>) {
 
         val img = BufferedImage(PHOTO_W, PHOTO_H, BufferedImage.TYPE_INT_RGB)
         img.setRGB(0, 0, PHOTO_W, PHOTO_H, px, 0, PHOTO_W)
-        drawCapsuleTexts(img, lines, capsuleLeft, capsuleTop)
+        drawCapsuleTexts(img, capsuleLeft, capsuleTop, capsuleW, capsuleH)
         val outPx = img.getRGB(0, 0, PHOTO_W, PHOTO_H, IntArray(PHOTO_W * PHOTO_H), 0, PHOTO_W)
         writePng("${outDir.absolutePath}/${c.name}.png", outPx, PHOTO_W, PHOTO_H)
 

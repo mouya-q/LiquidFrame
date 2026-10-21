@@ -14,10 +14,8 @@ package com.mouya.LiquidFrame.glass
  *   InnerShadow.Default       -> black 0.15, radius 24.dp, offset (0, +radius)
  *
  * Where a value is given as a fraction rather than in dp it is because a photo watermark has
- * no density to resolve against: the panel is only ~40 px tall on a 4000 px frame, so the
- * material is scaled to the panel instead of to the screen. A control of that pixel height
- * would get a refraction band of roughly a third of its height from the reference's own
- * component values, which is what [refractionHeightFraction] encodes.
+ * no display density to resolve against. The material is scaled to the rendered capsule rather
+ * than to the camera screen, keeping its appearance consistent across output resolutions.
  */
 data class GlassParams(
 
@@ -29,16 +27,15 @@ data class GlassParams(
      * Calibrated against the reference project's own Apple comparison, where a 300 px glass
      * uses `inputInnerRefractionHeight = 20`: a band of ~7% of the panel.
      */
-    val refractionHeightFraction: Float = 0.18f,
+    val refractionHeightFraction: Float = 0.08f,
 
     /**
      * Peak displacement, as a fraction of the refraction band.
      *
-     * Lowered from 3.0 to 1.5: the watermark capsule is much wider than tall,
-     * and at 3.0 the lens distortion at the short edges was excessive — the
-     * reference watermark shows only a gentle frosted bend, not a strong lens.
+     * The watermark capsule is much wider than tall, so the reference look uses a gentle
+     * displacement instead of the exaggerated lens bending produced by values near 3.0.
      */
-    val refractionAmountFraction: Float = 1.5f,
+    val refractionAmountFraction: Float = 1.2f,
 
     /** Corner radius as a fraction of the panel's short side, when it cannot be measured. */
     val cornerRadiusFraction: Float = 0.5f,
@@ -46,7 +43,7 @@ data class GlassParams(
     // ---- backdrop -----------------------------------------------------------------------
 
     /** Gaussian blur before the lens, as a fraction of the refraction band. */
-    val blurFraction: Float = 0.25f,
+    val blurFraction: Float = 0.14f,
 
     /** `vibrancy()`. */
     val vibrancy: Float = 1.5f,

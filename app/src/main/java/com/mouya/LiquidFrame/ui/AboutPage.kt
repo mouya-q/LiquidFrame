@@ -267,7 +267,7 @@ fun AboutPage(
                 SettingSection("关于") {
                     SettingRow(
                         title = "模块说明",
-                        subtitle = "liquidFrame 是一个 LSPosed 模块，为小米相机水印渲染液态玻璃材质。它 hook 相机水印渲染管线，保留原始水印文字，仅替换背景为液态玻璃。",
+                        subtitle = "liquidFrame 是一个 LSPosed 模块，为小米相机水印渲染液态玻璃材质",
                     )
                     SettingDivider()
                     SettingRow(
