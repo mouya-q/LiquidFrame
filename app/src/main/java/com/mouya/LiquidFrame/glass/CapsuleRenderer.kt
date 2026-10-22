@@ -6,6 +6,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.location.Location
+import com.mouya.LiquidFrame.LFLogger
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -224,6 +225,14 @@ object CapsuleRenderer {
                 exif = deepExifScan(root, 2)
             }
         }
+        // Final fallback: value-range-based numeric field scan for fully
+        // obfuscated camera builds (6.4.x) where method names are useless.
+        if (exif == null) {
+            for (root in roots) {
+                if (exif != null) break
+                exif = scanNumericFields(root, 4)
+            }
+        }
 
         val deduped = strings.distinct()
         val time = parseTime(deduped, now) ?: now
@@ -403,6 +412,88 @@ object CapsuleRenderer {
             }
         }
         return null
+    }
+
+    /**
+     * Value-range-based EXIF scan for fully obfuscated camera builds (6.4.x).
+     *
+     * When method names are single-letter and unreadable, the only remaining
+     * signal is the value itself. This walks every Number-typed field in the
+     * object graph (depth 4) and classifies values by EXIF-typical ranges:
+     *   - ISO: integer 25–102400
+     *   - Aperture: double 0.95–22 (also accepts int*10 like 17 → 1.7)
+     *   - Exposure: double 1e-6–30 (also ns/µs conversion)
+     *   - Focal length: double 0.5–1000
+     *
+     * The first plausible match per category wins. Redundant matches across
+     * the same category from different fields are suppressed.
+     */
+    private fun scanNumericFields(root: Any, depth: Int): ExifBits? {
+        var focal: Double? = null
+        var aperture: Double? = null
+        var exposure: Double? = null
+        var iso: Int? = null
+        val visited = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
+        val queue = ArrayDeque<Pair<Any, Int>>()
+        queue.add(root to depth)
+        while (queue.isNotEmpty()) {
+            val (obj, d) = queue.removeFirst()
+            if (!visited.add(obj)) continue
+            if (d < 0) continue
+            val cls = obj.javaClass
+            val fields = try { cls.declaredFields } catch (t: Throwable) { continue }
+            for (f in fields) {
+                try {
+                    f.isAccessible = true
+                    val v = f.get(obj) ?: continue
+                    when (v) {
+                        is Number -> {
+                            val dval = v.toDouble()
+                            // ISO: integer in [25, 102400], not a common wrong-hit like 0/1
+                            if (iso == null && dval == dval.toInt().toDouble() &&
+                                dval in 25.0..102400.0) {
+                                iso = dval.toInt()
+                                LFLogger.v("exif-scan: ISO candidate=$iso from ${cls.name}.${f.name}")
+                            }
+                            // Aperture: [0.95, 22], or int*10 in [9, 220]
+                            if (aperture == null) {
+                                var a = dval
+                                if (dval >= 9.0 && dval <= 220.0 && dval == dval.toInt().toDouble()) a /= 10.0
+                                if (a in 0.95..22.0) {
+                                    aperture = a
+                                    LFLogger.v("exif-scan: aperture candidate=$a from ${cls.name}.${f.name}")
+                                }
+                            }
+                            // Exposure: [1e-6, 30], with ns/µs conversion
+                            if (exposure == null) {
+                                var s = dval
+                                if (s > 1e6 && s < 1e10) s /= 1e9
+                                if (s > 1e3 && s < 1e6) s /= 1e6
+                                if (s in 1e-6..30.0) {
+                                    exposure = s
+                                    LFLogger.v("exif-scan: exposure candidate=$s from ${cls.name}.${f.name}")
+                                }
+                            }
+                            // Focal length: [0.5, 1000]
+                            if (focal == null && dval in 0.5..1000.0) {
+                                focal = dval
+                                LFLogger.v("exif-scan: focal candidate=$dval from ${cls.name}.${f.name}")
+                            }
+                        }
+                        else -> {
+                            if (d > 0 && isScannable(v)) queue.add(v to d - 1)
+                        }
+                    }
+                } catch (t: Throwable) { /* skip */ }
+            }
+        }
+        if (focal == null && aperture == null && exposure == null && iso == null) {
+            LFLogger.w("exif-scan: no numeric fields matched EXIF ranges")
+            return null
+        }
+        val result = ExifBits(focal, aperture, exposure, iso)
+        LFLogger.i("exif-scan: found focal=${focal} aperture=${aperture} exposure=${exposure} iso=${iso}")
+        return result
     }
 
     /** Finds a wall-clock time inside any collected string, within ±1 year of [now]. */

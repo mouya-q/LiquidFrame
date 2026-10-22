@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Tune
@@ -76,7 +77,7 @@ import kotlin.math.sign
 // =====================================================================================
 
 enum class LiquidPage {
-    Home, Glass, About
+    Home, Glass, Log, About
 }
 
 // =====================================================================================
@@ -129,7 +130,7 @@ fun GlassBottomBar(
     onPageSelected: (LiquidPage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val pages = listOf(LiquidPage.Home, LiquidPage.Glass, LiquidPage.About)
+    val pages = listOf(LiquidPage.Home, LiquidPage.Glass, LiquidPage.Log, LiquidPage.About)
     val tabsCount = pages.size
 
     val isLightTheme = !isSystemInDarkTheme()
@@ -251,11 +252,13 @@ fun GlassBottomBar(
                     val icon = when (page) {
                         LiquidPage.Home -> Icons.Outlined.Home
                         LiquidPage.Glass -> Icons.Outlined.Tune
+                        LiquidPage.Log -> Icons.Outlined.Description
                         LiquidPage.About -> Icons.Outlined.Info
                     }
                     val label = when (page) {
                         LiquidPage.Home -> "首页"
                         LiquidPage.Glass -> "参数"
+                        LiquidPage.Log -> "日志"
                         LiquidPage.About -> "关于"
                     }
                     Icon(

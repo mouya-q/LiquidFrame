@@ -20,49 +20,6 @@ import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Method
 import java.util.Locale
-
-/**
- * Installs the liquid glass watermark.
- *
- * Xiaomi's watermark pipeline, reconstructed by disassembling `com.android.camera`
- * `1+6.4.000250.2` (the HyperOS 4 port this module targets) and cross-checked against
- * `6.4.000370.0`:
- *
- * ```
- *   LE5/b->h(Lla/a, Z, I)Lla/f;            app side "processWatermark": lifts the I420 frame
- *                                          into a full-size photo Bitmap
- *   watermark/b->b(Application, Bitmap, Dc/b, I) -> Bitmap
- *   watermark/b->c(b, Context, Bitmap, Dc/b, I, String, I) -> Bitmap
- *   watermark/c->c(Context, Bitmap, Dc/b, I, Cc/a, String, Z,
- *                  PorterDuff$Mode, String, o9/O) -> Bitmap
- *   Fe/a->j(Fe/a, Bitmap src, ColorSpace, I wHint, I hHint, String, I) -> Bitmap
- * ```
- *
- * `Fe/a->j` is the composite. It resolves the element tree's size, creates ONE output bitmap,
- * wraps it in `Lpe/o`, and draws the tree into it in painter order. Critically, the photo is
- * blitted into that same bitmap by `Fe/a->b` (via `Lpe/o->g` == `Canvas.drawBitmap`), and the
- * bitmap `Fe/a->j` returns is encoded one-to-one as the final image. So the output bitmap is
- * the full photo with the watermark already composited, and the pixels behind the panel are
- * the scene itself.
- *
- * The background panel is not a solid colour: it is a pre-rendered WebP
- * (`assets/watermarks/<style>/<id>/icon_background_{light,dark}_blur.webp`) drawn as a
- * `BitmapShader`-filled rectangle, with its corner radius baked into the WebP alpha plus
- * `rect_params.rect_radius` in the per-style `config.json`.
- *
- * Two facts decide the hook design:
- *
- *  1. **The rectangle passed to `Lpe/o->h` is element-local, always `(0, 0, w, h)`.** Absolute
- *     placement lives in `Canvas.translate` calls made by the parent group, so the rectangle
- *     must be mapped through the canvas's own matrix — see [absoluteRect].
- *  2. **There is no canvas-level scale factor.** dp values in `config.json` are multiplied by
- *     `min(photoW, photoH) / 1080` once at layout time, after which every element is already
- *     in absolute output pixels. The 1080 constant that appears next to the panel is only the
- *     `BitmapShader`'s local matrix, which fits the WebP into the panel rectangle.
- *
- * The material is therefore applied by post-processing the finished composite, with the panel
- * located from the app's own draw call where possible and from the pixels otherwise.
- */
 object WatermarkHooks {
 
     private const val TAG = "LiquidFrame"
@@ -120,9 +77,6 @@ object WatermarkHooks {
      * pipeline's own work.
      */
     private const val RENDER_TIME_BUDGET_MS = 1200L
-
-    /** Maximum log lines per second from the capture thread, to bound I/O on continuous shooting. */
-    private const val LOG_RATE_LIMIT = 15
 
     /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
     private const val PANEL_CROP_PAD_FRACTION = 0.55f
@@ -403,6 +357,8 @@ object WatermarkHooks {
         hookCompositeFallback(loader, "Fe.a", "j")
         // 6.2.x fallback — different obfuscated names, no canvas wrapper
         hookCompositeFallback(loader, "Cd.a", "i")
+        // Source-level white-bar interception: hook Fe/a.b() to suppress drawColor
+        hookBlitMethod(loader, "Fe.a", "b")
     }
 
     // ---------------------------------------------------------------------------------------
@@ -555,6 +511,74 @@ object WatermarkHooks {
         }
         hookComposite(target)
         log("hooked $className->$methodName (${target.parameterTypes.size} params)")
+    }
+
+    /**
+     * Source-level white-bar interception.
+     *
+     * Fe/a.b() is the blit method that draws each watermark element. Before blitting the
+     * element's bitmap, it checks Fe/b.a (an int field whose upper byte encodes a color);
+     * when that byte is non-zero, it calls Canvas.drawColor() — that is the solid white (or
+     * tinted) strip the camera paints behind the watermark.
+     *
+     * Hooking b() and clearing Fe/b.a in beforeHookedMethod prevents the drawColor call,
+     * so the element's transparent background is never filled with a solid color. The
+     * element's own bitmap (glyphs, logos) is still blitted normally; only the backing fill
+     * is suppressed.
+     *
+     * On 6.4.x the Fe/b data is stored in Fe/a.i (field "i" of type Fe/b). We reflect into
+     * the receiver (Fe/a instance) to find and zero the Fe/b.a field.
+     */
+    private fun hookBlitMethod(classLoader: ClassLoader, className: String, methodName: String) {
+        val cls = findClass(className, classLoader) ?: run {
+            log("hookBlit: class $className not found")
+            return
+        }
+        // Fe/a.b() takes (Canvas, float, float, float, float, Paint) — find by signature.
+        val target = cls.declaredMethods.firstOrNull { m ->
+            m.name == methodName &&
+                    m.parameterTypes.size >= 5 &&
+                    Canvas::class.java.isAssignableFrom(m.parameterTypes[0])
+        }
+        if (target == null) {
+            log("hookBlit: method $methodName not found in $className; candidates=" +
+                    cls.declaredMethods.joinToString { "${it.name}/${it.parameterTypes.size}" })
+            return
+        }
+        if (!hookedComposites.add(cls.name + "#" + methodName + "-blit")) return
+        XposedBridge.hookMethod(target, object : XC_MethodHook() {
+            override fun beforeHookedMethod(p: MethodHookParam) {
+                try {
+                    val receiver = p.thisObject ?: return
+                    // Walk declared fields to find the Fe/b data object (field "i" on 6.4.x).
+                    val dataField = receiver.javaClass.declaredFields.firstOrNull { f ->
+                        f.name == "i" || f.type.declaredFields.any { sf ->
+                            sf.type == Int::class.javaPrimitiveType ||
+                            sf.type == Bitmap::class.java
+                        }
+                    }
+                    if (dataField != null) {
+                        dataField.isAccessible = true
+                        val dataObj = dataField.get(receiver) ?: return
+                        // Find the int color field (Fe/b.a) and zero it to suppress drawColor.
+                        val colorField = dataObj.javaClass.declaredFields.firstOrNull { f ->
+                            f.type == Int::class.javaPrimitiveType
+                        }
+                        if (colorField != null) {
+                            colorField.isAccessible = true
+                            val orig = colorField.getInt(dataObj)
+                            if (orig != 0) {
+                                colorField.setInt(dataObj, 0)
+                                LFLogger.v("hookBlit: zeroed Fe/b.a color=0x${orig.toString(16)} -> 0")
+                            }
+                        }
+                    }
+                } catch (t: Throwable) {
+                    LFLogger.w("hookBlit before failed: ${t.javaClass.simpleName}: ${t.message}")
+                }
+            }
+        })
+        log("hooked blit method $className->$methodName (source-level white-bar suppression)")
     }
 
     /**
@@ -912,20 +936,21 @@ object WatermarkHooks {
         val anchorY = if (photoBottom >= 0) photoBottom.toFloat() else h.toFloat()
 
         // ------------------------------------------------------------------
-        // Eradicate the stock marks. Two layouts exist, told apart by whether
-        // the plate floats with clear air below the photograph's bottom:
+        // Eradicate the stock marks — source-level approach.
         //
-        //  - strip layout: the band the camera appended below the photo is
-        //    repainted whole with its own verified fill colour, so no stock
-        //    glyph, glow or plate seam survives anywhere across the width.
-        //  - over-photo layout: the plate was painted on the photograph
-        //    itself, so its rectangle (plus a glow margin) is rebuilt from
-        //    the original photograph via the composite's uniform scale.
+        // The hookBlitMethod hook already suppresses drawColor at the source level
+        // by zeroing Fe/b.a, so the white backing fill should not be drawn. However,
+        // as a belt-and-suspenders measure, we also repair any residual marks:
         //
-        // Repairs that cannot be proven safe are refused rather than smeared:
-        // stock marks left standing under fresh glass beat a stretched
-        // repaint of real scene content.
+        //  - When srcPhoto is available: rebuild the entire bottom region (from
+        //    photoBottom to h) directly from the original photograph, scaled to
+        //    match the output canvas. This is the most reliable repair — it does
+        //    not depend on pixel scanning or color detection.
+        //  - Strip layout without srcPhoto: repaint with detected fill color.
+        //  - Over-photo without srcPhoto: sample-and-fill from surrounding scene.
         // ------------------------------------------------------------------
+        val isStripLayout = photoBottom >= 0 && plate.top >= photoBottom + STRIP_PLATE_GAP_MIN
+        var eraseMode = "none"
         val eraseTopY = if (photoBottom >= 0) {
             (photoBottom - 2).coerceAtLeast(0)
         } else {
@@ -936,10 +961,40 @@ object WatermarkHooks {
         } else {
             ((plate.bottom + 24f).toInt() - eraseTopY).coerceIn(0, h - eraseTopY)
         }
-        val isStripLayout = photoBottom >= 0 && plate.top >= photoBottom + STRIP_PLATE_GAP_MIN
-        var eraseMode = "none"
         if (eraseRowsGlobal > 0) {
-            if (isStripLayout) {
+            // Primary path: rebuild from srcPhoto.
+            if (srcPhoto != null && !srcPhoto.isRecycled &&
+                srcPhoto.width >= 8 && srcPhoto.height >= 8
+            ) {
+                val scaleX = w.toFloat() / srcPhoto.width.toFloat()
+                val srcPhotoH = (srcPhoto.height * scaleX).toInt()
+                // Rebuild the bottom region: from eraseTopY to h.
+                val rebuildRows = h - eraseTopY
+                if (rebuildRows > 0) {
+                    val strip = IntArray(w * rebuildRows)
+                    out.getPixels(strip, 0, w, 0, eraseTopY, w, rebuildRows)
+                    var rebuilt = 0
+                    for (y in 0 until rebuildRows) {
+                        val srcY = ((eraseTopY + y) / scaleX).toInt()
+                            .coerceIn(0, srcPhoto.height - 1)
+                        try {
+                            val srcRow = IntArray(w)
+                            srcPhoto.getPixels(srcRow, 0, w, 0, srcY, w, 1)
+                            System.arraycopy(srcRow, 0, strip, y * w, w)
+                            rebuilt++
+                        } catch (t: Throwable) {
+                            // Skip this row; leave existing pixels.
+                        }
+                    }
+                    if (rebuilt > 0) {
+                        out.setPixels(strip, 0, w, 0, eraseTopY, w, rebuildRows)
+                        eraseMode = "src-rebuild"
+                        LFLogger.i("eradicate: src-rebuild rows=$rebuilt/$rebuildRows from ${eraseTopY}..$h")
+                    }
+                }
+            }
+            // Fallback 1: strip-fill (repaint with detected fill color).
+            if (eraseMode == "none" && isStripLayout) {
                 val strip = IntArray(w * eraseRowsGlobal)
                 out.getPixels(strip, 0, w, 0, eraseTopY, w, eraseRowsGlobal)
                 val fill = CapsuleRenderer.fillColorFromStripTop(strip, w)
@@ -949,33 +1004,8 @@ object WatermarkHooks {
                     out.setPixels(strip, 0, w, 0, eraseTopY, w, eraseRowsGlobal)
                     eraseMode = "strip-fill"
                 }
-            } else if (srcPhoto != null) {
-                // Rebuild the plate rectangle from the true photograph.
-                val pad = 16
-                val pl = (plate.left - pad).toInt().coerceIn(0, w - 1)
-                val pt = (plate.top - pad).toInt().coerceIn(0, h - 1)
-                val pr = (plate.right + pad).toInt().coerceIn(pl + 1, w)
-                val pb = (plate.bottom + pad).toInt().coerceIn(pt + 1, h)
-                val ppw = pr - pl
-                val pph = pb - pt
-                if (ppw >= 8 && pph >= 8) {
-                    val patch = IntArray(ppw * pph)
-                    out.getPixels(patch, 0, ppw, pl, pt, ppw, pph)
-                    val ok = CapsuleRenderer.patchCropFromSource(
-                        patch, ppw, pph, pl, pt, w, h, srcPhoto,
-                    )
-                    out.setPixels(patch, 0, ppw, pl, pt, ppw, pph)
-                    if (ok) eraseMode = "plate-patch"
-                }
             }
-            // Over-photo layout without a source bitmap: the plate was painted
-            // directly on the photograph. There is no strip fill to detect and
-            // no source bitmap to reconstruct from, so the only honest repair is
-            // to sample the scene just above and below the plate and inpaint the
-            // plate rectangle with that averaged colour. The variance gate from
-            // eraseFlatRegion is too strict for photographic content, so this
-            // path bypasses it and fills unconditionally — a flat-ish inpaint is
-            // always better than leaving the stock watermark glyphs standing.
+            // Fallback 2: over-photo sample-fill (no srcPhoto, no strip).
             if (eraseMode == "none" && !isStripLayout && srcPhoto == null) {
                 val pad = 8
                 val pl = (plate.left - pad).toInt().coerceIn(0, w - 1)
@@ -987,8 +1017,6 @@ object WatermarkHooks {
                 if (ppw >= 8 && pph >= 8) {
                     val patch = IntArray(ppw * pph)
                     out.getPixels(patch, 0, ppw, pl, pt, ppw, pph)
-                    // Sample rows just above and just below the plate to build
-                    // a representative fill colour for this region of the scene.
                     val sampleRows = mutableListOf<Int>()
                     val aboveRow = ((plate.top - pad - 2).toInt()).coerceAtLeast(0)
                     val belowRow = ((plate.bottom + pad + 2).toInt()).coerceAtMost(h - 1)
@@ -1017,25 +1045,6 @@ object WatermarkHooks {
                         for (i in patch.indices) patch[i] = fill
                         out.setPixels(patch, 0, ppw, pl, pt, ppw, pph)
                         eraseMode = "over-photo"
-                    }
-                }
-            }
-            if (eraseMode == "none") {
-                val pTop = (plate.top.toInt() - 1).coerceAtLeast(0)
-                val pBot = (plate.bottom.toInt() + 24).coerceAtMost(h).coerceAtLeast(pTop + 8)
-                if (pBot <= h && pBot - pTop >= 8 && w >= 8) {
-                    val sub = IntArray(w * (pBot - pTop))
-                    out.getPixels(sub, 0, w, 0, pTop, w, pBot - pTop)
-                    val region = CropRect(
-                        (plate.left.toInt() - 16).coerceIn(0, w - 1),
-                        0,
-                        (plate.right.toInt() + 16).coerceIn(1, w),
-                        pBot - pTop,
-                    )
-                    val ok = CapsuleRenderer.eraseFlatRegion(sub, w, pBot - pTop, region)
-                    if (ok) {
-                        out.setPixels(sub, 0, w, 0, pTop, w, pBot - pTop)
-                        eraseMode = "plate-flat"
                     }
                 }
             }
@@ -1452,42 +1461,9 @@ object WatermarkHooks {
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
 
-    /** Rate-limited log: at most [LOG_RATE_LIMIT] lines per second, extras counted and summarised. */
-    // Multiple camera threads (capture, preview, video) can reach log() concurrently, so the
-    // window counters are atomic rather than plain vars.
-    private val logWindowStart = java.util.concurrent.atomic.AtomicLong(0L)
-    private val logCountInWindow = java.util.concurrent.atomic.AtomicInteger(0)
-    private val logDroppedInWindow = java.util.concurrent.atomic.AtomicInteger(0)
-    private val logLock = Any()
-
+    /** Delegates to the full logging system with no rate limiting. */
     private fun log(message: String) {
-        val now = SystemClock.elapsedRealtime()
-        val dropped: Int
-        val emit: Boolean
-        synchronized(logLock) {
-            if (logWindowStart.get() == 0L) logWindowStart.set(now)
-            if (now - logWindowStart.get() >= 1000L) {
-                dropped = logDroppedInWindow.getAndSet(0)
-                logWindowStart.set(now)
-                logCountInWindow.set(0)
-            } else {
-                dropped = 0
-            }
-            if (logCountInWindow.get() < LOG_RATE_LIMIT) {
-                logCountInWindow.incrementAndGet()
-                emit = true
-            } else {
-                logDroppedInWindow.incrementAndGet()
-                emit = false
-            }
-        }
-        if (dropped > 0) {
-            XposedBridge.log("$TAG: [$dropped log lines dropped in last window]")
-            LogHelper.log(TAG, "[$dropped log lines dropped in last window]")
-        }
-        if (emit) {
-            XposedBridge.log("$TAG: $message")
-            LogHelper.log(TAG, message)
-        }
+        LFLogger.d(message)
+        XposedBridge.log("$TAG: $message")
     }
 }
