@@ -346,6 +346,8 @@ object ConfigStore {
     const val KEY_CAPSULE_GPS = "capsule_gps"
     const val KEY_CAPSULE_SCALE = "capsule_scale"
     const val KEY_CAPSULE_LOGO = "capsule_logo"
+    const val KEY_CAPSULE_LOGO_PRESET = "capsule_logo_preset"
+    const val KEY_CAPSULE_LOGO_POSITION = "capsule_logo_position"
 
     fun capsuleEnabled(): Boolean = bool(KEY_CAPSULE_ENABLED, true)
 
@@ -366,6 +368,12 @@ object ConfigStore {
         float(KEY_CAPSULE_SCALE, 1f).coerceIn(0.6f, 2.0f)
 
     fun capsuleShowLogo(): Boolean = bool(KEY_CAPSULE_LOGO, true)
+
+    fun capsuleLogoPreset(): String = cached[KEY_CAPSULE_LOGO_PRESET]?.trim()
+        ?.takeIf { it.isNotBlank() } ?: "LeicaWhite"
+
+    fun capsuleLogoPosition(): String = cached[KEY_CAPSULE_LOGO_POSITION]?.trim()
+        ?.takeIf { it.isNotBlank() } ?: "MIDDLE"
 
     /** Current values, ready to edit in the UI. */
     fun snapshot(): MutableMap<String, String> {
@@ -392,6 +400,8 @@ object ConfigStore {
             KEY_CAPSULE_GPS to capsuleShowGps().toString(),
             KEY_CAPSULE_SCALE to capsuleScale().toString(),
             KEY_CAPSULE_LOGO to capsuleShowLogo().toString(),
+            KEY_CAPSULE_LOGO_PRESET to capsuleLogoPreset(),
+            KEY_CAPSULE_LOGO_POSITION to capsuleLogoPosition(),
         )
     }
 

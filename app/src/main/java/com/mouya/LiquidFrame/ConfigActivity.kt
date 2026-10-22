@@ -20,6 +20,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -73,6 +78,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
+import com.mouya.LiquidFrame.glass.LogoPreset
+import com.mouya.LiquidFrame.glass.LogoPosition
 import com.mouya.LiquidFrame.glass.PanelRect
 import com.mouya.LiquidFrame.ui.AboutPage
 import com.mouya.LiquidFrame.ui.GlassBottomBar
@@ -282,6 +289,8 @@ class ConfigActivity : ComponentActivity() {
         var capsuleShowExif by remember { mutableStateOf(ConfigStore.capsuleShowExif()) }
         var capsuleShowGps by remember { mutableStateOf(ConfigStore.capsuleShowGps()) }
         var capsuleShowLogo by remember { mutableStateOf(ConfigStore.capsuleShowLogo()) }
+        var capsuleLogoPreset by remember { mutableStateOf(ConfigStore.capsuleLogoPreset()) }
+        var capsuleLogoPosition by remember { mutableStateOf(ConfigStore.capsuleLogoPosition()) }
         var capsuleScale by remember { mutableStateOf(ConfigStore.capsuleScale()) }
         var adaptive by remember { mutableStateOf(initial.adaptive) }
         var preserveContent by remember { mutableStateOf(initial.preserveContent) }
@@ -341,7 +350,8 @@ class ConfigActivity : ComponentActivity() {
         // capsule edit would only burn a render for an identical image.
         LaunchedEffect(
             capsuleEnabled, capsulePos, capsuleModel, capsuleModelEnabled,
-            capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleShowLogo, capsuleScale,
+            capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleShowLogo,
+            capsuleLogoPreset, capsuleLogoPosition, capsuleScale,
         ) {
             kotlinx.coroutines.delay(180)
             val effectiveModel = if (capsuleModelEnabled) capsuleModel else ""
@@ -353,6 +363,8 @@ class ConfigActivity : ComponentActivity() {
                 this[ConfigStore.KEY_CAPSULE_EXIF] = capsuleShowExif.toString()
                 this[ConfigStore.KEY_CAPSULE_GPS] = capsuleShowGps.toString()
                 this[ConfigStore.KEY_CAPSULE_LOGO] = capsuleShowLogo.toString()
+                this[ConfigStore.KEY_CAPSULE_LOGO_PRESET] = capsuleLogoPreset
+                this[ConfigStore.KEY_CAPSULE_LOGO_POSITION] = capsuleLogoPosition
                 this[ConfigStore.KEY_CAPSULE_SCALE] = capsuleScale.toString()
             }
             writeStatus = withContext(Dispatchers.IO) {
@@ -383,6 +395,8 @@ class ConfigActivity : ComponentActivity() {
             capsuleShowExif = true
             capsuleShowGps = true
             capsuleShowLogo = true
+            capsuleLogoPreset = "LeicaWhite"
+            capsuleLogoPosition = "MIDDLE"
             capsuleScale = 1f
         }
 
@@ -492,7 +506,51 @@ class ConfigActivity : ComponentActivity() {
                                     "拍照时擦除原水印，在照片内重建一枚液态玻璃胶囊",
                                 )
                                 SettingDivider()
-                                LiquidToggleRow("徕卡标", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "徕卡字标位于胶囊中右部，右侧参数由细竖线分隔")
+                                LiquidToggleRow("Logo", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "选择水印中的品牌标识")
+                                if (capsuleShowLogo) {
+                                    SettingDivider()
+                                    // Logo preset selector
+                                    SettingRow(
+                                        title = "品牌",
+                                        subtitle = "选择水印中的 Logo 样式",
+                                        trailing = {
+                                            Text(
+                                                LogoPreset.fromName(capsuleLogoPreset).displayName,
+                                                color = LiquidColors.blue,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            )
+                                        },
+                                        onClick = {
+                                            // Cycle through presets
+                                            val presets = LogoPreset.entries
+                                            val currentIdx = presets.indexOfFirst { it.name == capsuleLogoPreset }
+                                            val nextIdx = (currentIdx + 1) % presets.size
+                                            capsuleLogoPreset = presets[nextIdx].name
+                                        },
+                                    )
+                                    SettingDivider()
+                                    // Logo position selector
+                                    SettingRow(
+                                        title = "Logo 位置",
+                                        subtitle = "Logo 在水印中的相对位置",
+                                        trailing = {
+                                            Text(
+                                                LogoPosition.fromName(capsuleLogoPosition).displayName,
+                                                color = LiquidColors.blue,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            )
+                                        },
+                                        onClick = {
+                                            // Cycle through positions
+                                            val positions = LogoPosition.entries
+                                            val currentIdx = positions.indexOfFirst { it.name == capsuleLogoPosition }
+                                            val nextIdx = (currentIdx + 1) % positions.size
+                                            capsuleLogoPosition = positions[nextIdx].name
+                                        },
+                                    )
+                                }
                                 SettingDivider()
                                 LiquidToggleRow(
                                     "自定义设备名称",
@@ -500,7 +558,11 @@ class ConfigActivity : ComponentActivity() {
                                     { capsuleModelEnabled = !capsuleModelEnabled },
                                     "使用自定义文字替代系统机型名",
                                 )
-                                if (capsuleModelEnabled) {
+                                AnimatedVisibility(
+                                    visible = capsuleModelEnabled,
+                                    enter = expandVertically() + fadeIn(),
+                                    exit = shrinkVertically() + fadeOut(),
+                                ) {
                                     OutlinedTextField(
                                         value = capsuleModel,
                                         onValueChange = { if (it.length <= 32) capsuleModel = it },
@@ -571,6 +633,8 @@ class ConfigActivity : ComponentActivity() {
                                             appendLine("capsuleExif=$capsuleShowExif")
                                             appendLine("capsuleGps=$capsuleShowGps")
                                             appendLine("capsuleLogo=$capsuleShowLogo")
+                                            appendLine("capsuleLogoPreset=$capsuleLogoPreset")
+                                            appendLine("capsuleLogoPosition=$capsuleLogoPosition")
                                             appendLine("capsuleScale=$capsuleScale")
                                         }
                                         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

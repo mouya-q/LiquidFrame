@@ -42,20 +42,22 @@ data class GlassParams(
 
     // ---- backdrop -----------------------------------------------------------------------
 
-    /** Gaussian blur before the lens, as a fraction of the refraction band. */
-    val blurFraction: Float = 0.14f,
+    /** Gaussian blur before the lens, as a fraction of the refraction band.
+     *  Set to 0 per VitreMark defaults (blurRadiusDp = 0). */
+    val blurFraction: Float = 0f,
 
-    /** `vibrancy()`. */
-    val vibrancy: Float = 1.5f,
-    val vibrancyBrightness: Float = 0.03f,
+    /** `vibrancy()`. Disabled by default per VitreMark (vibrancyEnabled = false). */
+    val vibrancy: Float = 1f,
+    val vibrancyBrightness: Float = 0f,
 
     // ---- lens ---------------------------------------------------------------------------
 
     /** Lean the surface normal toward the panel centre; the reference's `depthEffect`. */
     val depthEffect: Float = 1f,
 
-    /** Split refraction into the reference's seven-tap spectrum. */
-    val chromaticAberration: Boolean = true,
+    /** Split refraction into the reference's seven-tap spectrum.
+     *  Disabled by default per VitreMark (chromaticAberration = false). */
+    val chromaticAberration: Boolean = false,
     val dispersionIntensity: Float = 1f,
 
     // ---- surface ------------------------------------------------------------------------
@@ -135,6 +137,47 @@ data class GlassParams(
      * keeps white watermark text legible on both.
      */
     val adaptive: Boolean = true,
+
+    // ---- VitreMark-aligned watermark layout parameters ----------------------------------
+
+    /** Watermark height in dp (VitreMark default: 35dp). */
+    val watermarkHeightDp: Float = 35f,
+
+    /** Watermark length factor relative to image width (VitreMark default: 1.0 = full width). */
+    val watermarkLengthFactor: Float = 1.0f,
+
+    /** Watermark horizontal offset in dp (VitreMark default: 0). */
+    val watermarkOffsetX: Float = 0f,
+
+    /** Watermark vertical offset factor (VitreMark default: 1.0 = bottom edge). */
+    val watermarkOffsetY: Float = 1.0f,
+
+    /** Device name text scale (VitreMark default: 1.0, range 0.5–2.0). */
+    val deviceTextScale: Float = 1.0f,
+
+    /** Metadata text scale (VitreMark default: 1.0, range 0.5–2.0). */
+    val metaTextScale: Float = 1.0f,
+
+    /** Metadata line spacing multiplier (VitreMark default: -0.18, range -1.0–1.0). */
+    val metaLineSpacing: Float = -0.18f,
+
+    /** Logo size scale (VitreMark default: 1.0, range 0.01–2.0). */
+    val logoSizeScale: Float = 1.0f,
+
+    /** Logo position: "FRONT", "MIDDLE", or "BACK" (VitreMark default: "MIDDLE"). */
+    val logoPosition: String = "MIDDLE",
+
+    /** Show capture (EXIF) line (VitreMark default: true). */
+    val showCaptureLine: Boolean = true,
+
+    /** Show timestamp line (VitreMark default: true). */
+    val showTimestampLine: Boolean = true,
+
+    /** Invert text colour (white→black) (VitreMark default: false). */
+    val textColorInvert: Boolean = false,
+
+    /** Bold text (VitreMark default: false). */
+    val textBold: Boolean = false,
 ) {
 
     companion object {

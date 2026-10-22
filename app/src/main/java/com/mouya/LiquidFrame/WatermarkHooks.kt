@@ -11,6 +11,7 @@ import com.mouya.LiquidFrame.glass.CapsuleRenderer
 import com.mouya.LiquidFrame.glass.PanelScan
 import com.mouya.LiquidFrame.glass.GlassParams
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
+import com.mouya.LiquidFrame.glass.LogoPreset
 import com.mouya.LiquidFrame.glass.PanelRect
 import com.mouya.LiquidFrame.glass.CropRect
 import de.robv.android.xposed.XC_MethodHook
@@ -165,15 +166,37 @@ object WatermarkHooks {
      */
     @Volatile
     private var cachedLogo: Bitmap? = null
+    @Volatile
+    private var cachedLogoPreset: String = ""
     private val logoLock = Any()
 
     private fun loadLogo(): Bitmap? {
+        // Resolve the user's logo preset from config.
+        val presetName = ConfigStore.capsuleLogoPreset()
+        // If the preset changed since last load, invalidate the cache.
+        if (cachedLogoPreset != presetName) {
+            synchronized(logoLock) {
+                if (cachedLogoPreset != presetName) {
+                    cachedLogo?.let { if (!it.isRecycled) it.recycle() }
+                    cachedLogo = null
+                    cachedLogoPreset = presetName
+                }
+            }
+        }
         val existing = cachedLogo
         if (existing != null) return existing
         synchronized(logoLock) {
             val existing2 = cachedLogo
             if (existing2 != null) return existing2
             try {
+                // Resolve the user's logo preset from config.
+                val preset = LogoPreset.fromName(presetName)
+                if (preset == LogoPreset.None) {
+                    log("loadLogo: preset is None, skipping")
+                    return null
+                }
+                // For presets with a drawable resource, try decoding from the APK's
+                // resources/drawable path first (vector drawables are stored as XML).
                 val apkPath = resolveModuleApkPath()
                 if (apkPath == null) {
                     log("loadLogo: module APK path not found")
@@ -191,10 +214,43 @@ object WatermarkHooks {
                             android.graphics.BitmapFactory.decodeStream(stream)
                         }
                     }
-                    decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
+                    fun decodeDrawable(name: String): Bitmap? {
+                        val entry = z.getEntry("res/$name") ?: return null
+                        return z.getInputStream(entry).use { stream ->
+                            // XML vector drawables cannot be decoded by BitmapFactory.
+                            // Use the system's drawable inflater via a temporary XML parser.
+                            try {
+                                val parser = android.util.Xml.newPullParser()
+                                parser.setInput(stream, "UTF-8")
+                                val drawable = android.graphics.drawable.Drawable.createFromXml(
+                                    android.content.res.Resources.getSystem(), parser
+                                )
+                                if (drawable == null) return@use null
+                                val w = drawable.intrinsicWidth.coerceAtLeast(24)
+                                val h = drawable.intrinsicHeight.coerceAtLeast(24)
+                                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                                val canvas = Canvas(bmp)
+                                drawable.setBounds(0, 0, w, h)
+                                drawable.draw(canvas)
+                                bmp
+                            } catch (t: Throwable) {
+                                null
+                            }
+                        }
+                    }
+                    // Try asset-based logos (Leica wordmark and badge) first.
+                    when (preset) {
+                        LogoPreset.Leica -> decodeAsset("leica_logo.png")
+                        LogoPreset.LeicaWhite -> decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
+                        LogoPreset.Apple -> decodeDrawable("drawable/logo_apple.xml")
+                        else -> {
+                            // For presets without bundled assets, fall back to Leica assets.
+                            decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
+                        }
+                    }
                 }
-                if (bmp != null) log("loadLogo: decoded ${bmp.width}x${bmp.height}")
-                else log("loadLogo: Leica logo assets not found or decode failed")
+                if (bmp != null) log("loadLogo: decoded ${bmp.width}x${bmp.height} for preset ${preset.name}")
+                else log("loadLogo: asset not found for preset ${preset.name}")
                 cachedLogo = bmp
                 return bmp
             } catch (t: Throwable) {
@@ -1006,6 +1062,8 @@ object WatermarkHooks {
             scale = ConfigStore.capsuleScale(),
             showLogo = showLogo,
             logo = logoBmp,
+            logoPreset = ConfigStore.capsuleLogoPreset(),
+            logoPosition = ConfigStore.capsuleLogoPosition(),
         )
         val meta = CapsuleRenderer.extractMeta(thisObj, args, now)
         val lines = CapsuleRenderer.buildLines(opts, meta, shortSide)

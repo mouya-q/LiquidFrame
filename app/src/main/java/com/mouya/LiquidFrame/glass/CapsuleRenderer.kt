@@ -53,6 +53,14 @@ object CapsuleRenderer {
         val showLogo: Boolean = false,
         /** Pre-decoded logo bitmap, or null when unavailable. */
         val logo: Bitmap? = null,
+        /** Logo preset name, for aspect compensation. */
+        val logoPreset: String = "LeicaWhite",
+        /** Logo position: "FRONT", "MIDDLE", or "BACK". */
+        val logoPosition: String = "MIDDLE",
+        /** Metadata line spacing multiplier. */
+        val metaLineSpacing: Float = -0.18f,
+        /** Logo size scale (0.01–2.0). */
+        val logoSizeScale: Float = 1.0f,
     )
 
     class CaptureMeta(
@@ -495,9 +503,15 @@ object CapsuleRenderer {
         val logoBmp = opts.logo?.takeIf { opts.showLogo && !it.isRecycled && it.width > 0 && it.height > 0 }
         val hasLogo = logoBmp != null
         val colGap = DIVIDER_GAP_REF * unit
-        val logoH = if (hasLogo) LOGO_HEIGHT_FRACTION * interiorH else 0f
+        // Resolve the logo preset for aspect compensation and vertical alignment.
+        val preset = LogoPreset.fromName(opts.logoPreset)
+        val logoSizeFactor = opts.logoSizeScale.coerceIn(0.01f, 2.0f)
+        val logoH = if (hasLogo) LOGO_HEIGHT_FRACTION * interiorH * logoSizeFactor else 0f
         val logoW = if (logoH > 0f && logoBmp != null) {
-            (logoH * logoBmp.width.toFloat() / logoBmp.height.toFloat()).coerceAtMost(capsuleW * 0.15f)
+            // Apply the preset's aspect compensation: height = logoWidth / aspect.
+            // So effective height scaling uses aspectCompensation to correct non-square logos.
+            (logoH * logoBmp.width.toFloat() / logoBmp.height.toFloat() * preset.aspectCompensation)
+                .coerceAtMost(capsuleW * 0.15f)
         } else 0f
         val logoCenterX = LOGO_CENTER_X_FRACTION * capsuleW
         val logoLeft = logoCenterX - logoW * 0.5f
@@ -583,7 +597,7 @@ object CapsuleRenderer {
         val logoPlacement = if (hasLogo && logoW > 0f && logoH > 0f) {
             LogoPlacement(
                 left = logoLeft,
-                top = (capsuleH - logoH) * 0.5f,
+                top = (capsuleH - logoH) * 0.5f * preset.verticalAlignment,
                 width = logoW,
                 height = logoH,
             )
