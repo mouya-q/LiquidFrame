@@ -112,11 +112,11 @@ class ConfigActivity : ComponentActivity() {
 
         // The reference panel is about 12% of the photo's short side, not of its width.
         const val PREVIEW_PANEL_H_FRACTION = 0.12f
-        // Asymmetric leading inset: the pill is aligned near the left edge, not centred.
-        const val PREVIEW_SIDE_FRACTION = 0.01f
-        // 104 / 1080 short-side units, matching BOX_INSET_REF in the camera hook.
-        const val PREVIEW_BOTTOM_FRACTION = 0.0963f
-        const val PREVIEW_WIDTH_FRACTION = 0.90f
+        // Asymmetric leading inset matching the reference engine's 4.5% horizontal margin.
+        const val PREVIEW_SIDE_FRACTION = 0.045f
+        // 18 / 1080 short-side units, matching BOX_INSET_REF in the camera hook.
+        const val PREVIEW_BOTTOM_FRACTION = 0.0167f
+        const val PREVIEW_WIDTH_FRACTION = 0.91f
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -506,6 +506,12 @@ class ConfigActivity : ComponentActivity() {
                                     "拍照时擦除原水印，在照片内重建一枚液态玻璃胶囊",
                                 )
                                 SettingDivider()
+                                LiquidToggleRow("日期时间", capsuleShowDatetime, { capsuleShowDatetime = !capsuleShowDatetime }, "左列第二行：拍摄时间")
+                                SettingDivider()
+                                LiquidToggleRow("相机参数", capsuleShowExif, { capsuleShowExif = !capsuleShowExif }, "右列第一行：焦距、光圈、快门、ISO")
+                                SettingDivider()
+                                LiquidToggleRow("位置信息", capsuleShowGps, { capsuleShowGps = !capsuleShowGps }, "右列第二行：GPS 度分秒坐标")
+                                SettingDivider()
                                 LiquidToggleRow("Logo", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "选择水印中的品牌标识")
                                 if (capsuleShowLogo) {
                                     SettingDivider()
@@ -572,12 +578,6 @@ class ConfigActivity : ComponentActivity() {
                                         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
                                     )
                                 }
-                                SettingDivider()
-                                LiquidToggleRow("日期时间", capsuleShowDatetime, { capsuleShowDatetime = !capsuleShowDatetime }, "左列第二行：拍摄时间")
-                                SettingDivider()
-                                LiquidToggleRow("相机参数", capsuleShowExif, { capsuleShowExif = !capsuleShowExif }, "右列第一行：焦距、光圈、快门、ISO")
-                                SettingDivider()
-                                LiquidToggleRow("位置信息", capsuleShowGps, { capsuleShowGps = !capsuleShowGps }, "右列第二行：GPS 度分秒坐标")
                                 SettingDivider()
                                 LiquidSliderRow(
                                     "胶囊大小",
@@ -655,90 +655,210 @@ class ConfigActivity : ComponentActivity() {
                             Spacer(Modifier.height(12.dp))
                         }
 
-                        // ---- Glass params page: preview at top, sliders below ----
-                        LiquidPage.Glass -> Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(glassScroll)
-                                .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 132.dp)),
-                            verticalArrangement = Arrangement.spacedBy(20.dp),
-                        ) {
-                            Text(
-                                "玻璃参数",
-                                fontSize = 30.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = textPrimary(),
-                            )
+                        // ---- Glass params page: preview at top, tabbed sections below ----
+                        LiquidPage.Glass -> {
+                            var glassTab by remember { mutableStateOf(0) }
+                            val glassTabs = listOf("材质", "胶囊", "细节")
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(glassScroll)
+                                    .padding(PaddingValues(start = 18.dp, end = 18.dp, top = 54.dp, bottom = 132.dp)),
+                                verticalArrangement = Arrangement.spacedBy(20.dp),
+                            ) {
+                                Text(
+                                    "玻璃参数",
+                                    fontSize = 30.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = textPrimary(),
+                                )
 
-                            // Preview moved here from the home page
-                            GlassCard {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(PREVIEW_W.toFloat() / PREVIEW_H.toFloat())
-                                        .clip(RoundedCornerShape(16.dp)),
-                                ) {
-                                    val bmp = previewBitmap
-                                    if (bmp != null) {
-                                        Image(
-                                            bitmap = bmp.asImageBitmap(),
-                                            contentDescription = "LiquidFrame 水印预览",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize(),
-                                        )
-                                    }
+                                // Preview
+                                GlassCard {
                                     Box(
-                                        Modifier
-                                            .align(Alignment.TopStart)
-                                            .padding(10.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(ComposeColor.Black.copy(alpha = 0.42f))
-                                            .padding(horizontal = 9.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .aspectRatio(PREVIEW_W.toFloat() / PREVIEW_H.toFloat())
+                                            .clip(RoundedCornerShape(16.dp)),
                                     ) {
-                                        Text("实时预览", color = ComposeColor.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        val bmp = previewBitmap
+                                        if (bmp != null) {
+                                            Image(
+                                                bitmap = bmp.asImageBitmap(),
+                                                contentDescription = "LiquidFrame 水印预览",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        }
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(10.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(ComposeColor.Black.copy(alpha = 0.42f))
+                                                .padding(horizontal = 9.dp, vertical = 6.dp),
+                                        ) {
+                                            Text("实时预览", color = ComposeColor.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        }
+                                    }
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(top = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(previewSource, fontSize = 12.sp, color = textSecondary())
+                                            Text(previewResult, fontSize = 11.sp, color = textSecondary(), modifier = Modifier.padding(top = 2.dp))
+                                        }
+                                        androidx.compose.material3.TextButton(onClick = ::chooseBackdrop) {
+                                            Icon(Icons.Outlined.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Text("换一张", modifier = Modifier.padding(start = 6.dp))
+                                        }
                                     }
                                 }
-                                Row(
-                                    Modifier.fillMaxWidth().padding(top = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(previewSource, fontSize = 12.sp, color = textSecondary())
-                                        Text(previewResult, fontSize = 11.sp, color = textSecondary(), modifier = Modifier.padding(top = 2.dp))
-                                    }
-                                    androidx.compose.material3.TextButton(onClick = ::chooseBackdrop) {
-                                        Icon(Icons.Outlined.Image, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Text("换一张", modifier = Modifier.padding(start = 6.dp))
-                                    }
-                                }
-                            }
 
-                            SettingSection("材质") {
-                                LiquidSliderRow("折射带", band, 0f..0.45f, "")
-                                    { band = it }
-                                SettingDivider()
-                                LiquidSliderRow("折射强度", amount, 0f..4f, "", valueLabel = String.format(java.util.Locale.ROOT, "%.1f×", amount))
-                                    { amount = it }
-                                SettingDivider()
-                                LiquidSliderRow("背景模糊", blur, 0f..1.5f, "")
-                                    { blur = it }
-                                SettingDivider()
-                                LiquidSliderRow("内部提亮", lift, 0f..48f, "")
-                                    { lift = it }
-                                SettingDivider()
-                                LiquidSliderRow("着色", tint, 0f..0.6f, "")
-                                    { tint = it }
-                                SettingDivider()
-                                LiquidSliderRow("边缘高光", rim, 0f..1.2f, "")
-                                    { rim = it }
-                            }
-                            SettingSection("细节") {
-                                LiquidSliderRow("高光方向", angle, 0f..360f, "°", valueLabel = "${angle.roundToInt()}°")
-                                    { angle = it }
-                                SettingDivider()
-                                LiquidSliderRow("立体感", depth, 0f..1f, "")
-                                    { depth = it }
+                                // Horizontal tab menu
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    glassTabs.forEachIndexed { idx, label ->
+                                        Box(
+                                            Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(
+                                                    if (glassTab == idx) LiquidColors.blue.copy(alpha = 0.15f)
+                                                    else ComposeColor.Transparent
+                                                )
+                                                .clickable { glassTab = idx }
+                                                .padding(vertical = 10.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                label,
+                                                fontSize = 14.sp,
+                                                fontWeight = if (glassTab == idx) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (glassTab == idx) LiquidColors.blue else textSecondary(),
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Tab content
+                                when (glassTab) {
+                                    0 -> SettingSection("材质") {
+                                        LiquidSliderRow("折射带", band, 0f..0.45f, "")
+                                            { band = it }
+                                        SettingDivider()
+                                        LiquidSliderRow("折射强度", amount, 0f..4f, "", valueLabel = String.format(java.util.Locale.ROOT, "%.1f×", amount))
+                                            { amount = it }
+                                        SettingDivider()
+                                        LiquidSliderRow("背景模糊", blur, 0f..1.5f, "")
+                                            { blur = it }
+                                        SettingDivider()
+                                        LiquidSliderRow("内部提亮", lift, 0f..48f, "")
+                                            { lift = it }
+                                        SettingDivider()
+                                        LiquidSliderRow("着色", tint, 0f..0.6f, "")
+                                            { tint = it }
+                                        SettingDivider()
+                                        LiquidSliderRow("边缘高光", rim, 0f..1.2f, "")
+                                            { rim = it }
+                                    }
+                                    1 -> SettingSection("水印胶囊") {
+                                        LiquidToggleRow(
+                                            "重建胶囊",
+                                            capsuleEnabled,
+                                            { capsuleEnabled = !capsuleEnabled },
+                                            "拍照时擦除原水印，在照片内重建一枚液态玻璃胶囊",
+                                        )
+                                        SettingDivider()
+                                        LiquidToggleRow("日期时间", capsuleShowDatetime, { capsuleShowDatetime = !capsuleShowDatetime }, "左列第二行：拍摄时间")
+                                        SettingDivider()
+                                        LiquidToggleRow("相机参数", capsuleShowExif, { capsuleShowExif = !capsuleShowExif }, "右列第一行：焦距、光圈、快门、ISO")
+                                        SettingDivider()
+                                        LiquidToggleRow("位置信息", capsuleShowGps, { capsuleShowGps = !capsuleShowGps }, "右列第二行：GPS 度分秒坐标")
+                                        SettingDivider()
+                                        LiquidToggleRow("Logo", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "选择水印中的品牌标识")
+                                        if (capsuleShowLogo) {
+                                            SettingDivider()
+                                            SettingRow(
+                                                title = "品牌",
+                                                subtitle = "选择水印中的 Logo 样式",
+                                                trailing = {
+                                                    Text(
+                                                        LogoPreset.fromName(capsuleLogoPreset).displayName,
+                                                        color = LiquidColors.blue,
+                                                        fontSize = 14.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                    )
+                                                },
+                                                onClick = {
+                                                    val presets = LogoPreset.entries
+                                                    val currentIdx = presets.indexOfFirst { it.name == capsuleLogoPreset }
+                                                    val nextIdx = (currentIdx + 1) % presets.size
+                                                    capsuleLogoPreset = presets[nextIdx].name
+                                                },
+                                            )
+                                            SettingDivider()
+                                            SettingRow(
+                                                title = "Logo 位置",
+                                                subtitle = "Logo 在水印中的相对位置",
+                                                trailing = {
+                                                    Text(
+                                                        LogoPosition.fromName(capsuleLogoPosition).displayName,
+                                                        color = LiquidColors.blue,
+                                                        fontSize = 14.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                    )
+                                                },
+                                                onClick = {
+                                                    val positions = LogoPosition.entries
+                                                    val currentIdx = positions.indexOfFirst { it.name == capsuleLogoPosition }
+                                                    val nextIdx = (currentIdx + 1) % positions.size
+                                                    capsuleLogoPosition = positions[nextIdx].name
+                                                },
+                                            )
+                                        }
+                                        SettingDivider()
+                                        LiquidToggleRow(
+                                            "自定义设备名称",
+                                            capsuleModelEnabled,
+                                            { capsuleModelEnabled = !capsuleModelEnabled },
+                                            "使用自定义文字替代系统机型名",
+                                        )
+                                        AnimatedVisibility(
+                                            visible = capsuleModelEnabled,
+                                            enter = expandVertically() + fadeIn(),
+                                            exit = shrinkVertically() + fadeOut(),
+                                        ) {
+                                            OutlinedTextField(
+                                                value = capsuleModel,
+                                                onValueChange = { if (it.length <= 32) capsuleModel = it },
+                                                singleLine = true,
+                                                label = { Text("设备名称", fontSize = 13.sp, color = textSecondary()) },
+                                                placeholder = { Text("输入自定义机型文字", fontSize = 13.sp, color = textSecondary()) },
+                                                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+                                            )
+                                        }
+                                        SettingDivider()
+                                        LiquidSliderRow(
+                                            "胶囊大小",
+                                            capsuleScale,
+                                            0.6f..2.0f,
+                                            "",
+                                            valueLabel = String.format(java.util.Locale.ROOT, "%.2f×", capsuleScale),
+                                        ) { capsuleScale = it }
+                                    }
+                                    2 -> SettingSection("细节") {
+                                        LiquidSliderRow("高光方向", angle, 0f..360f, "°", valueLabel = "${angle.roundToInt()}°")
+                                            { angle = it }
+                                        SettingDivider()
+                                        LiquidSliderRow("立体感", depth, 0f..1f, "")
+                                            { depth = it }
+                                    }
+                                }
                             }
                         }
 

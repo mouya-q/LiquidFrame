@@ -130,14 +130,18 @@ object CapsuleRenderer {
 
     private const val REFERENCE_SHORT_SIDE = 1080f
 
-    // Measured from the supplied 1536 × 1152 reference: ~90% frame width, ~12% height,
-    // a 1%-width leading inset and about 9.5% of the image left below the capsule.
-    private const val TARGET_WIDTH_FRACTION = 0.90f
+    // Layout parameters aligned to the reference watermark engine's d.n() algorithm:
+    // width = (photoW - 0.045*photoW*2) * lengthFactor = 0.91*photoW (lengthFactor=1.0)
+    // height = watermarkHeightDp clamped to [1, photoH*0.5]
+    // horizontal inset = 0.045 * photoW on each side (the 4.5% margin baked into width)
+    // bottom inset = min(photoW, photoH) * 0.016 (offsetY=1.0 → bottom-aligned)
+    // corner radius = height * 0.5 (full pill capsule)
+    private const val TARGET_WIDTH_FRACTION = 0.91f
     private const val TARGET_HEIGHT_REF = 128f
     const val CORNER_RADIUS_REF = 64f
     private const val PAD_X_FRACTION = 0.05f
     private const val PAD_Y_FRACTION = 0.10f
-    const val HORIZONTAL_EDGE_INSET_FRACTION = 0.01f
+    const val HORIZONTAL_EDGE_INSET_FRACTION = 0.045f
 
     private const val MODEL_SIZE_REF = 30f
     private const val BODY_SIZE_REF = 24f
@@ -151,8 +155,9 @@ object CapsuleRenderer {
     private const val DIVIDER_HEIGHT_FRACTION = 0.42f
     private const val DIVIDER_GAP_REF = 16f
 
-    /** Bottom inset measured from the reference; horizontally the capsule has its own inset. */
-    const val BOX_INSET_REF = 104f
+    /** Bottom inset: min(photoW,photoH)*0.016 ≈ 1.6% of the short side.
+     *  This matches the reference engine's offsetY=1.0 bottom-aligned placement. */
+    const val BOX_INSET_REF = 18f
 
     /** White iOS-style lettering, with a restrained shadow added at raster time for contrast. */
     const val TEXT_COLOR_WHITE = 0xF2FFFFFF.toInt()
@@ -194,20 +199,30 @@ object CapsuleRenderer {
 
         var location: Location? = null
         for (root in roots) {
-            location = location ?: findFieldValue(root, Location::class.java, 2)
+            location = location ?: findFieldValue(root, Location::class.java, 3)
             if (location != null) break
         }
 
         // String fields of the context objects are worth scanning once too — the
         // timestamp frequently lives there when it is not a direct argument.
         for (root in roots) {
-            collectStringFields(root, 1, strings)
+            collectStringFields(root, 2, strings)
         }
 
+        // EXIF: scan each root and also dig into nested parameter objects
+        // (depth 3 instead of 1), because 6.4.x wraps capture parameters in
+        // deeply-nested obfuscated wrapper classes.
         var exif: ExifBits? = null
         for (root in roots) {
             if (exif != null) break
             exif = readExifHints(root)
+        }
+        // If direct scan failed, try digging deeper into each root's fields.
+        if (exif == null) {
+            for (root in roots) {
+                if (exif != null) break
+                exif = deepExifScan(root, 2)
+            }
         }
 
         val deduped = strings.distinct()
@@ -326,32 +341,68 @@ object CapsuleRenderer {
             if (m.parameterCount != 0) continue
             val lower = m.name.lowercase(Locale.US)
             when {
-                iso == null && (lower.contains("iso") && !lower.contains("visible") && !lower.contains("noise")) ->
+                iso == null && (lower.contains("iso") && !lower.contains("visible") && !lower.contains("noise") && !lower.contains("isovis")) ->
                     numberOf(m)?.let { v ->
                         val d = v.toDouble()
-                        if (d >= 25.0 && d <= 25600.0 && d == d.toInt().toDouble()) iso = d.toInt()
+                        // Accept raw ISO values in the typical camera range.
+                        if (d >= 25.0 && d <= 102400.0) {
+                            iso = if (d == d.toInt().toDouble()) d.toInt() else d.toInt()
+                        }
                     }
-                aperture == null && (lower.contains("aperture") || lower.contains("fnum")) ->
+                aperture == null && (lower.contains("aperture") || lower.contains("fnum") || lower.contains("fnbr")) ->
                     numberOf(m)?.let { v ->
                         var d = v.toDouble()
+                        // Some cameras report f-number as integer*10 (e.g. 17 for f/1.7).
                         if (d >= 9.0 && d <= 100.0) d /= 10.0
-                        if (d >= 0.95 && d <= 10.0) aperture = d
+                        if (d >= 0.95 && d <= 22.0) aperture = d
                     }
-                exposure == null && (lower.contains("exposure") || lower.contains("shutter")) ->
+                exposure == null && (lower.contains("exposure") || lower.contains("shutter") || lower.contains("exptime")) ->
                     numberOf(m)?.let { v ->
                         var s = v.toDouble()
                         if (s > 1e6 && s < 1e10) s /= 1e9 // nanoseconds
-                        if (s in 1e-6..10.0) exposure = s
+                        if (s > 1e3 && s < 1e6) s /= 1e6 // microseconds
+                        if (s in 1e-6..30.0) exposure = s
                     }
-                focal == null && lower.contains("focal") ->
+                focal == null && (lower.contains("focal") || lower.contains("zoom")) ->
                     numberOf(m)?.let { v ->
                         val d = v.toDouble()
-                        if (d >= 0.5 && d <= 500.0) focal = d
+                        // Accept both integer mm (23) and rational (23.0).
+                        if (d >= 0.5 && d <= 1000.0) focal = d
                     }
             }
         }
         if (focal == null && aperture == null && exposure == null && iso == null) return null
         return ExifBits(focal, aperture, exposure, iso)
+    }
+
+    /**
+     * Recursively scans an object's fields for nested objects whose methods
+     * expose EXIF-like capture parameters. On 6.4.x the camera wraps focal,
+     * aperture, etc. inside multiple layers of obfuscated holder classes.
+     */
+    private fun deepExifScan(root: Any, depth: Int): ExifBits? {
+        val cls = root.javaClass
+        val fields = try {
+            cls.declaredFields
+        } catch (t: Throwable) {
+            return null
+        }
+        for (f in fields) {
+            try {
+                f.isAccessible = true
+                val v = f.get(root) ?: continue
+                if (!isScannable(v)) continue
+                val result = readExifHints(v)
+                if (result != null) return result
+                if (depth > 0) {
+                    val deeper = deepExifScan(v, depth - 1)
+                    if (deeper != null) return deeper
+                }
+            } catch (t: Throwable) {
+                // Non-vital.
+            }
+        }
+        return null
     }
 
     /** Finds a wall-clock time inside any collected string, within ±1 year of [now]. */
@@ -434,9 +485,9 @@ object CapsuleRenderer {
         e.aperture?.let { parts.add("f/" + String.format(Locale.US, "%.2f", it)) }
         e.exposureSeconds?.let { parts.add(exposureText(it)) }
         e.iso?.let { parts.add("ISO$it") }
-        // Two or more parameters make a credible spec line; a lone hit is more
-        // likely a misread getter, so it is dropped.
-        if (parts.size < 2) return null
+        // Even a single credible parameter is shown: the deep scan on 6.4.x
+        // may only find one of the four, but that single hit is still real data.
+        if (parts.isEmpty()) return null
         return parts.joinToString(" ")
     }
 

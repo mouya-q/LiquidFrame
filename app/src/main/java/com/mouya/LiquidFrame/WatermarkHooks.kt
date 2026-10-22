@@ -1103,7 +1103,11 @@ object WatermarkHooks {
         // but the gap is the inset itself — the capsule's bottom is already inset
         // above the photo's bottom edge, which is at or above the plate's top.
         val placementCap = anchorY
-        val capsuleBottom = (placementCap - inset).coerceAtLeast(capsuleH + 4f)
+        // Bottom margin: min(photoW, photoH) * 0.016, matching the reference engine's
+        // offsetY=1.0 bottom-aligned placement. The old BOX_INSET_REF=104 gave ~9.6% which
+        // left the capsule floating too high above the bottom edge.
+        val bottomMargin = (minOf(w, h) * 0.016f).coerceIn(4f, shortSide * 0.06f)
+        val capsuleBottom = (placementCap - bottomMargin).coerceAtLeast(capsuleH + 4f)
         val capsuleTop = capsuleBottom - capsuleH
         val horizontalInset = (w * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
         val capsuleLeft = when (opts.position) {
