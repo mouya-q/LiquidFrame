@@ -38,10 +38,11 @@ tuning that material.
 
 ## What it does
 
-Xiaomi Camera composites a watermark into every photo: a background panel with the device model,
-the date, and often a Leica or brand mark. LiquidFrame intercepts the finished bitmap after that
-composite and rebuilds **only the background panel** as a refracting glass surface — the camera's
-own typography, logo and metadata are left exactly as it drew them.
+Xiaomi Camera creates a watermark in its photo-output pipeline. LiquidFrame intercepts the verified
+watermark Bitmap factory **before the stock watermark is drawn**, then renders a custom liquid-glass
+capsule directly onto the clean source photo. It does not paint a guessed rectangle over the finished
+JPEG or mistake arbitrary scene pixels for a watermark. In this path the original watermark group
+(text and logo included) is replaced as a whole by the new capsule.
 
 "Liquid Glass" here means a surface that does more than blur:
 
@@ -53,16 +54,15 @@ own typography, logo and metadata are left exactly as it drew them.
 | **Specular rim** | A hemispheric normal along the rounded edge, lit from two directions, giving two opposing highlights that rotate with the light. |
 | **Inner shadow** | A soft edge-anchoring shade, so the panel reads as a solid object rather than a sticker. |
 
-The module works on the two Xiaomi Camera builds it was reverse-engineered against; see
-[Limitations](#limitations-and-known-issues) for what that does and does not promise.
+The current hook targets MIUI Camera `1+6.4.000250.2`; see
+[Limitations](#limitations-and-known-issues) for the exact supported path and open gaps.
 
 ## Screenshots
 
 The companion app renders the material over a deliberately hostile backdrop — saturated colour
 fields with hard edges and fine grain — so the lens, dispersion and rim are judged against content
-that has structure to bend. The watermark below is composited exactly as Xiaomi Camera produces it
-(the panel is a pre-baked image the camera draws, with its labels on top), and the material is
-applied to that finished bitmap by the same optics the module runs.
+that has structure to bend. The images below are off-device material demonstrations comparing the
+baseline, frosting and refraction. They are not camera captures from the new watermark hook.
 
 | Baseline (panel as drawn) | Frosted (blur + tint, no lens) | Liquid glass (adds lens) |
 | --- | --- | --- |
@@ -84,11 +84,11 @@ as a prism on opposite edges rather than a uniform colour fringe:
 app/                    LSPosed module (the watermark hook)
   src/main/java/com/mouya/LiquidFrame/
     WatermarkHooks.kt     hook installation and the composite pipeline
-    DexKitHelper.kt       drives discovery, waits for the host Application
+    DexKitHelper.kt       legacy discovery component (not started by the current exact hook path)
     ConfigStore.kt        settings shared between the module and the camera process
     GlassConfig.kt        the camera-side view of those settings
     ConfigActivity.kt     settings UI: Compose + iOS-style glass, live preview
-    dex/DexScanner.kt     dependency-free DEX reader used to find the hook targets
+    dex/DexScanner.kt     legacy dependency-free DEX reader; current hook uses verified signatures
     glass/                the optics engine (no Android dependency)
       LiquidGlassOptics.kt  CPU port of the material
       GlassParams.kt        every quantity in the material
@@ -122,18 +122,21 @@ docs/                   reference renders
 ## Installation
 
 1. Build or download `app-debug.apk`, and install it.
-2. Enable the module in LSPosed and set its **scope to Xiaomi Camera only** (`com.android.camera`).
+2. Enable the module in LSPosed and set its **scope to the installed Xiaomi Camera package** (`com.android.camera` or `com.miui.camera`).
 3. Force-stop Xiaomi Camera, then reopen it.
 4. Take a photo with a watermark enabled.
 
-To confirm it ran, open the module's settings app: its log shows the detected panel geometry and
-the material's parameter values for the last capture.
+To confirm the current 6.4.000250.2 hook path was installed, check the module log for
+`hooked typed capture metadata` and `hooked real watermark output`. After taking a photo, look for
+`watermark factory: stock watermark replaced`. Missing metadata fields are intentionally omitted;
+they are not filled with guessed values.
 
 ## Configuration
 
-Open the module from the launcher. Settings are written to `/data/local/tmp/lf_config.txt`, which
-both the settings app and the camera process read, so a change applies to the next capture without
-restarting anything.
+Open the module from the launcher. Settings are stored in the app-private files directory
+and mirrored to `/data/local/tmp/lf_config.txt` for the camera process. The shared-file write may
+need root authorization; the settings page reports whether synchronization actually succeeded. A
+successful sync applies to the next capture without restarting the camera.
 
 The settings screen renders a **live preview** with the same optics the module uses, so the
 material can be judged and tuned without taking a photo. The controls are:
@@ -144,7 +147,7 @@ material can be judged and tuned without taking a photo. The controls are:
 | Refraction band height | Thickness of the refracting band along the silhouette. Too small reads as a hairline; too large warps the whole panel like a fisheye. |
 | Refraction strength | Peak displacement at the silhouette. Useful range is roughly 1–3× the band height. |
 | Blur | Frosting of the captured backdrop. Keep it low: heavy blur destroys the detail the lens is supposed to bend. |
-| Interior lift | Additive brightness across the panel. This is the readability knob for the camera's own labels. |
+| Interior lift | Additive brightness across the panel. This is the readability knob for the new capsule text. |
 | Tint | Strength of the tint painted over the refracted backdrop. |
 | Rim highlight | Strength of the specular edge. |
 | Inner shadow | Edge-anchoring shade. |
@@ -152,7 +155,7 @@ material can be judged and tuned without taking a photo. The controls are:
 | Depth effect | Leans the surface normal toward the centre so the glass reads as a dome. |
 | Chromatic aberration | Strength of the spectral split; `0` disables it. |
 | Adaptive | Scales tint, veil and rim against the scene's mean luminance. |
-| Preserve content | Keep the camera's own labels on top of the material. |
+| Capture metadata | Rebuilds the capsule from real capture fields; missing fields are omitted. |
 
 "Reset to defaults" restores the shipped values; "Copy log" puts the last run's diagnostics on the
 clipboard.
@@ -165,10 +168,10 @@ The optics are a port of the reference renderer used by the miuix ecosystem
 (Apache-2.0; attribution and upstream link are recorded in the `NOTICE` file). The same
 mathematics exists in two backends, because the two places it must run have different constraints:
 
-- **`app/glass/LiquidGlassOptics.kt`** — a CPU implementation on integer pixel buffers. Xiaomi
-  Camera composites a watermark while producing a JPEG: there is no hardware-accelerated canvas
-  and no live view hierarchy to sample, so the material is applied to the finished bitmap. This
-  file has **no Android dependency at all**, which is what makes the optics testable off-device.
+- **`app/glass/LiquidGlassOptics.kt`** — a CPU implementation on integer pixel buffers. The
+  current hook applies it to a cropped region of the clean source photo inside the camera's
+  watermark Bitmap factory, before the stock watermark is drawn. This file has **no Android
+  dependency at all**, which is what makes the optics testable off-device.
 - **`gallery/glass/Lens.kt`** — an AGSL `RuntimeShader`, applied as a live `RenderEffect` chain
   through miuix's backdrop engine. This is the real-time path used by the companion app.
 
@@ -199,14 +202,14 @@ a 300 px glass uses a 20 px band with a 60 px displacement.
 
 ### Why a companion app exists
 
-The material's real-time form cannot be injected into Xiaomi Camera. Both reverse-engineered
-camera builds are **classic View applications with no Compose runtime**: a scan of their DEX
-string tables finds zero `androidx/compose` references (only `Lmiux/...` View classes). Hosting a
-Compose UI inside them would mean shipping the entire Compose runtime into the camera process.
+The material's real-time form cannot be injected into Xiaomi Camera. The inspected camera DEX is a **classic View application with no Compose runtime**: its string
+table contains no `androidx/compose` references (only `Lmiux/...` View classes). Hosting a
+Compose UI inside the camera process would mean shipping the entire Compose runtime into it.
 
-So the project is split: the module applies the material on the CPU to the finished bitmap, and
-the companion app hosts it in real time over miuix components — including a floating bottom
-navigation bar whose rim visibly bends the content drifting past behind it.
+So the project is split: the module applies the material on the CPU to the source photo Bitmap
+inside the camera's capture pipeline, and the companion app hosts it in real time over miuix
+components — including a floating bottom navigation bar whose rim visibly bends the content
+drifting past behind it.
 
 The companion app builds on [`miuix`](https://github.com/compose-miuix-ui/miuix) (Xiaomi's
 open-source design system, Apache-2.0). `miuix-blur` supplies the backdrop engine — graphics-layer
@@ -217,73 +220,85 @@ provides.
 
 ## How the hook works
 
-Everything below was established by disassembling the target APKs. The pipeline, for
-`com.android.camera` `1+6.4.000250.2` (the HyperOS 4 port for the Xiaomi 10) and cross-checked
-against `6.4.000370.0` (Xiaomi 13):
+The current implementation targets the supplied disassembly of **MIUI Camera `1+6.4.000250.2`**
+(`versionCode 740002502`). It no longer treats `Fe/a->j(...)` as the finished photo and no longer
+walks arbitrary object graphs looking for numbers that happen to resemble EXIF values.
 
+### Real capture metadata
+
+```text
+CaptureResult / TotalCaptureResult
+        │
+        ▼
+E5/c.b(CaptureResult) -> la/b
+  SENSOR_EXPOSURE_TIME  -> exposure ns
+  LENS_APERTURE         -> aperture
+  La6/N.b(result)       -> ISO
+  La6/O.c(result)       -> 35mm-equivalent focal length
+        │
+        ▼
+E5/c.c(LR9/o)
+  combines result + LR9/p.D:Location + LR9/o.I:timestamp(ms)
+        │
+        ▼
+la/a typed capture record
+  f:S  focal length (35mm equivalent)
+  g:F  aperture
+  h:J  exposure time (ns)
+  i:I  ISO
+  j:J  capture timestamp (ms)
+  k:Location GPS
+        │
+        ▼
+E5/b.h(la/a, boolean, int)
+  LiquidFrame ThreadLocal snapshot
+        │
+        ▼
+com.xiaomi.cam.watermark.b.c(..., Bitmap srcBitmap, ...): Bitmap
+  stock watermark renderer bypassed
+        │
+        ▼
+custom capsule rendered on source photo Bitmap
 ```
-LE5/b->h(...)                          app side "processWatermark": lifts the I420 frame
-                                       into a full-size photo Bitmap
-watermark/b->b(Application, Bitmap, Dc/b, I) -> Bitmap
-watermark/b->c(b, Context, Bitmap, Dc/b, I, String, I) -> Bitmap
-watermark/c->c(Context, Bitmap, Dc/b, I, Cc/a, String, Z,
-               PorterDuff$Mode, String, o9/O) -> Bitmap
-Fe/a->j(Fe/a, Bitmap src, ColorSpace, I, I, String, I) -> Bitmap     <-- the composite
-```
 
-`Fe/a->j` creates **one** output bitmap, blits the photo into it, and draws the watermark element
-tree over it in painter order. Two consequences drive the design:
+`CaptureMeta` accepts only those typed fields and validates their ranges. Exposure nanoseconds are
+converted to seconds; the capture timestamp is interpreted as Unix milliseconds; GPS is accepted
+only as a valid `Location`. Missing or invalid values stay absent — no current-time fallback, random
+number, frame counter, or arbitrary field scan is used.
 
-1. The output bitmap is the **full photo with the watermark already composited**, so the pixels
-   behind the panel are the scene itself. The glass refracts real photo content without the module
-   ever needing to reach for the photo bitmap separately.
-2. There is **no canvas-level scale factor**. dp values in the per-style `config.json` are
-   multiplied by `min(photoW, photoH) / 1080` once at layout time, after which every element is
-   already in absolute output pixels.
+### Watermark replacement point
 
-The module therefore post-processes the finished composite. Three hooks are installed:
+`E5/b.h(la/a, boolean, int)` is the still-photo watermark processing entry point in this build. It
+calls `com.xiaomi.cam.watermark.b.b(Application, Bitmap, Dc/b, int)`, a wrapper that calls the static
+`com.xiaomi.cam.watermark.b.c(b, Context, Bitmap, Dc/b, int, String, int) -> Bitmap`. That method
+creates `com.xiaomi.cam.watermark.c` and enters Xiaomi's original watermark rendering path.
 
-| Hook | Purpose |
-| --- | --- |
-| `pe.o-><init>(Bitmap)` | Called once per render by `Fe/a->j` with the bitmap everything is drawn into. Captures the live destination. |
-| `pe.o->h(FFFF, Paint)` | The element tree's `Canvas.drawRect`, i.e. the background panel. Only two callers exist in the whole app, both background draws; the flat canvas clear is a separate `Canvas.drawColor` and never reaches here. |
-| `Fe/a->j` | The composite. Its returned bitmap is post-processed in place. |
+LiquidFrame hooks the exact static `b.c(...)` method, guarded by the active `E5/b.h` ThreadLocal
+capture context. Its third argument is the source photo Bitmap. The hook bypasses the stock renderer,
+draws the replacement capsule onto the source photo, and returns it. If copying or rendering fails,
+it leaves the hook result unset so the original Xiaomi method proceeds (fail-open).
 
-Two details are easy to get wrong and are handled explicitly:
+This is not post-processing erasure: the old watermark is not first baked into the JPEG and then
+covered by an opaque patch. `Fe/a->j(...)` rasterizes a `Fe/a` watermark layer tree into a Bitmap; in
+the relevant `WatermarkRemover.getWatermarkData(...)` flow it can create a blank canvas for the layer,
+so it is not a stable handle to the final photograph. Treating that scratch Bitmap as the source photo
+was the wrong target.
 
-- **The rectangle passed to `pe.o->h` is element-local — always `(0, 0, w, h)`.** Absolute
-  placement lives in `Canvas.translate` calls made by the parent group, so the rectangle is mapped
-  through the canvas's own matrix before use.
-- **Background panels are pre-rendered WebPs**, not drawn primitives
-  (`assets/watermarks/<style>/<id>/icon_background_{light,dark}_blur.webp`). The corner radius is
-  baked into the WebP's alpha plus `rect_params.rect_radius` in the style's `config.json`, so the
-  module **measures** the radius from the panel's own silhouette rather than assuming it.
+`WatermarkRemover.getWatermarkData(Bitmap, Fe/a, ...)` returns a `WatermarkRemover$b` structure
+(status, rectangle/region and image-byte data), not a Bitmap. It is used for watermark-region
+identification/movement and must not be treated as the final photo or as a replaceable Bitmap.
 
-Because obfuscated names can change between camera builds, the panel is also recoverable from the
-pixels alone: `PanelScan` looks for a **horizontally uniform bar with hard edges** — the shape a
-blurred background WebP leaves behind — and then confirms it with `hasLabelDetail`, which requires
-the dark columns of actual text to arrive in runs. A bright strip of sky satisfies the first test
-and fails the second, so a plain patch of scene is not mistaken for a watermark. The scan runs on
-a stride-sampled grid, so it costs a few thousand reads instead of a full-resolution copy. If a
-future build renames the hooked classes, the module still finds the panel.
+### Scope
 
-Hook targets are discovered at runtime by **`app/src/main/java/com/mouya/LiquidFrame/dex/`**, a
-dependency-free DEX reader in this repository. Parsing the dex tables of the camera's own APK
-recovers the structure the hook needs — class name, superclass, declared method signatures and
-declared field types — and two shapes are then matched:
-
-- the **canvas wrapper**: a class with a `<init>(Bitmap)`, a `drawRect`-shaped method
-  (`void`, four `float`s and a `Paint`) and a declared `Canvas` field;
-- the **composite**: a static method taking `(Bitmap, ColorSpace, int, int, String, int)` and
-  returning `Bitmap`.
-
-This replaces an earlier attempt to use [DexKit](https://github.com/LuckyPray/DexKit), which could
-not be consumed by AGP 9's built-in Kotlin support and left the module hardcoded to `Fe.a` and
-`pe.o` — names that only exist in one camera build. The scan runs on a background thread (it reads
-the whole APK, so it must never touch the main thread), and installation is not blocked on it: the
-known-good names are hooked first so a shot taken immediately still works, and the discovered
-names are hooked when the scan lands. Panel detection is independent of all of this — see
-`PanelScan` above. See `hyperceiler-findings.md` for the reverse-engineering analysis.
+- Hook compatibility depends on this build's obfuscated names and signatures: `E5.b#h(la.a,
+  boolean, int)` and `com.xiaomi.cam.watermark.b#c(...)`. Nearby version numbers do not prove
+  compatibility; re-check the target APK.
+- This hook covers the `E5/b.h` Bitmap watermark path. HEIF/MIVI3 or other direct metadata/byte-stream
+  paths may bypass this Bitmap factory and are not claimed as supported here.
+- The original watermark is replaced as a whole, including its text and logo. The new capsule is
+  rebuilt from available capture metadata and the module's optional logo assets.
+- Runtime behaviour still needs device validation: confirm the hook is called by the desired mode
+  and compare the displayed fields against the saved photo's EXIF.
 
 ## Building
 
@@ -310,49 +325,37 @@ CI builds `:app` only. `gallery/` needs `compileSdk 37`, so it is built locally,
 
 ## Troubleshooting
 
-**Nothing changed in the photo.** Check the module's log (open its settings app). Likely causes, in
-order:
+**The original watermark is still present.** Check that the LSPosed scope includes the actual camera
+package (`com.android.camera` or `com.miui.camera`), force-stop and reopen the camera, and look for
+`hooked typed capture metadata` plus `hooked real watermark output` in the module log.
 
-- The module is not scoped to `com.android.camera`. LSPosed scoping is the most common cause.
-- Xiaomi Camera was not force-stopped after enabling the module.
-- The log says `skip: no watermark panel found`. This build's watermark layout is not one the
-  scanner recognises — please open an issue with the log and the watermark style you used.
-- The watermark style you selected uses an opaque background rather than a translucent one. The
-  module replaces the camera's background panel; styles that draw no panel have nothing to replace.
+**No `watermark factory` log appears.** The selected capture mode may not use the `E5/b.h` Bitmap
+watermark path, or the camera method signature may have changed. Verify the camera build and provide
+the full module log.
 
-**The panel turns grey or loses its texture.** The material is being applied to a panel the camera
-baked at full opacity in a way the classifier did not expect. Note the style in an issue.
+**A metadata field is missing.** This is deliberate fail-closed behaviour: a field is omitted unless
+it came from the current capture record. Compare the capsule with the saved photo's EXIF and note the
+capture mode, file format (JPEG/HEIF), and camera version.
 
-**The labels disappeared.** Turn on "Preserve content". The module only keeps labels it can
-identify as content, which requires the panel background to be reasonably flat; a photographic
-panel has no flat tone to distinguish labels from.
-
-**The gallery app shows no glass.** It requires API 33+ for `RuntimeShader`. Below that it draws
-without the material by design rather than crashing.
+**The photo looks wrong or capture slows down.** Turn off the module master switch to restore the
+stock camera path, then report the original photo, module log, and camera version. Use the original
+photo file rather than a screenshot for pixel-level diagnosis.
 
 ## Limitations and known issues
 
-- **Hook targets are discovered at runtime, not hardcoded.** A small dependency-free DEX reader
-  (`dex/DexScanner.kt`) parses the camera APK's own dex tables and matches two structural shapes:
-  the canvas wrapper (a `<init>(Bitmap)`, a `drawRect`-shaped method, a declared `Canvas` field) and
-  the composite (a static `(Bitmap, ColorSpace, int, int, String, int) -> Bitmap`). This is the same
-  goal as the approach [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler) takes for its camera
-  hooks — their own comment in `UnlockLeica.kt` is *"跨一个大版本就需要改一下特征点"* (every major
-  version needs its signature points changed). If the scan cannot run or finds nothing, the module
-  falls back to the known obfuscated names from the reverse-engineered builds. See
-  `hyperceiler-findings.md` for the full analysis.
-- **Not yet verified on a physical device end to end.** The optics are verified off-device by
-  rendering to images and inspecting them; the hook's runtime behaviour needs log confirmation on
-  the target phone.
-- **The companion app's default material values are a starting point.** They were calibrated
-  against the reference's Apple comparison, but the right values depend on the host palette and
-  wallpaper — use the in-app tuner.
-- **Overlay surfaces in the companion app are not glass.** Dialogs and bottom sheets dim or cover
-  the backdrop, so the material would have nothing to refract. This is deliberate, and documented
-  in-app.
-- **Only the background panel is replaced.** The camera's typography and logos are preserved by
-  design; this is not a watermark editor.
-- **Root and LSPosed are required.** There is no non-root path to modify another app's bitmap.
+- **Implemented against one disassembled build:** MIUI Camera `1+6.4.000250.2`
+  (`versionCode 740002502`). Obfuscation/signature changes can make the hook miss.
+- **Bitmap watermark path first.** HEIF/MIVI3, RAW, or any other route that bypasses
+  `E5/b.h -> watermark/b.c` is not yet covered; watermark replacement is not guaranteed there.
+- **No Android build or device test was possible in this environment.** Building requires JDK 21,
+  Gradle 9.8.0, AGP 9.4.1 and Android SDK platform 37. The SDK is absent here and the Gradle Wrapper
+  download failed because network access was unavailable. This delivery is a static source repair;
+  build locally or in CI before installation.
+- **The original watermark is replaced as a whole.** Its text and logo are not preserved; the new
+  capsule displays fields available in the current capture record.
+- **Some capture fields may be unavailable.** Camera2 capabilities, shooting mode, or Xiaomi's
+  internal adapter may omit a CaptureResult field. The module omits it instead of inventing a value.
+- **Root and LSPosed are required.** The modification operates inside the camera process.
 
 ## Credits and licensing
 

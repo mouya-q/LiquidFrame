@@ -3,3 +3,6 @@ build/
 .gradle/
 .idea/
 local.properties
+app/keystore/
+keystore.properties
+*.keystore

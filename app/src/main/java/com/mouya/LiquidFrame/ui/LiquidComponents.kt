@@ -19,6 +19,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -97,23 +99,44 @@ fun GlassCard(
 fun SettingSection(
     title: String,
     modifier: Modifier = Modifier,
+    collapsible: Boolean = false,
+    initiallyExpanded: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    var expanded by remember(title) { mutableStateOf(initiallyExpanded) }
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            title.uppercase(Locale.ROOT),
-            color = textSecondary(),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.6.sp,
-            modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
-        )
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .liquidGlassCard(shape = LiquidShapes.compact, cornerRadius = 16.dp, glass = glassContainer()),
-            content = content,
-        )
+                .then(if (collapsible) Modifier.clickable { expanded = !expanded } else Modifier)
+                .padding(start = 4.dp, end = 4.dp, bottom = 8.dp, top = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title.uppercase(Locale.ROOT),
+                color = textSecondary(),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.6.sp,
+                modifier = Modifier.weight(1f),
+            )
+            if (collapsible) {
+                Text(
+                    if (expanded) "⌃" else "⌄",
+                    color = textSecondary(),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+        if (!collapsible || expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .liquidGlassCard(shape = LiquidShapes.compact, cornerRadius = 16.dp, glass = glassContainer()),
+                content = content,
+            )
+        }
     }
 }
 

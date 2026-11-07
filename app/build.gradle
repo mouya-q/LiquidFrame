@@ -8,6 +8,16 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
+// Release signing is supplied by the developer's local Gradle properties or environment.
+// Never commit a private keystore or its passwords to the source tree.
+def lfSigning = { key -> project.findProperty(key) ?: System.getenv(key) }
+def lfStorePath = lfSigning('LIQUIDFRAME_KEYSTORE')
+def lfStorePassword = lfSigning('LIQUIDFRAME_KEYSTORE_PASSWORD')
+def lfKeyAlias = lfSigning('LIQUIDFRAME_KEY_ALIAS')
+def lfKeyPassword = lfSigning('LIQUIDFRAME_KEY_PASSWORD')
+def lfStoreFile = lfStorePath ? file(lfStorePath) : null
+def lfHasReleaseSigning = lfStoreFile?.isFile() && lfStorePassword && lfKeyAlias && lfKeyPassword
+
 android {
     namespace "com.mouya.LiquidFrame"
     compileSdk 37
@@ -21,16 +31,14 @@ android {
     }
 
     signingConfigs {
-        create("custom") {
-            // A fixed keystore committed to the repository, so every CI build signs
-            // with the same key and updates install over previous versions without
-            // an uninstall. The debug and release builds share it, so any artifact
-            // of any build type can replace any other.
-            storeFile file("keystore/liquidframe-release.p12")
-            storePassword "liquidframe2026"
-            keyAlias "liquidframe"
-            keyPassword "liquidframe2026"
-            storeType "PKCS12"
+        if (lfHasReleaseSigning) {
+            create("custom") {
+                storeFile lfStoreFile
+                storePassword lfStorePassword
+                keyAlias lfKeyAlias
+                keyPassword lfKeyPassword
+                storeType "PKCS12"
+            }
         }
     }
 
@@ -38,11 +46,13 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.custom
+            if (lfHasReleaseSigning) {
+                signingConfig signingConfigs.custom
+            }
         }
         debug {
             minifyEnabled false
-            signingConfig signingConfigs.custom
+            // Debug APKs always use Android's standard debug key, never the release key.
         }
     }
 

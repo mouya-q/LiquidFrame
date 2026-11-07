@@ -94,15 +94,12 @@ object LiquidGlassOptics {
     }
 
     /**
-     * Replaces a flat watermark panel with liquid glass, directly in a finished bitmap.
+     * Renders a rounded liquid-glass panel into a local photo-pixel buffer.
      *
-     * This is the path the camera uses. The panel the camera draws is an opaque rectangle of
-     * pre-baked background, and the bitmap it was drawn into already holds the photo, so:
-     *
-     *  - the backdrop needs no external source — the pixels under the panel *are* the photo;
-     *  - the corner radius is measured from the panel instead of assumed;
-     *  - the result is composited through a rounded-rect mask, so the square panel the camera
-     *    drew comes back as the glass silhouette.
+     * The active camera path supplies a crop from the clean source photo and calls this with
+     * `panelIsOpaquePlate = false`; the capsule is a new overlay, not a stock watermark plate.
+     * The same renderer remains usable by the legacy post-composite path, where an opaque plate
+     * may be supplied and `panelIsOpaquePlate` can be true.
      *
      * @param pixels straight ARGB, width * height, modified in place
      * @param panel  panel geometry in bitmap pixels

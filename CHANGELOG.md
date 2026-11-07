@@ -1,29 +1,28 @@
 # Changelog
 
-## 2.0.0 — Source-level watermark interception, EXIF value-range scan, UI rebuild
+## 2.0.0 — Capture-linked metadata and pre-render watermark replacement
 
-### Source-level original watermark suppression
-- Reverse-engineered the camera 6.4.000250.2 watermark pipeline at the smali level. Confirmed the white bar originates from `Fe/a.b()`, which calls `Canvas.drawColor()` using the color stored in `Fe/b.a` before blitting element bitmaps.
-- New `hookBlitMethod()` hooks `Fe/a.b()` in `beforeHookedMethod`, reflectively locating the `Fe/b` data object (field `i` on 6.4.x) and zeroing its int color field (`Fe/b.a`). This prevents the solid fill from being drawn at the source, while element glyphs and logos still blit normally.
-- Rewrote the `processCapsule` eradicate logic with a three-tier fallback:
-  - **src-rebuild** (primary): when `srcPhoto` is available, rebuilds the entire bottom region row-by-row from the original photograph, scaled to match the output canvas. The most reliable repair — no pixel scanning or color detection dependency.
-  - **strip-fill** (fallback 1): repaints the appended fill strip with the detected factory fill color when `srcPhoto` is unavailable.
-  - **over-photo** (fallback 2): samples surrounding scene colors and fills the plate region when neither source nor strip is available.
-- Removed the ineffective `plate-flat` (`eraseFlatRegion`) and `plate-patch` modes.
+### Real capture metadata
+- Replaced arbitrary object-graph numeric scanning with fields copied by MIUI Camera into `la/a` from Camera2/Xiaomi capture metadata.
+- Reads 35mm-equivalent focal length, aperture, exposure nanoseconds, ISO, capture timestamp milliseconds, and `Location` from the exact typed record passed to `E5/b.h`.
+- Invalid or unavailable values are omitted. The renderer no longer substitutes the current clock time or guesses EXIF from unrelated numbers.
 
-### EXIF extraction — value-range numeric field scan
-- `scanNumericFields()`: a BFS traversal of the composite call's argument object graph (depth 4) that classifies `Number`-typed fields by EXIF plausible value ranges — ISO (integer 25–102400), aperture (double 0.95–22 or int×10), exposure (double 1e-6–30, with ns/µs conversion), focal length (double 0.5–1000). The first plausible match per category wins; redundant matches are suppressed.
-- Integrated as the final fallback in `extractMeta()`, after `readExifHints()` (method-name matching) and `deepExifScan()` (depth-2 field-type matching). This addresses the 6.4.x full-obfuscation case where method names are single letters and completely uninformative.
+### Watermark pipeline
+- Added an exact, capture-context-guarded hook for `com.xiaomi.cam.watermark.b.c(...) -> Bitmap` in the supplied `1+6.4.000250.2` APK.
+- Replaces the original watermark before the stock renderer runs by drawing the new glass capsule onto the source photo Bitmap; avoids guessed post-photo erase rectangles.
+- Removed installation of the old `Fe/a.j(...)` / generic composite discovery path. The legacy code remains isolated but is not activated by the current install path.
+- Added fail-open behaviour: if the source Bitmap cannot be copied or the replacement render is skipped, the camera's original watermark renderer continues.
 
-### Full logging system
-- `LFLogger.kt`: a new 116-line logging system with five levels (VERBOSE/DEBUG/INFO/WARN/ERROR), no rate limiting, a 2000-entry in-memory ring buffer, and a 512 KB file at `/data/local/tmp/lf_log.txt`.
-- `WatermarkHooks.kt`: removed the old `LOG_RATE_LIMIT` constant and the 36-line rate-limited `log()` function; replaced with `LFLogger.d()` + `XposedBridge.log()` proxy. All hook pipeline events are now logged without suppression.
-- `CapsuleRenderer.kt`: `scanNumericFields` reports matched values via `LFLogger.v/i/w`.
+### UI and configuration
+- Grouped settings into collapsible categories and made glass tuning sections foldable.
+- Removed duplicate capsule settings from the glass tuning page; clarified that preview text preservation is preview-only because capture output replaces the full stock watermark group.
+- Fixed capsule position persistence so `center` and `right` are not forced back to `left`.
 
-### UI rebuild — flat layout, live preview, log page
-- Removed the Glass page tab switcher (`glassTab` state, `glassTabs` list, tab UI, `when(glassTab)` branches). The Material, Capsule, and Detail sections are now flat-laid in a single scrollable column.
-- Capsule parameter `LaunchedEffect` now calls `schedulePreview()` so changes to logo, scale, toggles, and model text are reflected in the live preview immediately (previously skipped to save a render).
-- New `LiquidPage.Log` page in the bottom navigation bar with a Description icon. Displays the last 200 log lines with ERROR/WARN/INFO color highlighting, plus copy-to-clipboard and clear-log actions.
+### Signing and documentation
+- Removed embedded Release signing secrets from Gradle configuration. Release credentials are read from local Gradle properties or environment variables; Debug uses the normal debug key.
+- Added `SIGNING_SETUP.md` and ignored local keystores/properties.
+- Rewrote hook documentation to match the inspected APK and called out HEIF/MIVI3 and other paths that remain unverified.
+- Android compilation and on-device testing are still pending; see `ANALYSIS_REPORT.md`.
 
 ## 1.9.23 — Adapt to camera 6.4.x composite signature
 

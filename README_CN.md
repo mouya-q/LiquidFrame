@@ -35,7 +35,7 @@ LSPosed 模块：将小米相机照片水印的背景替换为 Apple 风格**液
 
 ## 功能
 
-小米相机为每张照片合成水印：带设备型号、日期、常带徕卡或品牌标识的背景面板。LiquidFrame 在合成完成后拦截位图，仅重建**背景面板**为折射玻璃表面——相机自己的文字、Logo 与元数据原样保留
+小米相机会在照片输出链路中生成水印。LiquidFrame 在已确认的照片水印 Bitmap 工厂处拦截原相机渲染，并在**原水印绘制前**把自定义液态玻璃胶囊直接绘制到干净照片上。这样不会在成片上用纯色块覆盖旧水印，也不会把普通场景像素误判成水印区域。当前实现会整体替换该路径中的原水印（包括原文字与 Logo），再按设置绘制新胶囊。
 
 这里的"液态玻璃"指不止于模糊的表面：
 
@@ -47,11 +47,11 @@ LSPosed 模块：将小米相机照片水印的背景替换为 Apple 风格**液
 | **镜面边缘** | 圆角边缘的半球法线，双向受光，产生随光线旋转的两个对向高光 |
 | **内阴影** | 柔和的贴边阴影，使面板读作实体而非贴纸 |
 
-模块在其逆向工程所针对的两个小米相机构建上工作；承诺范围见[限制](#限制与已知问题)
+当前 Hook 以 MIUI Camera `1+6.4.000250.2` 为目标；兼容范围与未覆盖路径见[限制](#限制与已知问题)
 
 ## 截图
 
-伴生应用将材质渲染在刻意严苛的背景上——饱和色块、硬边、细颗粒——使透镜、色散与边缘高光对着有结构可弯曲的内容受检。下方水印按小米相机的产出方式合成（面板是相机绘制的预烘焙图片，其上叠放标签），材质由模块运行的同一套光学施加于该成品位图
+伴生应用将材质渲染在刻意严苛的背景上——饱和色块、硬边、细颗粒——使透镜、色散与边缘高光对着有结构可弯曲的内容受检。下图是材质算法的离设备示意渲染，用于比较面板基线、磨砂和折射效果；不是本次水印 Hook 的实机输出截图。
 
 | 基线（面板原样） | 磨砂（模糊 + 着色，无透镜） | 液态玻璃（加入透镜） |
 | --- | --- | --- |
@@ -69,11 +69,11 @@ LSPosed 模块：将小米相机照片水印的背景替换为 Apple 风格**液
 app/                    LSPosed 模块（水印 Hook）
   src/main/java/com/mouya/LiquidFrame/
     WatermarkHooks.kt     Hook 安装与合成管线
-    DexKitHelper.kt       驱动发现，等待宿主 Application
+    DexKitHelper.kt       旧版动态发现组件（当前精确 Hook 路径不启动它）
     ConfigStore.kt        模块与相机进程共享的设置
     GlassConfig.kt        相机侧的设置视图
     ConfigActivity.kt     设置 UI：Compose + 玻璃质感，实时预览
-    dex/DexScanner.kt     无依赖 DEX 读取器，用于寻找 Hook 目标
+    dex/DexScanner.kt     旧版无依赖 DEX 读取器；当前构建按已验证签名安装 Hook
     glass/                光学引擎（无 Android 依赖）
       LiquidGlassOptics.kt  材质的 CPU 移植
       GlassParams.kt        材质中的每个量
@@ -105,15 +105,15 @@ docs/                   参考渲染图
 ## 安装
 
 1. 构建或下载 `app-debug.apk` 并安装
-2. 在 LSPosed 中启用模块，**作用域仅设小米相机**（`com.android.camera`）
+2. 在 LSPosed 中启用模块，**作用域设为设备实际安装的小米相机包名**（`com.android.camera` 或 `com.miui.camera`）
 3. 强停小米相机后重开
 4. 开启水印拍照
 
-确认运行：打开模块设置应用，日志显示最近一次拍摄的检测面板几何与材质参数值
+确认 Hook 已安装：查看模块日志是否出现 `hooked typed capture metadata` 与 `hooked real watermark output`。完成一张拍摄后，若出现 `watermark factory: stock watermark replaced`，表示本次命中了替换路径。缺失的拍摄字段会留空，不再用猜测值补齐。
 
 ## 配置
 
-从桌面打开模块。设置写入 `/data/local/tmp/lf_config.txt`，设置应用与相机进程共读，变更即时作用于下一次拍摄，无需重启任何东西
+从桌面打开模块。设置先保存在应用私有目录，并镜像同步到相机进程可读取的 `/data/local/tmp/lf_config.txt`。共享文件写入可能需要 Root 授权；设置页会显示实际同步状态。成功同步后，下一次拍摄即可应用，无需重启相机。
 
 设置页用与模块相同的光学渲染**实时预览**，无需拍照即可评判与调校材质。控件：
 
@@ -123,7 +123,7 @@ docs/                   参考渲染图
 | 折射带高度 | 沿轮廓的折射带厚度。过小读作发丝线；过大把整个面板扭曲成鱼眼 |
 | 折射强度 | 轮廓处的峰值位移。有效范围约为折射带高度的 1–3 倍 |
 | 背景模糊 | 捕获背景的磨砂。保持低值：重模糊会摧毁透镜本要弯曲的细节 |
-| 内部提亮 | 面板全域的加性提亮。相机自身标签的可读性旋钮 |
+| 内部提亮 | 面板全域的加性提亮。新胶囊文字的可读性旋钮 |
 | 着色 | 覆盖在折射背景上的着色强度 |
 | 边缘高光 | 镜面边缘强度 |
 | 内阴影 | 贴边阴影 |
@@ -131,7 +131,7 @@ docs/                   参考渲染图
 | 立体感 | 将表面法线向中心倾斜，使玻璃读作穹顶 |
 | 色散 | 光谱分裂强度；`0` 为关闭 |
 | 自适应明暗 | 按场景平均亮度缩放着色、罩纱与边缘 |
-| 保留原有文字 | 相机自己的标签保留在材质之上 |
+| 拍摄元数据 | 从本次拍摄的强类型记录中重建胶囊；字段缺失时不猜测 |
 
 "恢复默认参数"还原出厂值；"复制诊断日志"将最近运行诊断放入剪贴板
 
@@ -161,52 +161,71 @@ docs/                   参考渲染图
 
 ### 为何需要伴生应用
 
-材质的实时形态无法注入小米相机。两个被逆向的相机构建均为**无 Compose 运行时的经典 View 应用**：对其 DEX 字符串表的扫描找不到任何 `androidx/compose` 引用（只有 `Lmiux/...` View 类）。向相机进程托管 Compose UI 意味着向其塞入整个 Compose 运行时
+材质的实时形态无法注入小米相机。本次检查的相机 DEX 是**经典 View 应用**：未发现 `androidx/compose` 运行时引用（存在 `Lmiux/...` View 类）。向相机进程托管 Compose UI 意味着向其塞入整个 Compose 运行时
 
-因此项目拆分：模块在 CPU 上对成品位图施加材质，伴生应用在 miuix 组件上实时承载——包括一个边缘高光可见地弯曲其后飘过内容的悬浮底栏
+因此项目拆分：模块在相机拍摄流水线的照片源 Bitmap 上用 CPU 施加材质，伴生应用在 miuix 组件上实时承载——包括一个边缘高光可见地弯曲其后飘过内容的悬浮底栏
 
 伴生应用基于 [`miuix`](https://github.com/compose-miuix-ui/miuix)（小米开源设计系统，Apache-2.0）。`miuix-blur` 提供背景引擎——graphics-layer 捕获、模糊级联、`runtimeShaderEffect` 扩展点——以及 `buildBloomStrokeShader`，正是此材质需要的镜面边缘模型。miuix 刻意留给应用的是**透镜**，即 `gallery/glass/` 所提供者
 
 ## Hook 原理
 
-以下全部由反汇编目标 APK 确立。管线针对 `com.android.camera` `1+6.4.000250.2`（HyperOS 4 移植版，小米 10），并与 `6.4.000370.0`（小米 13）交叉验证：
+当前 Hook 针对上传的相机反编译产物 **MIUI Camera `1+6.4.000250.2`**（`versionCode 740002502`）。不再使用旧版 `Fe/a->j` 成片猜测，也不再从 Bitmap 参数或对象字段中遍历任意数字来推断 EXIF。
 
+### 真实拍摄参数链
+
+```text
+CaptureResult / TotalCaptureResult
+        │
+        ▼
+E5/c.b(CaptureResult) -> la/b
+  SENSOR_EXPOSURE_TIME  -> exposure ns
+  LENS_APERTURE         -> aperture
+  La6/N.b(result)       -> ISO
+  La6/O.c(result)       -> 35mm-equivalent focal length
+        │
+        ▼
+E5/c.c(LR9/o)
+  combines result + LR9/p.D:Location + LR9/o.I:timestamp(ms)
+        │
+        ▼
+la/a typed capture record
+  f:S  focal length (35mm equivalent)
+  g:F  aperture
+  h:J  exposure time (ns)
+  i:I  ISO
+  j:J  capture timestamp (ms)
+  k:Location GPS
+        │
+        ▼
+E5/b.h(la/a, boolean, int)
+  ThreadLocal capture snapshot in LiquidFrame
+        │
+        ▼
+com.xiaomi.cam.watermark.b.c(..., Bitmap srcBitmap, ...): Bitmap
+  original watermark renderer is bypassed
+        │
+        ▼
+render custom capsule on source photo Bitmap
 ```
-LE5/b->h(...)                          相机侧 "processWatermark"：将 I420 帧
-                                       提升为全尺寸照片 Bitmap
-watermark/b->b(Application, Bitmap, Dc/b, I) -> Bitmap
-watermark/b->c(b, Context, Bitmap, Dc/b, I, String, I) -> Bitmap
-watermark/c->c(Context, Bitmap, Dc/b, I, Cc/a, String, Z,
-               PorterDuff$Mode, String, o9/O) -> Bitmap
-Fe/a->j(Fe/a, Bitmap src, ColorSpace, I, I, String, I) -> Bitmap     <-- 合成
-```
 
-`Fe/a->j` 创建**一个**输出位图，将照片 blit 进去，再按绘制顺序叠加水印元素树。两个后果决定设计：
+`CaptureMeta` 只接受上述强类型字段和合法范围。曝光纳秒转秒，拍摄时间按毫秒解释；GPS 只接受 `Location` 对象和合法经纬度。字段没有返回或校验失败时，该项留空，不会以当前系统时间、随机数字、帧计数或普通对象字段补齐。
 
-1. 输出位图是**已合成水印的完整照片**，面板后的像素即场景本身。玻璃折射真实照片内容，模块无需另行获取照片位图
-2. **无画布级缩放因子**。各风格 `config.json` 中的 dp 值在布局时一次性乘以 `min(photoW, photoH) / 1080`，此后每个元素已在绝对输出像素中
+### 原水印渲染与替换点
 
-模块因此对成品合成做后处理。安装三个 Hook：
+`E5/b.h(la/a, boolean, int)` 是该构建的照片水印处理入口。其调用 `com.xiaomi.cam.watermark.b.b(Application, Bitmap, Dc/b, int)`；包装方法继续调用静态 `com.xiaomi.cam.watermark.b.c(b, Context, Bitmap, Dc/b, int, String, int)`，后者创建 `com.xiaomi.cam.watermark.c` 并进入小米原始水印渲染流程。
 
-| Hook | 用途 |
-| --- | --- |
-| `pe.o-><init>(Bitmap)` | 每次渲染由 `Fe/a->j` 调用一次，传入所有内容绘制进的位图。捕获实时目标 |
-| `pe.o->h(FFFF, Paint)` | 元素树的 `Canvas.drawRect`，即背景面板。全应用仅两个调用方，均为背景绘制；平面画布清除走单独的 `Canvas.drawColor`，不会到达这里 |
-| `Fe/a->j` | 合成本身。其返回的位图被就地后处理 |
+LiquidFrame 精确 Hook 静态 `b.c(...) -> Bitmap`，仅在 `E5/b.h` 的 ThreadLocal 拍摄上下文有效时生效。第三个参数是照片源 Bitmap。Hook 在这里绕过原水印渲染，将新胶囊绘制到源照片后返回。若复制/渲染失败，则不设置 Hook 结果，让小米原始方法继续运行，属于 fail-open；因此不会因为替换失败就返回一张猜测修补过的照片。
 
-两个易错细节被显式处理：
+这与后处理擦除不同：不会先把水印烤进 JPEG，再拿照片底部的某个矩形覆盖掉。旧版 `Fe/a->j(...)` 实际上用于把 `Fe/a` 水印布局树绘制到一个独立 Bitmap；在 `WatermarkRemover.getWatermarkData(...)` 对应流程中，它可创建空白画布并返回水印层图，不是稳定的最终成片 Bitmap。把它当成原图，会造成目标对象错位。
 
-- **传给 `pe.o->h` 的矩形是元素局部坐标——恒为 `(0, 0, w, h)`。** 绝对位置在父组的 `Canvas.translate` 调用中，矩形使用前须先经画布自身矩阵映射
-- **背景面板是预渲染 WebP，而非绘制图元**（`assets/watermarks/<style>/<id>/icon_background_{light,dark}_blur.webp`）。圆角烘焙在 WebP 的 alpha 与该风格 `config.json` 的 `rect_params.rect_radius` 中，模块**测量**面板自身轮廓的圆角而非假设
+`WatermarkRemover.getWatermarkData(Bitmap, Fe/a, ...)` 的返回类型是 `WatermarkRemover$b`，其内容包含状态、区域/矩形和图像字节等信息，不是 Bitmap。它用于水印区域识别/移动处理，不应被当作最终照片或可直接替换的 Bitmap。
 
-因混淆名可能随相机构建变化，面板也可仅凭像素恢复：`PanelScan` 寻找**硬边水平均匀条带**——模糊背景 WebP 留下的形状——再以 `hasLabelDetail` 确认，其要求真实文字的暗色列成串出现。明亮天空条带满足第一测而败于第二测，普通场景块不会被误认。扫描在跨步采样网格上运行，成本是几千次读取而非全分辨率拷贝。未来构建若改名 Hook 类，模块仍能找到面板
+### 当前边界
 
-Hook 目标在运行时由 **`app/src/main/java/com/mouya/LiquidFrame/dex/`** 发现——本仓库内的无依赖 DEX 读取器。解析相机自身 APK 的 dex 表恢复 Hook 所需结构——类名、超类、声明方法签名与声明字段类型——随后匹配两种形状：
-
-- **画布包装器**：含 `<init>(Bitmap)`、`drawRect` 形状方法（`void`、四个 `float`、一个 `Paint`）与声明 `Canvas` 字段的类
-- **合成**：静态方法，参数 `(Bitmap, ColorSpace, int, int, String, int)`，返回 `Bitmap`
-
-这取代了早期对 [DexKit](https://github.com/LuckyPray/DexKit) 的尝试——后者无法被 AGP 9 的内置 Kotlin 支持消费，且曾把模块硬编码到 `Fe.a` 与 `pe.o`——仅存在于单一相机构建的名字。扫描在后台线程运行（读取整个 APK，绝不碰主线程），安装不阻塞于它：已知可用名字先 Hook，立即拍照依然有效；发现的名字在扫描落地后补挂。面板检测独立于这一切——见上文 `PanelScan`。完整逆向分析见 `hyperceiler-findings.md`
+- Hook 依赖此 APK 的混淆类名和方法签名：`E5.b#h(la.a, boolean, int)`、`com.xiaomi.cam.watermark.b#c(...)`。其他相机版本需要重新反编译并校验签名，不能仅凭版本号相近就认为兼容。
+- 此 Hook 覆盖 `E5/b.h` 的 Bitmap 水印路径。HEIF/MIVI3 或其他直接写入元数据/字节流的路径可能绕过该 Bitmap 工厂；当前报告不宣称已经处理这些路径。
+- 当前是“整体替换原水印”，不是保留原水印文字的背景皮肤化。新胶囊从拍摄记录重绘型号、时间、EXIF 和 GPS；可选 Logo 使用模块资源。
+- 需要真机确认 Hook 是否被目标拍摄模式调用，并对比保存照片的真实 EXIF 与胶囊显示值。
 
 ## 构建
 
@@ -229,27 +248,24 @@ CI 仅构建 `:app`。`gallery/` 需要 `compileSdk 37`，故本地构建，不�
 
 ## 故障排查
 
-**照片毫无变化。** 检查模块日志（打开其设置应用）。按概率排序：
+**原水印没有被替换。** 确认 LSPosed 作用域包含实际相机包名（`com.android.camera` 或 `com.miui.camera`），强停相机后重开，并查看日志是否出现 `hooked typed capture metadata` 和 `hooked real watermark output`。
 
-- 模块未作用于 `com.android.camera`。LSPosed 作用域设置是最常见原因
-- 启用模块后未强停小米相机
-- 日志显示 `skip: no watermark panel found`。此构建的水印布局不在扫描器识别范围——请带日志与所用水印风格开 issue
-- 所选水印风格使用不透明背景而非半透明。模块替换相机的背景面板；不绘制面板的风格无可替换
+**没有 `watermark factory` 日志。** 当前拍摄模式可能没有进入 `E5/b.h` Bitmap 水印路径，或相机 APK 的混淆签名已变化。请先确认相机版本，再提供完整模块日志。
 
-**面板发灰或失去纹理。** 材质被施加于以分类器未预期方式全不透明烘焙的面板。开 issue 时注明风格
+**胶囊参数缺失。** 这是 fail-closed 设计：字段未从本次拍摄记录取得就不显示。请将胶囊与照片 EXIF 对比，并记录拍摄模式、格式（JPEG/HEIF）和相机版本。
 
-**标签消失。** 打开"保留原有文字"。模块仅保留能识别为内容的标签，这要求面板背景足够平坦；摄影式面板没有可区分标签的平坦底色
+**照片异常或拍摄变慢。** 关闭模块总开关以恢复原相机渲染路径，并提交原图、模块日志和相机版本；像素诊断请使用原始照片文件，不要用截图替代。
 
-**伴生应用无玻璃。** RuntimeShader 需要 API 33+。低于此版本按设计绘制无材质版本而非崩溃
+**伴生应用无玻璃。** RuntimeShader 需要 API 33+。低于此版本按设计绘制无材质版本而非崩溃。
 
 ## 限制与已知问题
 
-- **Hook 目标运行时发现，非硬编码。** 一个小体积无依赖 DEX 读取器（`dex/DexScanner.kt`）解析相机 APK 自身的 dex 表并匹配两种结构形状：画布包装器（`<init>(Bitmap)`、`drawRect` 形状方法、声明 `Canvas` 字段）与合成（静态 `(Bitmap, ColorSpace, int, int, String, int) -> Bitmap`）。与 [HyperCeiler](https://github.com/ReChronoRain/HyperCeiler) 相机 Hook 的目标相同——其在 `UnlockLeica.kt` 中的自注是"跨一个大版本就需要改一下特征点"。若扫描无法运行或无结果，模块回退到被逆向构建的已知混淆名。完整分析见 `hyperceiler-findings.md`
-- **尚未在实体设备上端到端验证。** 光学已通过渲染到图像并检查完成离设备验证；Hook 的运行时行为需在目标手机上以日志确认
-- **伴生应用的默认材质值仅是起点。** 已按参考的 Apple 对比图校准，但正确值取决于宿主调色板与壁纸——请使用应用内调校器
-- **伴生应用的浮层表面不是玻璃。** 对话框与底部弹层会调暗或遮挡背景，材质将无可折射。此为刻意设计，已在应用内说明
-- **仅替换背景面板。** 相机的文字与 Logo 按设计保留；这不是水印编辑器
-- **需要 Root 与 LSPosed。** 修改他人应用的位图无非 Root 路径
+- **当前仅按一个反编译构建实现：** MIUI Camera `1+6.4.000250.2`（`versionCode 740002502`）。类名/签名混淆变化会导致 Hook 不命中。
+- **Bitmap 水印路径优先。** HEIF/MIVI3、RAW 或其他不经过 `E5/b.h -> watermark/b.c` 的处理路径尚未完成 Hook，不能保证原水印被替换。
+- **尚未在当前运行环境完成 Android 构建和真机验证。** 构建需要 JDK 21、Gradle 9.8.0、AGP 9.4.1 与 Android SDK platform 37；本次环境无 Android SDK，且 Gradle Wrapper 下载因网络不可用失败。因此本次交付是源码静态修复，需在本地/CI 构建。
+- **整体替换原水印。** 原水印的文字和 Logo 不会保留；新胶囊显示本次拍摄记录中可用的字段。
+- **部分拍摄信息可能缺失。** Camera2 设备能力、模式、缓存或相机内部适配器可能不给出某项 CaptureResult；程序会省略字段，不填充猜测值。
+- **需要 Root 与 LSPosed。** 修改相机进程输出依赖 Xposed Hook。
 
 ## 致谢与许可
 

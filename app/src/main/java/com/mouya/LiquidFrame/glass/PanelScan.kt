@@ -3,12 +3,12 @@ package com.mouya.LiquidFrame.glass
 import kotlin.math.abs
 
 /**
- * Finds the watermark's background panel inside a finished photo bitmap.
+ * Legacy pixel scanner for locating a watermark panel inside a composited photo bitmap.
  *
- * Used as a fallback: normally the module takes the rectangle straight from the camera's own
- * `Canvas.drawRect` call, which is exact. But that hook depends on an obfuscated name that a
- * future camera build can rename, so the panel is also recoverable from the pixels alone —
- * and recovering it is what makes the module survive an app update.
+ * This scanner belongs to the previous post-composite hook path. The current 6.4.000250.2
+ * capture pipeline replaces the watermark before the stock renderer runs, so PanelScan is not
+ * invoked by the active install path. Keep it isolated until a future camera build needs a
+ * verified post-composite fallback.
  *
  * ## Why this does not use the alpha channel
  *

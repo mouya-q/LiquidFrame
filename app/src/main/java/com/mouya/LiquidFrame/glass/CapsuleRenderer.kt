@@ -6,7 +6,6 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.location.Location
-import com.mouya.LiquidFrame.LFLogger
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -18,22 +17,18 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
- * Pure-pixel helpers for the rebuilt capsule watermark: capture metadata extraction,
- * text layout, offscreen text raster, and colour repair of the erased stock plate.
+ * Pixel and layout helpers for the replacement capture capsule.
  *
- * The camera's own watermark (a pre-baked WebP plate plus glyph layers) is erased
- * from the finished composite and replaced with a fresh capsule placed inside the
- * photograph itself. The capsule carries up to four text lines: device name,
- * capture time, exposure parameters and GPS coordinates — each line coming from
- * a different source and each one disappearing on its own when that source is
- * unavailable, so a partial-extraction device still produces a clean shot.
+ * On the supported Xiaomi Camera 6.4.000250.2 still-photo path, WatermarkHooks intercepts
+ * the real source-photo Bitmap before Xiaomi's stock watermark renderer runs. This class
+ * formats only the typed metadata supplied by that hook, measures the replacement capsule,
+ * and rasterizes its text layer. It does not discover metadata by reflecting over arbitrary
+ * camera objects and does not erase an already-composited watermark.
  *
- * Design rules kept throughout:
- *  - never paint over real scene pixels unless the replacement colour provably
- *    matches its surroundings (repair routines bail out instead of guessing);
- *  - never throw: every reflective/IO path returns null or false on failure;
- *  - no shared mutable state, so concurrent composites in the camera process
- *    cannot corrupt each other.
+ * Design rules:
+ *  - missing capture fields remain absent; no current-time or numeric-guess fallback;
+ *  - layout/raster helpers return null or false when inputs cannot be trusted;
+ *  - per-capture inputs are immutable snapshots, avoiding shared mutable metadata state.
  */
 object CapsuleRenderer {
 
@@ -64,11 +59,11 @@ object CapsuleRenderer {
         val logoSizeScale: Float = 1.0f,
     )
 
+    /** Values read from the camera's typed capture context. Zero/null means unavailable. */
     class CaptureMeta(
         val captureMillis: Long,
         val location: Location?,
         val exif: ExifBits?,
-        val strings: List<String>,
     )
 
     class ExifBits(
@@ -169,360 +164,9 @@ object CapsuleRenderer {
     /** Immutable and thread-safe, so one shared instance serves every capture thread. */
     private val TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss", Locale.US)
 
-    private val TIME_RE = Regex(
-        "(\\d{4})[.\\-/](\\d{1,2})[.\\-/](\\d{1,2})(?:[ T](\\d{1,2}):(\\d{2})(?::(\\d{2}))?)?"
-    )
-
-    // ------------------------------------------------------------------
-    // Capture metadata extraction
-    // ------------------------------------------------------------------
-
-    /**
-     * Best-effort scan of the composite call site for capture metadata.
-     *
-     * The camera passes its whole watermark context through the composite's
-     * arguments: string constants, parameter objects, and — on most builds — the
-     * capture [Location]. Everything readable is collected here; anything that
-     * cannot be found simply stays null and its text line is omitted later.
-     */
-    fun extractMeta(thisObject: Any?, args: Array<Any?>?, now: Long): CaptureMeta {
-        val roots = ArrayList<Any>(8)
-        if (thisObject != null && isScannable(thisObject)) roots.add(thisObject)
-        val strings = ArrayList<String>(8)
-        if (args != null) {
-            for (a in args) {
-                when {
-                    a is String -> if (a.isNotBlank()) strings.add(a.trim())
-                    a != null && isScannable(a) -> roots.add(a)
-                }
-            }
-        }
-
-        var location: Location? = null
-        for (root in roots) {
-            location = location ?: findFieldValue(root, Location::class.java, 3)
-            if (location != null) break
-        }
-
-        // String fields of the context objects are worth scanning once too — the
-        // timestamp frequently lives there when it is not a direct argument.
-        for (root in roots) {
-            collectStringFields(root, 2, strings)
-        }
-
-        // EXIF: scan each root and also dig into nested parameter objects
-        // (depth 3 instead of 1), because 6.4.x wraps capture parameters in
-        // deeply-nested obfuscated wrapper classes.
-        var exif: ExifBits? = null
-        for (root in roots) {
-            if (exif != null) break
-            exif = readExifHints(root)
-        }
-        // If direct scan failed, try digging deeper into each root's fields.
-        if (exif == null) {
-            for (root in roots) {
-                if (exif != null) break
-                exif = deepExifScan(root, 2)
-            }
-        }
-        // Final fallback: value-range-based numeric field scan for fully
-        // obfuscated camera builds (6.4.x) where method names are useless.
-        if (exif == null) {
-            for (root in roots) {
-                if (exif != null) break
-                exif = scanNumericFields(root, 4)
-            }
-        }
-
-        val deduped = strings.distinct()
-        val time = parseTime(deduped, now) ?: now
-        return CaptureMeta(time, location, exif, deduped)
-    }
-
-    private fun isScannable(v: Any): Boolean {
-        if (v is String || v is Number || v is Boolean || v is Char) return false
-        if (v is Bitmap || v is Canvas || v is Paint) return false
-        val n = v.javaClass.name
-        if (n.startsWith("android.graphics.") || n.startsWith("android.view.")) return false
-        if (n.startsWith("java.lang.") || n.startsWith("java.util.") && n != "java.util.Date") return false
-        return true
-    }
-
-    /** Depth-limited search of an object graph for the first field of [type]. */
-    private fun <T : Any> findFieldValue(root: Any, type: Class<T>, depth: Int): T? {
-        val cls = root.javaClass
-        val fields = try {
-            cls.declaredFields
-        } catch (t: Throwable) {
-            return null
-        }
-        for (f in fields) {
-            if (type.isAssignableFrom(f.type)) {
-                try {
-                    f.isAccessible = true
-                    @Suppress("UNCHECKED_CAST")
-                    return type.cast(f.get(root)) as T?
-                } catch (t: Throwable) {
-                    // Access denied or opaque — keep looking.
-                }
-            }
-        }
-        if (depth <= 0) return null
-        for (f in fields) {
-            try {
-                f.isAccessible = true
-                val v = f.get(root) ?: continue
-                if (!isScannable(v)) continue
-                val hit = findFieldValue(v, type, depth - 1)
-                if (hit != null) return hit
-            } catch (t: Throwable) {
-                // Non-vital.
-            }
-        }
-        return null
-    }
-
-    /** Collects short non-empty string fields up to [depth] levels into [out]. */
-    private fun collectStringFields(obj: Any, depth: Int, out: ArrayList<String>) {
-        val cls = obj.javaClass
-        val fields = try {
-            cls.declaredFields
-        } catch (t: Throwable) {
-            return
-        }
-        for (f in fields) {
-            if (f.type != String::class.java) continue
-            try {
-                f.isAccessible = true
-                val v = f.get(obj) as? String ?: continue
-                if (v.isNotBlank() && v.length <= 128) out.add(v.trim())
-            } catch (t: Throwable) {
-                // Non-vital.
-            }
-        }
-        if (depth <= 0) return
-        for (f in fields) {
-            try {
-                f.isAccessible = true
-                val v = f.get(obj) ?: continue
-                if (!isScannable(v)) continue
-                collectStringFields(v, depth - 1, out)
-            } catch (t: Throwable) {
-                // Non-vital.
-            }
-        }
-    }
-
-    /**
-     * Looks for zero-arg readable getters on the context object whose names betray
-     * capture parameters (focal length, aperture, exposure, ISO). Camera builds
-     * keep such wrapper methods un-obfuscated far more often than fields.
-     */
-    private fun readExifHints(obj: Any): ExifBits? {
-        val cls = obj.javaClass
-        val name = cls.name
-        if (name.startsWith("android.") || name.startsWith("java.")) return null
-        val methods = try {
-            cls.methods
-        } catch (t: Throwable) {
-            return null
-        }
-        var focal: Double? = null
-        var aperture: Double? = null
-        var exposure: Double? = null
-        var iso: Int? = null
-
-        fun numberOf(m: java.lang.reflect.Method): Number? = try {
-            when (m.returnType) {
-                java.lang.Integer.TYPE, java.lang.Integer::class.java,
-                java.lang.Long.TYPE, java.lang.Long::class.java,
-                java.lang.Double.TYPE, java.lang.Double::class.java,
-                java.lang.Float.TYPE, java.lang.Float::class.java,
-                java.lang.Short.TYPE, java.lang.Short::class.java,
-                -> (m.invoke(obj) as? Number)
-                else -> null
-            }
-        } catch (t: Throwable) {
-            null
-        }
-
-        for (m in methods) {
-            if (m.parameterCount != 0) continue
-            val lower = m.name.lowercase(Locale.US)
-            when {
-                iso == null && (lower.contains("iso") && !lower.contains("visible") && !lower.contains("noise") && !lower.contains("isovis")) ->
-                    numberOf(m)?.let { v ->
-                        val d = v.toDouble()
-                        // Accept raw ISO values in the typical camera range.
-                        if (d >= 25.0 && d <= 102400.0) {
-                            iso = if (d == d.toInt().toDouble()) d.toInt() else d.toInt()
-                        }
-                    }
-                aperture == null && (lower.contains("aperture") || lower.contains("fnum") || lower.contains("fnbr")) ->
-                    numberOf(m)?.let { v ->
-                        var d = v.toDouble()
-                        // Some cameras report f-number as integer*10 (e.g. 17 for f/1.7).
-                        if (d >= 9.0 && d <= 100.0) d /= 10.0
-                        if (d >= 0.95 && d <= 22.0) aperture = d
-                    }
-                exposure == null && (lower.contains("exposure") || lower.contains("shutter") || lower.contains("exptime")) ->
-                    numberOf(m)?.let { v ->
-                        var s = v.toDouble()
-                        if (s > 1e6 && s < 1e10) s /= 1e9 // nanoseconds
-                        if (s > 1e3 && s < 1e6) s /= 1e6 // microseconds
-                        if (s in 1e-6..30.0) exposure = s
-                    }
-                focal == null && (lower.contains("focal") || lower.contains("zoom")) ->
-                    numberOf(m)?.let { v ->
-                        val d = v.toDouble()
-                        // Accept both integer mm (23) and rational (23.0).
-                        if (d >= 0.5 && d <= 1000.0) focal = d
-                    }
-            }
-        }
-        if (focal == null && aperture == null && exposure == null && iso == null) return null
-        return ExifBits(focal, aperture, exposure, iso)
-    }
-
-    /**
-     * Recursively scans an object's fields for nested objects whose methods
-     * expose EXIF-like capture parameters. On 6.4.x the camera wraps focal,
-     * aperture, etc. inside multiple layers of obfuscated holder classes.
-     */
-    private fun deepExifScan(root: Any, depth: Int): ExifBits? {
-        val cls = root.javaClass
-        val fields = try {
-            cls.declaredFields
-        } catch (t: Throwable) {
-            return null
-        }
-        for (f in fields) {
-            try {
-                f.isAccessible = true
-                val v = f.get(root) ?: continue
-                if (!isScannable(v)) continue
-                val result = readExifHints(v)
-                if (result != null) return result
-                if (depth > 0) {
-                    val deeper = deepExifScan(v, depth - 1)
-                    if (deeper != null) return deeper
-                }
-            } catch (t: Throwable) {
-                // Non-vital.
-            }
-        }
-        return null
-    }
-
-    /**
-     * Value-range-based EXIF scan for fully obfuscated camera builds (6.4.x).
-     *
-     * When method names are single-letter and unreadable, the only remaining
-     * signal is the value itself. This walks every Number-typed field in the
-     * object graph (depth 4) and classifies values by EXIF-typical ranges:
-     *   - ISO: integer 25–102400
-     *   - Aperture: double 0.95–22 (also accepts int*10 like 17 → 1.7)
-     *   - Exposure: double 1e-6–30 (also ns/µs conversion)
-     *   - Focal length: double 0.5–1000
-     *
-     * The first plausible match per category wins. Redundant matches across
-     * the same category from different fields are suppressed.
-     */
-    private fun scanNumericFields(root: Any, depth: Int): ExifBits? {
-        var focal: Double? = null
-        var aperture: Double? = null
-        var exposure: Double? = null
-        var iso: Int? = null
-        val visited = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
-        val queue = ArrayDeque<Pair<Any, Int>>()
-        queue.add(root to depth)
-        while (queue.isNotEmpty()) {
-            val (obj, d) = queue.removeFirst()
-            if (!visited.add(obj)) continue
-            if (d < 0) continue
-            val cls = obj.javaClass
-            val fields = try { cls.declaredFields } catch (t: Throwable) { continue }
-            for (f in fields) {
-                try {
-                    f.isAccessible = true
-                    val v = f.get(obj) ?: continue
-                    when (v) {
-                        is Number -> {
-                            val dval = v.toDouble()
-                            // ISO: integer in [25, 102400], not a common wrong-hit like 0/1
-                            if (iso == null && dval == dval.toInt().toDouble() &&
-                                dval in 25.0..102400.0) {
-                                iso = dval.toInt()
-                                LFLogger.v("exif-scan: ISO candidate=$iso from ${cls.name}.${f.name}")
-                            }
-                            // Aperture: [0.95, 22], or int*10 in [9, 220]
-                            if (aperture == null) {
-                                var a = dval
-                                if (dval >= 9.0 && dval <= 220.0 && dval == dval.toInt().toDouble()) a /= 10.0
-                                if (a in 0.95..22.0) {
-                                    aperture = a
-                                    LFLogger.v("exif-scan: aperture candidate=$a from ${cls.name}.${f.name}")
-                                }
-                            }
-                            // Exposure: [1e-6, 30], with ns/µs conversion
-                            if (exposure == null) {
-                                var s = dval
-                                if (s > 1e6 && s < 1e10) s /= 1e9
-                                if (s > 1e3 && s < 1e6) s /= 1e6
-                                if (s in 1e-6..30.0) {
-                                    exposure = s
-                                    LFLogger.v("exif-scan: exposure candidate=$s from ${cls.name}.${f.name}")
-                                }
-                            }
-                            // Focal length: [0.5, 1000]
-                            if (focal == null && dval in 0.5..1000.0) {
-                                focal = dval
-                                LFLogger.v("exif-scan: focal candidate=$dval from ${cls.name}.${f.name}")
-                            }
-                        }
-                        else -> {
-                            if (d > 0 && isScannable(v)) queue.add(v to d - 1)
-                        }
-                    }
-                } catch (t: Throwable) { /* skip */ }
-            }
-        }
-        if (focal == null && aperture == null && exposure == null && iso == null) {
-            LFLogger.w("exif-scan: no numeric fields matched EXIF ranges")
-            return null
-        }
-        val result = ExifBits(focal, aperture, exposure, iso)
-        LFLogger.i("exif-scan: found focal=${focal} aperture=${aperture} exposure=${exposure} iso=${iso}")
-        return result
-    }
-
-    /** Finds a wall-clock time inside any collected string, within ±1 year of [now]. */
-    private fun parseTime(strs: List<String>, now: Long): Long? {
-        val windowMs = 366L * 24 * 3600 * 1000
-        for (s in strs) {
-            if (s.length < 8 || s.length > 64) continue
-            val m = TIME_RE.find(s) ?: continue
-            val g = m.groupValues
-            val y = g[1].toIntOrNull() ?: continue
-            val mo = g[2].toIntOrNull() ?: continue
-            val d = g[3].toIntOrNull() ?: continue
-            if (y < 2000 || y > 2100) continue
-            val hh = g[4].toIntOrNull() ?: 0
-            val mi = g[5].toIntOrNull() ?: 0
-            val ss = g[6].toIntOrNull() ?: 0
-            val millis = try {
-                val cal = java.util.Calendar.getInstance()
-                cal.clear()
-                cal.set(y, (mo - 1).coerceIn(0, 11), d.coerceIn(1, 31),
-                    hh.coerceIn(0, 23), mi.coerceIn(0, 59), ss.coerceIn(0, 59))
-                cal.timeInMillis
-            } catch (t: Throwable) {
-                continue
-            }
-            if (abs(millis - now) <= windowMs) return millis
-        }
-        return null
-    }
+    // Capture metadata is intentionally not inferred from arbitrary objects. The hook layer
+    // supplies a snapshot built from Camera2 CaptureResult and Xiaomi's typed EXIF adapter.
+    // Missing values remain null/zero and are omitted from the rendered capsule.
 
     // ------------------------------------------------------------------
     // Text content
@@ -532,8 +176,10 @@ object CapsuleRenderer {
         if (shortSide < 64) return emptyList()
         val lines = ArrayList<Line>(4)
         lines.add(Line(modelText(opts), bold = true, sizeRef = MODEL_SIZE_REF))
-        if (opts.showDateTime) {
-            lines.add(Line(formatTime(meta.captureMillis), bold = false, sizeRef = BODY_SIZE_REF))
+        if (opts.showDateTime && meta.captureMillis > 0L) {
+            formatTime(meta.captureMillis).takeIf { it.isNotBlank() }?.let {
+                lines.add(Line(it, bold = false, sizeRef = BODY_SIZE_REF))
+            }
         }
         if (opts.showExif) {
             val t = exifText(meta.exif)
@@ -576,8 +222,8 @@ object CapsuleRenderer {
         e.aperture?.let { parts.add("f/" + String.format(Locale.US, "%.2f", it)) }
         e.exposureSeconds?.let { parts.add(exposureText(it)) }
         e.iso?.let { parts.add("ISO$it") }
-        // Even a single credible parameter is shown: the deep scan on 6.4.x
-        // may only find one of the four, but that single hit is still real data.
+        // Show whichever typed capture fields are actually present; do not fabricate
+        // missing values to make the line look complete.
         if (parts.isEmpty()) return null
         return parts.joinToString(" ")
     }
