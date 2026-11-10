@@ -41,6 +41,33 @@ object DexKitHelper {
     @Volatile
     private var compositeClassName: String? = null
 
+    /**
+     * The capture-metadata record resolved by structure (see [DexScan.recordPlan]), plus the
+     * field indices inside it.
+     *
+     * This replaces the old hardcoded `la.a` + field letters `f/g/h/i/j/k`. Those letters are
+     * per-build: 6.7 moved the capture time from `j` to `l` and the Location from `k` to `m`
+     * while keeping every type in the same order, so reading by index is the only mapping that
+     * survives an update.
+     */
+    @Volatile
+    private var captureRecordName: String? = null
+
+    @Volatile
+    private var capturePlan: DexScan.RecordPlan? = null
+
+    /** Declaring class of the record-consuming method, as a DEX descriptor (`LW8/d;`). */
+    @Volatile
+    private var captureReceiverOwner: String? = null
+
+    /** Method name of the record-consuming method (`f` on 6.7, `h` on 6.4). */
+    @Volatile
+    private var captureReceiverMethod: String? = null
+
+    /** Parameter count of the record-consuming method (3 on both known builds). */
+    @Volatile
+    private var captureReceiverParams: Int? = null
+
     fun init(context: Context) {
         if (scanStarted) return
         scanStarted = true
@@ -110,16 +137,26 @@ object DexKitHelper {
     fun awaitDiscovery(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            if (canvasWrapperName != null || compositeClassName != null) return true
-            if (scanResult != null) return false
+            if (hasAnything()) return true
+            if (scanResult != null) return hasAnything()
             try {
                 Thread.sleep(25L)
             } catch (_: InterruptedException) {
                 return false
             }
         }
-        return canvasWrapperName != null || compositeClassName != null
+        return hasAnything()
     }
+
+    /**
+     * True when the scan produced at least one name worth re-running the hooks with.
+     *
+     * The capture record counts on its own: on a build whose watermark-factory class is not the
+     * literal `b` (or whose canvas wrapper shape changed) the record is still the thing that
+     * turns the EXIF line on, and returning false here would skip the retry entirely.
+     */
+    private fun hasAnything(): Boolean =
+        canvasWrapperName != null || compositeClassName != null || captureRecordName != null
 
     private fun runScan(context: Context) {
         try {
@@ -142,7 +179,39 @@ object DexKitHelper {
             canvasWrapperName = pick(found.canvasWrappers)
             compositeClassName = pick(found.compositeClasses)
 
-            log("resolved wrapper=${canvasWrapperName ?: "none"} composite=${compositeClassName ?: "none"}")
+            // The record must actually load in this process: the DEX may be a split that is not
+            // installed for this device ABI. Resolving it here also fixes the plan indexes.
+            captureRecordName = pick(found.captureRecords)?.also { name ->
+                capturePlan = found.recordClassesFirstPlan[name]
+            }
+
+            // Prefer a receiver whose owner actually loads; a candidate that lives in an
+            // uninstalled split would only fail later, inside the camera's capture path.
+            val receiver = found.captureReceivers.firstOrNull { candidate ->
+                val loader = classLoader
+                loader != null && load(candidate.owner, loader) != null
+            }
+            captureReceiverOwner = receiver?.owner
+            captureReceiverMethod = receiver?.method
+            captureReceiverParams = receiver?.paramCount
+
+            val receiverLabel = if (receiver != null) {
+                receiver.owner + "#" + receiver.method
+            } else {
+                "none"
+            }
+            val planLabel = capturePlan?.let { p ->
+                "focal=" + p.focal + ",aperture=" + p.aperture +
+                        ",exposure=" + p.exposure + ",iso=" + p.iso +
+                        ",time=" + p.time + ",loc=" + p.location
+            } ?: "none"
+            log(
+                "resolved wrapper=" + (canvasWrapperName ?: "none") +
+                        " composite=" + (compositeClassName ?: "none") +
+                        " captureRecord=" + (captureRecordName ?: "none") +
+                        " receiver=" + receiverLabel +
+                        " plan=" + planLabel
+            )
         } catch (t: Throwable) {
             log("dex scan failed: ${t.javaClass.simpleName}: ${t.message}")
             scanResult = DexScan.Found()
@@ -197,6 +266,58 @@ object DexKitHelper {
         return load(name, loader)
     }
 
+    /**
+     * The structurally discovered capture-metadata record, or null when the scan has not
+     * finished, found nothing, or the class does not load in this process.
+     */
+    fun findCaptureRecord(): Class<*>? {
+        val loader = classLoader ?: return null
+        val name = captureRecordName ?: return null
+        return load(name, loader)
+    }
+
+    /** Field indices inside [findCaptureRecord], or null before discovery completes. */
+    fun captureRecordPlan(): DexScan.RecordPlan? = capturePlan
+
+    /**
+     * Finds the method that consumes the capture record, i.e. `f(<record>, Z, I)`.
+     *
+     * 6.4 declared this as `E5/b.h(la/a, Z, I) -> la/f`; 6.7 declares it as
+     * `W8/d.f(Ki/a, Z, I) -> Ki/f`. The return type is a per-build wrapper, so it is not
+     * constrained — the parameter shape plus "first parameter is the record" is enough, and
+     * the caller verifies that only one candidate exists.
+     */
+    fun findCaptureReceiver(loader: ClassLoader): Method? {
+        // Preferred path: the DEX scan already located the declaring class and method name, so
+        // nothing has to be enumerated at runtime (walking every loaded class is far too costly
+        // inside a camera process, and reflection on unloaded classes would trigger class init).
+        val owner = captureReceiverOwner
+        val methodName = captureReceiverMethod
+        val paramCount = captureReceiverParams
+        if (owner != null && methodName != null && paramCount != null) {
+            val cls = load(owner, loader)
+            if (cls != null) {
+                val record = findCaptureRecord()
+                cls.declaredMethods.firstOrNull { m ->
+                    m.name == methodName &&
+                            m.parameterTypes.size == paramCount &&
+                            (record == null || m.parameterTypes[0] == record)
+                }?.let { return it }
+            }
+        }
+
+        // Fallback: the record's own declared methods. Some builds put the encoder beside it.
+        val record = findCaptureRecord() ?: return null
+        val boolType = Boolean::class.javaPrimitiveType ?: return null
+        val intType = Int::class.javaPrimitiveType ?: return null
+        return record.declaredMethods.firstOrNull { m ->
+            m.parameterTypes.size == 3 &&
+                    m.parameterTypes[0] == record &&
+                    m.parameterTypes[1] == boolType &&
+                    m.parameterTypes[2] == intType
+        }
+    }
+
     fun findCompositeMethod(loader: ClassLoader): Method? {
         val name = compositeClassName ?: return null
         val cls = load(name, loader) ?: return null
@@ -216,6 +337,8 @@ object DexKitHelper {
     }
 
     private fun findCompositeMethodIn(cls: Class<*>): Method? = cls.declaredMethods.firstOrNull { method ->
+        // Flexible: match any method returning Bitmap that takes a Bitmap parameter.
+        // This works for both 6.4.x (static) and 6.7.x (instance) watermark factories.
         android.graphics.Bitmap::class.java.isAssignableFrom(method.returnType) &&
                 method.parameterTypes.any { android.graphics.Bitmap::class.java.isAssignableFrom(it) }
     }

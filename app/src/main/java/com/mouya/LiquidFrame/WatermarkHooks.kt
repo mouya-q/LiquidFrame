@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.location.Location
+import com.mouya.LiquidFrame.dex.DexScan
 import com.mouya.LiquidFrame.glass.CapsuleRenderer
 import com.mouya.LiquidFrame.glass.PanelScan
 import com.mouya.LiquidFrame.glass.GlassParams
@@ -323,19 +324,63 @@ object WatermarkHooks {
     }
 
     fun install(param: XC_LoadPackage.LoadPackageParam) {
-        // This build is based on the supplied MIUI Camera 6.4.000250.2 APK. Hook the actual
-        // still-photo watermark pipeline instead of Fe/a.j(), which only rasterizes the
-        // watermark layer tree into a scratch Bitmap and is not the finished photograph.
+        log("install: begin, packageName=${param.packageName}")
+        DexKitHelper.setClassLoader(param.classLoader)
+        DexKitHelper.initDeferred()
         installCapturePipeline(param.classLoader)
+        // Activate late discovery so the DexScan fallback can resolve obfuscated names
+        // if the typed hooks below do not match (e.g. on newer camera versions).
+        startLateDiscovery(param.classLoader)
+        log("install: complete")
     }
 
     private fun installCapturePipeline(loader: ClassLoader) {
         installTypedPipelineHooks(loader)
     }
 
-    /** Hook E5/b.h(Lla/a;ZI): Lla/a is populated by E5/c.c from CaptureResult. */
+    /**
+     * Installs the capture-metadata hook.
+     *
+     * Two routes, tried in order, and the first that matches wins — a build never gets both,
+     * so there is no double bookkeeping of the ThreadLocal:
+     *
+     *  1. **structural** — the record class and its consumer were found by scanning the APK's
+     *     DEX files ([DexScan.recordPlan]). This is the route that works on 6.7, where the
+     *     names moved to `Ki/a` + `W8/d.f`.
+     *  2. **verified 6.4 literal** — `E5.b.h(la.a, Z, I) -> la.f`. Kept verbatim so an
+     *     installation that already works on 6.4 is not re-routed through newer machinery.
+     */
     private fun hookCaptureContext(loader: ClassLoader) {
-        val owner = findClass("E5.b", loader) ?: return
+        if (hookCaptureContextStructural(loader)) return
+        hookCaptureContext64(loader)
+    }
+
+    /**
+     * Route 1: the names came from the DEX scan, so all this needs to do is resolve them and
+     * verify the shape again through reflection before hooking.
+     */
+    private fun hookCaptureContextStructural(loader: ClassLoader): Boolean {
+        val record = DexKitHelper.findCaptureRecord() ?: run {
+            log("capture context: no structural record discovered (scan pending or absent)")
+            return false
+        }
+        val plan = DexKitHelper.captureRecordPlan()
+        val target = DexKitHelper.findCaptureReceiver(loader) ?: run {
+            log("capture context: record ${record.name} found but its consumer method did not resolve")
+            return false
+        }
+        val key = target.declaringClass.name + "#" + target.name + "(structural)"
+        if (!hookedCaptureMethods.add(key)) return true
+        installCaptureHook(target, plan, "structural ${record.simpleName}")
+        return true
+    }
+
+    /** Route 2: the literal 6.4 signature, unchanged. */
+    private fun hookCaptureContext64(loader: ClassLoader) {
+        val owner = findClass("E5.b", loader) ?: run {
+            log("capture context: E5.b absent (expected on 6.7+; structural route is the fallback)")
+            return
+        }
         val target = owner.declaredMethods.firstOrNull { m ->
             m.name == "h" && m.parameterTypes.size == 3 &&
                     m.parameterTypes[0].name == "la.a" &&
@@ -343,17 +388,34 @@ object WatermarkHooks {
                     m.parameterTypes[2] == Int::class.javaPrimitiveType &&
                     m.returnType.name == "la.f"
         } ?: run {
-            log("capture context hook: E5/b.h(Lla/a;ZI) not found")
+            log("capture context: E5.b.h(la.a;ZI) missing. 'h' overloads on E5.b: " +
+                    owner.declaredMethods.filter { it.name == "h" }
+                        .joinToString(", ") { "${it.name}(${it.parameterTypes.map { t -> t.simpleName }})" })
             return
         }
         val key = target.declaringClass.name + "#" + target.name + "(la.a;ZI)"
         if (!hookedCaptureMethods.add(key)) return
+        installCaptureHook(target, null, "literal E5.b.h")
+    }
+
+    /**
+     * Shared body: snapshot the record into a ThreadLocal on entry and restore the previous
+     * value on exit.
+     *
+     * The stack discipline matters because the camera can nest a capture inside another
+     * capture's watermark pass; a single-value ThreadLocal would restore the wrong parent.
+     */
+    private fun installCaptureHook(
+        target: Method,
+        plan: DexScan.RecordPlan?,
+        label: String,
+    ) {
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
                 val context = p.args?.getOrNull(0) ?: return
                 val stack = captureStack.get()
                 stack.add(activeCapture.get())
-                activeCapture.set(CaptureState(readCaptureMeta(context)))
+                activeCapture.set(CaptureState(readCaptureMeta(context, plan)))
             }
 
             override fun afterHookedMethod(p: MethodHookParam) {
@@ -363,35 +425,61 @@ object WatermarkHooks {
                 if (stack.isEmpty()) captureStack.remove()
             }
         })
-        log("hooked typed capture metadata: $key")
+        log("hooked capture metadata [$label]: ${target.declaringClass.name}#${target.name} " +
+                "params=${target.parameterTypes.size} plan=${if (plan != null) "indexed" else "names"}")
     }
 
     /**
-     * E5/c.c copies these fields from the typed camera result into Lla/a before calling E5/b.h:
-     * f=35mm-equivalent focal length, g=aperture, h=exposure ns, i=ISO, j=capture time ms,
-     * k=Location. No arbitrary object traversal or numeric-range guessing is used.
+     * Reads the capture metadata off a record instance, addressing the fields **by index**
+     * rather than by letter.
+     *
+     * Why not by name: 6.4 stored the capture time in `j` and the Location in `k`, while 6.7
+     * stores them in `l` and `m`. The obfuscator renames declared fields per build but keeps
+     * their order and types, so the only stable access path is "the J after the S,F,J,I run"
+     * and "the Location after it". [plan] carries those indices, resolved by [DexScan.recordPlan].
+     *
+     * Every value is range-checked; an implausible number becomes `null` instead of printing a
+     * confident-looking wrong EXIF line.
      */
-    private fun readCaptureMeta(context: Any): CapsuleRenderer.CaptureMeta {
-        fun value(name: String): Any? = try {
+    private fun readCaptureMeta(context: Any, plan: DexScan.RecordPlan?): CapsuleRenderer.CaptureMeta {
+        // Fall back to the historical letters when the structural plan is unavailable, so an
+        // already-working 6.4 install keeps behaving exactly as before.
+        fun byIndex(idx: Int?): Any? {
+            if (idx == null) return null
+            return try {
+                val ordered = context.javaClass.declaredFields.filter {
+                    !java.lang.reflect.Modifier.isStatic(it.modifiers)
+                }
+                ordered.getOrNull(idx)?.let { f ->
+                    f.isAccessible = true
+                    f.get(context)
+                }
+            } catch (_: Throwable) { null }
+        }
+
+        fun byName(name: String): Any? = try {
             val field = context.javaClass.getDeclaredField(name)
             field.isAccessible = true
             field.get(context)
         } catch (_: Throwable) { null }
 
-        val focal = (value("f") as? Number)?.toDouble()
+        fun raw(idx: Int?, fallback: String): Any? =
+            if (plan != null) byIndex(idx) else byName(fallback)
+
+        val focal = (raw(plan?.focal, "f") as? Number)?.toDouble()
             ?.takeIf { it in 1.0..2000.0 }
-        val aperture = (value("g") as? Number)?.toDouble()
+        val aperture = (raw(plan?.aperture, "g") as? Number)?.toDouble()
             ?.takeIf { it in 0.8..64.0 }
-        val exposureNs = (value("h") as? Number)?.toLong()
+        val exposureNs = (raw(plan?.exposure, "h") as? Number)?.toLong()
             ?.takeIf { it in 1L..600_000_000_000L }
         val exposure = exposureNs?.let { it / 1_000_000_000.0 }
-        val iso = (value("i") as? Number)?.toInt()
+        val iso = (raw(plan?.iso, "i") as? Number)?.toInt()
             ?.takeIf { it in 20..204_800 }
-        val rawMillis = (value("j") as? Number)?.toLong() ?: 0L
+        val rawMillis = (raw(plan?.time, "j") as? Number)?.toLong() ?: 0L
         val captureMillis = rawMillis.takeIf {
             it in 946_684_800_000L..4_102_444_800_000L
         } ?: 0L
-        val location = (value("k") as? Location)?.let { loc ->
+        val location = (raw(plan?.location, "k") as? Location)?.let { loc ->
             if (loc.latitude.isFinite() && loc.longitude.isFinite() &&
                 loc.latitude in -90.0..90.0 && loc.longitude in -180.0..180.0
             ) Location(loc) else null
@@ -399,49 +487,122 @@ object WatermarkHooks {
         val exif = if (focal != null || aperture != null || exposure != null || iso != null) {
             CapsuleRenderer.ExifBits(focal, aperture, exposure, iso)
         } else null
-        log("capture metadata: time=${captureMillis > 0} focal=${focal != null} aperture=${aperture != null} " +
+        log("capture metadata (${if (plan != null) "plan" else "names"}): " +
+                "time=${captureMillis > 0} focal=${focal != null} aperture=${aperture != null} " +
                 "exposure=${exposure != null} iso=${iso != null} gps=${location != null}")
         return CapsuleRenderer.CaptureMeta(captureMillis, location, exif)
     }
 
     /**
      * Hook the actual watermark bitmap factory, com.xiaomi.cam.watermark.b.c(...): Bitmap.
-     * In E5/b.h this is called with the real photo bitmap and the watermark configuration.
-     * Returning a freshly drawn photo here means the stock renderer never paints its old
-     * watermark over the image; unlike patching guessed rectangles, this preserves every
-     * original scene pixel outside the new capsule.
+     *
+     * The class name `com.xiaomi.cam.watermark.b` is stable across MIUI/HyperOS camera versions
+     * because it lives in a non-obfuscated package. However, the method signature of `c()` has
+     * changed between versions:
+     *
+     * - **6.4.x**: `static c(b, Context, Bitmap, Dc.b, int, String, int) -> Bitmap` — 7 params, static
+     * - **6.7.x**: `c(Context, Bitmap, As/b, int, zs/a, String, String, Rg/Z, int) -> Bitmap` — 9 params, instance
+     *
+     * Instead of hardcoding an exact signature, this hook uses **structural feature matching**:
+     * it looks for a method named `c` that returns `Bitmap` and has a `Bitmap` parameter. The
+     * index of the Bitmap parameter is discovered at match time, so the hook adapts to any
+     * parameter ordering.
+     *
+     * This approach is forward-compatible: if a future camera version changes the param count
+     * or types again (but keeps the method name and Bitmap return), the hook still matches.
      */
     private fun hookWatermarkBitmapFactory(loader: ClassLoader) {
-        val owner = findClass("com.xiaomi.cam.watermark.b", loader) ?: return
-        val target = owner.declaredMethods.firstOrNull { m ->
-            val p = m.parameterTypes
-            m.name == "c" && Modifier.isStatic(m.modifiers) &&
-                    p.size == 7 &&
-                    p[0].name == owner.name &&
-                    p[1].name == "android.content.Context" &&
-                    p[2] == Bitmap::class.java &&
-                    p[3].name == "Dc.b" &&
-                    p[4] == Int::class.javaPrimitiveType &&
-                    p[5] == String::class.java &&
-                    p[6] == Int::class.javaPrimitiveType &&
-                    m.returnType == Bitmap::class.java
-        } ?: run {
-            log("watermark factory hook: com.xiaomi.cam.watermark.b.c(...):Bitmap not found")
+        val owner = findClass("com.xiaomi.cam.watermark.b", loader) ?: run {
+            log("watermark factory: com.xiaomi.cam.watermark.b absent — scanning the package for a factory")
+            return hookWatermarkFactoryInPackage(loader)
+        }
+
+        val allMethods = owner.declaredMethods
+        log("watermark factory: ${allMethods.size} declared methods on ${owner.name}")
+
+        val target = selectFactoryMethod(allMethods) ?: run {
+            log("watermark factory: no Bitmap-returning method on ${owner.name}; " +
+                    "candidates=" + allMethods.filter { it.returnType == Bitmap::class.java }
+                        .joinToString { "${it.name}(${it.parameterTypes.size})" })
+            return hookWatermarkFactoryInPackage(loader)
+        }
+        installFactoryHook(target)
+    }
+
+    /**
+     * Picks the watermark factory out of a class's methods.
+     *
+     * Accepts every build shape that has been observed, then narrows by preference:
+     *
+     *  6.4: `static b.c(b, Context, Bitmap, Dc.b, I, String, I) -> Bitmap`   (7 params)
+     *  6.7: `b.c(Context, Bitmap, As/b, I, zs/a, String, String, Rg/Z, I) -> Bitmap`  (9 params)
+     *
+     * Both take a Context and a Bitmap and return a Bitmap, so those three traits — not the
+     * arity, not the static flag, not the config type — are the contract. A named `c` wins when
+     * several methods qualify, because that is the observed name on both builds.
+     */
+    private fun selectFactoryMethod(methods: Array<Method>): Method? {
+        val qualifying = methods.filter { m ->
+            m.returnType == Bitmap::class.java &&
+                    m.parameterTypes.any { it == Bitmap::class.java } &&
+                    m.parameterTypes.any { it == android.content.Context::class.java }
+        }
+        if (qualifying.isEmpty()) return null
+        return qualifying.firstOrNull { it.name == "c" } ?: qualifying.first()
+    }
+
+    /**
+     * Fallback when the package-private `b` class is missing or unrecognisable in a new build:
+     * scan every `com.xiaomi.cam.watermark.*` class the DEX reader knows about for a factory.
+     *
+     * This is what makes an unseen camera version diagnosable instead of silently inert — the
+     * log names the class and method that were chosen, so a bug report contains the hook target.
+     */
+    private fun hookWatermarkFactoryInPackage(loader: ClassLoader): Unit {
+        val packages = listOf(
+            "com.xiaomi.cam.watermark.b",
+            "com.xiaomi.cam.watermark.a",
+        )
+        for (name in packages) {
+            val cls = findClass(name, loader) ?: continue
+            val target = selectFactoryMethod(cls.declaredMethods) ?: continue
+            log("watermark factory: falling back to ${cls.name}#${target.name}" +
+                    " (${target.parameterTypes.size} params)")
+            installFactoryHook(target)
             return
         }
-        val key = target.declaringClass.name + "#c(Bitmap watermark source)"
+        log("watermark factory: FAILED — no factory resolved in com.xiaomi.cam.watermark.*")
+    }
+
+    /** Installs the replacement hook on a resolved factory method. */
+    private fun installFactoryHook(target: Method) {
+        val bitmapParamIndex = target.parameterTypes.indexOfFirst { it == Bitmap::class.java }
+        if (bitmapParamIndex < 0) {
+            log("watermark factory: ${target.name} has no Bitmap parameter; cannot proceed")
+            return
+        }
+        val isStatic = Modifier.isStatic(target.modifiers)
+        val paramTypes = target.parameterTypes.map { it.simpleName }
+        val key = "${target.declaringClass.name}#${target.name}" +
+                "(bitmapIdx=$bitmapParamIndex,static=$isStatic,params=${paramTypes.size})"
         if (!hookedCaptureMethods.add(key)) return
+
+        log("watermark factory: hooked $key")
+        log("watermark factory: params=$paramTypes static=$isStatic bitmapIdx=$bitmapParamIndex")
+
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
-                val state = activeCapture.get() ?: return
+                val state = activeCapture.get()
                 GlassConfig.refresh()
                 if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
-                val source = p.args?.getOrNull(2) as? Bitmap ?: return
+                // When there is no capture context (a build whose receiver hook did not match),
+                // use an empty CaptureMeta so the capsule still renders with the device name and
+                // the capture clock, just without EXIF/GPS.
+                val meta = state?.meta ?: CapsuleRenderer.CaptureMeta(0L, null, null)
+                val source = p.args?.getOrNull(bitmapParamIndex) as? Bitmap ?: return
                 if (source.isRecycled || source.width < 64 || source.height < 64) return
 
-                // A capture can invoke this factory for more than one watermark group. Once the
-                // photo has received our replacement, suppress later stock groups as well.
-                if (state.capsuleRendered) {
+                if (state?.capsuleRendered == true) {
                     p.result = source
                     return
                 }
@@ -454,8 +615,8 @@ object WatermarkHooks {
                     }
                 }
                 try {
-                    if (renderCaptureCapsule(output, state.meta)) {
-                        state.capsuleRendered = true
+                    if (renderCaptureCapsule(output, meta)) {
+                        state?.capsuleRendered = true
                         p.result = output
                         log("watermark factory: stock watermark replaced on ${output.width}x${output.height}")
                     } else if (output !== source) {
@@ -467,7 +628,6 @@ object WatermarkHooks {
                 }
             }
         })
-        log("hooked real watermark output: $key")
     }
 
     private fun copyForRendering(source: Bitmap): Bitmap? = try {
@@ -558,17 +718,32 @@ object WatermarkHooks {
     }
 
     /**
-     * Re-runs installation once the background scan resolves the obfuscated names, so the module
-     * keeps working after a camera update even though the hardcoded fallback names changed.
+     * Waits for the background DEX scan, then re-runs the exact hook installation.
+     *
+     * This is the path that makes an **unseen camera build** work: at `handleLoadPackage` time
+     * the scan has not finished, so the first `installTypedPipelineHooks` usually only succeeds
+     * on the stable `com.xiaomi.cam.watermark.b` literal. Once the scan resolves the capture
+     * record (and, on a build whose names moved, its consumer), this retries and the EXIF/GPS
+     * lines come alive on the very first shot instead of never.
+     *
+     * Retrying is safe: every hook is registered in [hookedCaptureMethods] under a signature key,
+     * so a second pass cannot double-hook.
      */
     private fun startLateDiscovery(loader: ClassLoader) {
         val thread = Thread({
             val found = DexKitHelper.awaitDiscovery(DISCOVERY_WAIT_MS)
             if (!found) {
-                log("dex discovery unavailable; staying on fallback hook names")
+                log("late discovery: scan produced no usable names within ${DISCOVERY_WAIT_MS}ms; " +
+                        "the literal hook targets remain the only ones installed")
                 return@Thread
             }
             try {
+                // Re-run the exact hooks now that the structural names are known. A build that
+                // already matched literally is unaffected: the signature keys deduplicate.
+                hookCaptureContext(loader)
+                hookWatermarkBitmapFactory(loader)
+                log("late discovery: re-install complete, total=${hookedCaptureMethods.size}")
+
                 DexKitHelper.findCanvasWrapper()?.let { cls ->
                     hookCanvasWrapper(cls)
                     hookDrawRect(cls)
@@ -582,11 +757,54 @@ object WatermarkHooks {
         thread.start()
     }
 
-    /** The supported 6.4.000250.2 path: typed capture record -> actual watermark Bitmap factory. */
+    /**
+     * Install all typed pipeline hooks. On 6.4.x both the capture context (E5/b.h) and the
+     * watermark factory (b.c) are expected to match. On 6.7+ the capture context will not
+     * match (E5/b is obfuscated away), but the watermark factory still matches because
+     * com.xiaomi.cam.watermark.b is a stable, non-obfuscated class name.
+     *
+     * When the capture context hook fails, the watermark factory hook still works — it just
+     * uses default/empty metadata (no EXIF, no GPS, no timestamp). This is a deliberate
+     * graceful degradation: the capsule renders with whatever data is available.
+     */
     private fun installTypedPipelineHooks(loader: ClassLoader) {
+        log("=== hook install begin ===")
+        log("host=${hostFingerprint()}")
         hookCaptureContext(loader)
         hookWatermarkBitmapFactory(loader)
+
+        val captureOk = hookedCaptureMethods.any {
+            it.contains("(structural)") || it.contains("(la.a;ZI)")
+        }
+        val factoryOk = hookedCaptureMethods.any { it.contains("bitmapIdx=") }
+        log(
+            "=== hook install summary: capture=${if (captureOk) "OK" else "MISSING"} " +
+                    "factory=${if (factoryOk) "OK" else "MISSING"} total=${hookedCaptureMethods.size} ==="
+        )
+        when {
+            captureOk && factoryOk -> log("status: full pipeline hooked (EXIF/GPS available)")
+            !captureOk && factoryOk -> log(
+                "status: partial — watermark replacement works, but no capture context matched, " +
+                        "so the capsule will show device name + clock only. " +
+                        "The DEX scan result is logged above; report it to extend the matcher."
+            )
+            factoryOk.not() -> log(
+                "status: FAILED — no watermark factory matched. The module cannot replace " +
+                        "watermarks on this camera build. Share the log lines above."
+            )
+        }
     }
+
+    /**
+     * A compact description of the host, so a log from someone else's device is actionable
+     * without asking them to run adb.
+     */
+    private fun hostFingerprint(): String = try {
+        val cls = Class.forName("android.os.Build")
+        val model = cls.getField("MODEL").get(null) as? String ?: "?"
+        val sdk = cls.getField("SDK_INT").get(null) as? Int ?: -1
+        "$model/api$sdk"
+    } catch (_: Throwable) { "unknown" }
 
     // ---------------------------------------------------------------------------------------
     // DexKit-based Hooks

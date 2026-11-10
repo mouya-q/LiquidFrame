@@ -1,5 +1,95 @@
 # Changelog
 
+## 2.1.0 — Structural discovery: works on camera builds it was never written against
+
+The module used to be pinned to one camera build. Two hardcoded facts made that so:
+the capture record's class and field **letters** (`la.a` + `f,g,h,i,j,k`), and the watermark
+factory's exact **signature** (`static b.c(...7 params...)`). Both moved in camera
+6.7.000480.0 (Xiaomi 17), so the module installed cleanly and then did nothing at all.
+
+This release removes both assumptions. It was driven by disassembling the 6.7 APK and
+diffing it against the 6.4 one, not by guessing.
+
+### Why 6.7 was inert (measured, not inferred)
+
+| Target | 6.4.000250.2 | 6.7.000480.0 |
+|---|---|---|
+| Capture record | `la.a`, capture time in `j`, GPS in `k` | `Ki.a`, capture time in **`l`**, GPS in **`m`** |
+| Record consumer | `E5.b.h(la.a, Z, I) -> la.f` | `W8.d.f(Ki.a, Z, I) -> Ki.f` |
+| Watermark factory | `static b.c(b, Context, Bitmap, Dc.b, I, String, I)` — 7 params, **static** | `b.c(Context, Bitmap, As/b, I, zs/a, String, String, Rg/Z, I)` — 9 params, **instance** |
+| Bitmap parameter index | 2 | **1** |
+
+`E5.b` does not exist in 6.7 at all, and the old factory matcher required `static` + exactly
+7 parameters, so **both** hooks silently declined to install.
+
+### Capture metadata: read by position, not by name
+
+- `DexScan.recordPlan()` recognises a record by its **field type sequence**: a contiguous
+  `S,F,J,I` run (focal, aperture, exposure-ns, ISO), then a later `J` (capture time) and a
+  later `Location` (GPS). Anchoring on the run rather than "first int" matters: 6.7 puts an
+  unrelated `I` at index 2, so field order alone would have picked the wrong field.
+- `DexClass.instanceFieldTypes` now preserves declared order (the reader previously merged
+  static and instance fields), which is what makes index addressing possible.
+- `readCaptureMeta()` takes a plan and reads by index, with the historical letters kept as a
+  fallback so an existing 6.4 installation behaves exactly as before.
+- Verified unique on both APKs by `tools/verify_matchers.py` and cross-checked against the
+  Kotlin port by `tools/parity_check.py` (both: exactly one record; `Ki.a` indices
+  5/6/7/8/11/12).
+
+### Watermark factory: matched on contract, not on arity
+
+- `selectFactoryMethod()` requires only the three traits both builds share — returns `Bitmap`,
+  takes a `Bitmap`, takes a `Context` — then prefers a method named `c`.
+- The Bitmap **argument index is resolved per match**, so 6.4's `args[2]` and 6.7's `args[1]`
+  both work without a version check.
+- When `com.xiaomi.cam.watermark.b` is missing or unrecognisable, the hook falls back to
+  `com.xiaomi.cam.watermark.a`, then logs the fact that it failed — an unseen build is now
+  diagnosable from the log alone instead of silently doing nothing.
+
+### Late discovery is now a real path
+
+- `startLateDiscovery()` waits for the background DEX scan and then **re-runs the exact hooks**.
+  Previously it only touched the legacy composite path, so a build whose names had moved never
+  got a second chance. Retrying is safe: hooks are keyed by signature and cannot double-install.
+- `DexKitHelper` resolves the record, its consumer class/method, and a field-index plan during
+  the scan; the runtime side needs one `Class.forName` per name, no class-loader enumeration.
+- `awaitDiscovery()` now treats a resolved capture record as success on its own. Without that,
+  a build whose canvas-wrapper shape changed would report "nothing found" and skip the retry
+  even though the record — the thing that turns EXIF on — was found.
+
+### Logging: enough to diagnose a build nobody has seen
+
+- Install now logs the host model/API level, then one summary line naming what matched, and a
+  plain-language verdict: full pipeline, partial (watermark replaced but no capture context),
+  or failed. A partial install states that the capsule will show name + clock only.
+- Every hook logs its resolved class, method, parameter count, `static` flag and Bitmap index.
+- The DEX scan logs the record name, the receiver, and the full field-index plan.
+- Factory matching logs the candidate methods it rejected, not just the one it accepted.
+
+### UI: motion where there was none
+
+- **Section collapse** is animated: the body expands on a spring while the chevron rotates
+  180° on the same curve, and the content fades in slightly after the height starts moving so
+  text never pops into a half-open card. The header now uses a real icon instead of `⌃`/`⌄`
+  glyphs and scales to 0.98 on press.
+- **Page switching** goes through `AnimatedContent`: the incoming page fades and slides a few
+  pixels from the tab's side, the outgoing page leaves faster. Previously a bare `when`
+  replaced the whole screen in one frame while the bottom bar's capsule was still travelling.
+- **Status pill** cross-fades its colour and label instead of swapping instantly.
+- **Settings rows** shrink slightly while pressed, giving a list row tactile feedback without a
+  ripple fighting the glass surface.
+
+### Verification status
+
+- Static: both APKs analysed by the same reader; matcher uniqueness and Kotlin/Python parity
+  **PASSED** (`tools/verify_matchers.py`, `tools/parity_check.py`).
+- Not run: Gradle compilation and on-device capture (no local Android SDK / camera in this
+  environment). See the analysis scripts under `tools/` for how to re-derive the numbers from
+  a future APK.
+
+### Version
+- `2.1.0`, `versionCode 36`.
+
 ## 2.0.0 — Capture-linked metadata and pre-render watermark replacement
 
 ### Real capture metadata

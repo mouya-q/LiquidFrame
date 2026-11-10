@@ -87,6 +87,7 @@ import com.mouya.LiquidFrame.ui.GlassCard
 import com.mouya.LiquidFrame.ui.LiquidBackdropProvider
 import com.mouya.LiquidFrame.ui.LiquidColors
 import com.mouya.LiquidFrame.ui.LiquidPage
+import com.mouya.LiquidFrame.ui.LiquidPageTransition
 import com.mouya.LiquidFrame.ui.LiquidSliderRow
 import com.mouya.LiquidFrame.ui.LiquidToggleRow
 import com.mouya.LiquidFrame.ui.SettingDivider
@@ -407,7 +408,11 @@ class ConfigActivity : ComponentActivity() {
         Box(Modifier.fillMaxSize()) {
             LiquidBackdropProvider(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize()) {
-                    when (currentPage) {
+                    LiquidPageTransition(
+                        page = currentPage,
+                        ordinalOf = { it.ordinal },
+                    ) { page ->
+                    when (page) {
                         // ---- Home page: enable toggle, display options, maintenance ----
                         LiquidPage.Home -> Column(
                             modifier = Modifier
@@ -893,6 +898,7 @@ class ConfigActivity : ComponentActivity() {
                              modifier = Modifier.fillMaxSize(),
                          )
                      }
+                    }
                     GlassBottomBar(
                         currentPage = currentPage,
                         onPageSelected = { currentPage = it },

@@ -17,6 +17,20 @@ class LiquidFrameHook : IXposedHookLoadPackage {
         if (param.packageName != "com.android.camera" && param.packageName != "com.miui.camera") return
 
         XposedBridge.log("LiquidFrame: Camera loaded (${param.packageName})")
+        // Log the camera APK path so we can identify the exact version at runtime.
+        try {
+            val ctx = XposedHelpers.callStaticMethod(
+                XposedHelpers.findClass("android.app.ActivityThread", param.classLoader),
+                "currentApplication",
+            ) as? android.content.Context
+            ctx?.let {
+                val ai = it.applicationInfo
+                XposedBridge.log("LiquidFrame: camera APK sourceDir=${ai.sourceDir}")
+                XposedBridge.log("LiquidFrame: camera packageName=${it.packageName}")
+            }
+        } catch (t: Throwable) {
+            XposedBridge.log("LiquidFrame: could not read camera ApplicationInfo: ${t.javaClass.simpleName}: ${t.message}")
+        }
 
         GlassConfig.init(param.classLoader)
         WatermarkHooks.install(param)

@@ -25,12 +25,21 @@ class DexMethodRef(
     override fun toString(): String = signature
 }
 
-/** One `class_def_item` plus the members listed in its `class_data_item`. */
+/**
+ * One `class_def_item` plus the members listed in its `class_data_item`.
+ *
+ * [instanceFieldTypes] keeps only non-static fields **in declared order**, which is what the
+ * capture-record matcher depends on: it looks for the contiguous type run `S,F,J,I` and then
+ * addresses the fields by that index. Obfuscators rename fields freely between camera builds
+ * (6.4 used `f,g,h,i,j,k`; 6.7 uses `f,g,h,i,l,m`) but the field *order and types* survive,
+ * so index-based reading is the portable access path.
+ */
 class DexClass(
     val name: String,
     val superName: String?,
     val methods: List<DexMethodRef>,
     val fieldTypes: List<String>,
+    val instanceFieldTypes: List<String> = fieldTypes,
 )
 
 /**
@@ -82,8 +91,9 @@ class DexFile(private val data: ByteArray) {
             if (classIdx >= typeCount) continue
             val methods = ArrayList<DexMethodRef>(8)
             val fields = ArrayList<String>(4)
+            var instanceOnly: List<String> = emptyList()
             if (classDataOff != 0 && classDataOff < data.size) {
-                readClassData(classDataOff, methods, fields)
+                instanceOnly = readClassData(classDataOff, methods, fields)
             }
             out.add(
                 DexClass(
@@ -91,6 +101,7 @@ class DexFile(private val data: ByteArray) {
                     superName = if (superIdx == NO_INDEX || superIdx >= typeCount) null else typeName(superIdx),
                     methods = methods,
                     fieldTypes = fields,
+                    instanceFieldTypes = instanceOnly,
                 )
             )
         }
@@ -101,7 +112,18 @@ class DexFile(private val data: ByteArray) {
     // class_data_item
     // ---------------------------------------------------------------------------------------
 
-    private fun readClassData(off: Int, methods: MutableList<DexMethodRef>, fields: MutableList<String>) {
+    /**
+     * Parses a `class_data_item`.
+     *
+     * Field and method indices are stored as **deltas** and must be accumulated
+     * (`idx += diff`); assigning the raw delta yields plausible-looking but wrong members for
+     * every class after the first. Returns the non-static field types in declared order.
+     */
+    private fun readClassData(
+        off: Int,
+        methods: MutableList<DexMethodRef>,
+        fields: MutableList<String>,
+    ): List<String> {
         val c = Cursor(off)
         val staticFields = uleb(c)
         val instanceFields = uleb(c)
@@ -114,10 +136,15 @@ class DexFile(private val data: ByteArray) {
             uleb(c) // access flags
         }
         fieldIdx = 0
+        val instanceTypes = ArrayList<String>(instanceFields)
         for (i in 0 until instanceFields) {
             fieldIdx += uleb(c)
             uleb(c)
-            fieldTypeName(fieldIdx)?.let { fields.add(it) }
+            val t = fieldTypeName(fieldIdx)
+            if (t != null) {
+                fields.add(t)
+                instanceTypes.add(t)
+            }
         }
 
         var methodIdx = 0
@@ -134,6 +161,7 @@ class DexFile(private val data: ByteArray) {
             uleb(c)
             methodRef(methodIdx, access)?.let { methods.add(it) }
         }
+        return instanceTypes
     }
 
     private fun methodRef(idx: Int, access: Int): DexMethodRef? {
@@ -272,6 +300,9 @@ object DexScan {
     const val VOID = "V"
     const val INT = "I"
     const val FLOAT = "F"
+    const val BOOLEAN = "Z"
+    const val LONG = "J"
+    const val SHORT = "S"
 
     /** `Lpe/o;`-style wrapper: new(Bitmap), holds a Canvas, draws rects with a Paint. */
     val DRAW_RECT_PARAMS = listOf(FLOAT, FLOAT, FLOAT, FLOAT, PAINT)
@@ -295,7 +326,49 @@ object DexScan {
 
         /** Class names of candidate composite holders. */
         val compositeClasses = LinkedHashSet<String>()
+
+        /**
+         * Classes whose instance fields contain the capture-metadata type run `S,F,J,I`
+         * (focal, aperture, exposure-ns, iso) followed by a `J` and a `Location`.
+         *
+         * This is the portable stand-in for the 6.4 `la/a` record: the letters change between
+         * builds, the type sequence does not.
+         */
+        val captureRecords = LinkedHashSet<String>()
+
+        /** Class name → the record's own type descriptor, for receiver matching. */
+        val captureRecordTypes = LinkedHashMap<String, String>()
+
+        /** Class name → field-index plan resolved while scanning, so lookups stay allocation-free. */
+        val recordClassesFirstPlan = LinkedHashMap<String, RecordPlan>()
+
+        /**
+         * Methods shaped `f(<record>, Z, I)` — the call that wraps the whole watermark encode.
+         *
+         * 6.4: `E5/b.h(la/a, Z, I) -> la/f`
+         * 6.7: `W8/d.f(Ki/a, Z, I) -> Ki/f`
+         *
+         * Stored as (declaring class, method name, parameter count) so the runtime side can
+         * resolve it with one `Class.forName` instead of enumerating the class loader.
+         */
+        val captureReceivers = ArrayList<CaptureReceiver>()
+
+        /** Adds a receiver once, keyed by owner#method, so the two-pass scan cannot duplicate. */
+        fun addReceiver(receiver: CaptureReceiver) {
+            if (captureReceivers.none { it.owner == receiver.owner && it.method == receiver.method }) {
+                captureReceivers.add(receiver)
+            }
+        }
     }
+
+    /**
+     * The fingerprint of a capture-metadata record, in field *declaration order*.
+     *
+     * focal(S), aperture(F), exposure-nanoseconds(J), iso(I). 6.4 spelled these `f,g,h,i`;
+     * 6.7 spells them `f,g,h,i` too, but the fields that follow them moved (`j,k` → `l,m`),
+     * which is exactly why the reader addresses them by type-run index rather than by name.
+     */
+    val CAPTURE_RUN = listOf("S", "F", "J", "I")
 
     /**
      * Scans every `classes*.dex` inside [archives] and collects structural candidates.
@@ -327,7 +400,55 @@ object DexScan {
                 android.util.Log.w("LiquidFrame", "DexScanner: archive $archive unreadable: ${t.javaClass.simpleName}: ${t.message}")
             }
         }
+        // The record and the method that consumes it can live in different dex files (6.7 puts
+        // the record in classes5 and the receiver in classes4), so receivers are matched in a
+        // second pass once every record is known.
+        matchCaptureReceivers(archives, found)
         return found
+    }
+
+    /**
+     * Second pass: find `f(<record>, Z, I)` now that the record types are known.
+     *
+     * A separate pass is required rather than convenience: within one dex file the record may
+     * be defined after the class that consumes it, and the record set is only complete once all
+     * dex files have been scanned.
+     */
+    private fun matchCaptureReceivers(archives: List<String>, found: Found) {
+        if (found.captureRecords.isEmpty()) return
+        val recordTypes = found.captureRecordTypes.values.toHashSet()
+        for (archive in archives) {
+            if (found.captureReceivers.isNotEmpty()) break
+            try {
+                ZipFile(archive).use { zip ->
+                    val entries = zip.entries().asSequence()
+                        .filter { it.name.startsWith("classes") && it.name.endsWith(".dex") }
+                        .sortedBy { it.name }
+                        .toList()
+                    for (entry in entries) {
+                        val bytes = try {
+                            zip.getInputStream(entry).use { it.readBytes() }
+                        } catch (t: Throwable) {
+                            continue
+                        }
+                        val dex = DexFile(bytes)
+                        if (!dex.isDex()) continue
+                        for (cls in dex.classes()) {
+                            for (m in cls.methods) {
+                                if (m.params.size != 3) continue
+                                if (m.params[0] !in recordTypes) continue
+                                if (m.params[1] != BOOLEAN || m.params[2] != INT) continue
+                                found.addReceiver(
+                                    CaptureReceiver(cls.name, m.name, 3)
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("LiquidFrame", "DexScanner: receiver pass failed on $archive: ${t.javaClass.simpleName}")
+            }
+        }
     }
 
     private fun scanDex(bytes: ByteArray, found: Found) {
@@ -337,6 +458,12 @@ object DexScan {
             if (cls.name in found.canvasWrappers || cls.name in found.compositeClasses) continue
             if (isCanvasWrapper(cls)) found.canvasWrappers.add(cls.name)
             if (hasComposite(cls)) found.compositeClasses.add(cls.name)
+            if (isCaptureRecord(cls)) {
+                found.captureRecords.add(cls.name)
+                // DEX type descriptor form: Lcom/...; — callers see it in proto type lists.
+                found.captureRecordTypes[cls.name] = cls.name
+                recordPlan(cls.instanceFieldTypes)?.let { found.recordClassesFirstPlan[cls.name] = it }
+            }
         }
     }
 
@@ -355,16 +482,83 @@ object DexScan {
     }
 
     /**
-     * A composite is recognised by: static, takes a Bitmap parameter, and either
-     * returns a Bitmap (6.2.x/6.7.x style) or returns a wrapper object whose name
-     * contains "WatermarkRemover" (6.4.x style — `Fe/a->j` returns `WatermarkRemover$b`
-     * instead of the raw Bitmap). The ColorSpace parameter was dropped in 6.4.x, so
-     * requiring it would miss the new signature entirely.
+     * A composite is recognised by: takes a Bitmap parameter, and either
+     * returns a Bitmap (6.2.x/6.7.x style — both static and instance) or returns a wrapper
+     * object whose name contains "WatermarkRemover" (6.4.x style — `Fe/a->j` returns
+     * `WatermarkRemover$b` instead of the raw Bitmap). The ColorSpace parameter was dropped in
+     * 6.4.x, so requiring it would miss the new signature entirely.
+     *
+     * Note: 6.7.x changed the watermark factory from static to instance method; this matcher
+     * no longer requires `isStatic` to accommodate that change.
      */
     private fun hasComposite(cls: DexClass): Boolean =
         cls.methods.any { m ->
-            m.isStatic &&
             BITMAP in m.params &&
             (m.returnType == BITMAP || m.returnType.contains("WatermarkRemover"))
         }
+
+    /**
+     * A capture-metadata record: instance fields containing the contiguous run
+     * `S,F,J,I` (focal, aperture, exposure-ns, iso), a later `J` (capture time)
+     * and a later `Location` (GPS).
+     *
+     * Verified unique on both known builds:
+     *   6.4 → la/a (fields f,g,h,i + j:J + k:Location)
+     *   6.7 → Ki/a (fields f,g,h,i + l:J + m:Location)
+     */
+    private fun isCaptureRecord(cls: DexClass): Boolean =
+        recordPlan(cls.instanceFieldTypes) != null
+
+    /**
+     * Locates the metadata fields inside a record's instance-field type list.
+     *
+     * Returns indices into the instance field list (declaration order), or null when
+     * the class is not a record. Anchoring on the contiguous `S,F,J,I` run — rather
+     * than "first int", which 6.7 breaks by placing an unrelated `I` at index 2 —
+     * is what keeps the mapping stable across builds.
+     */
+    fun recordPlan(instanceTypes: List<String>): RecordPlan? {
+        if (instanceTypes.isEmpty() || instanceTypes.size > MAX_RECORD_FIELDS) return null
+        for (anchor in 0..instanceTypes.size - CAPTURE_RUN.size) {
+            if (instanceTypes.subList(anchor, anchor + CAPTURE_RUN.size) != CAPTURE_RUN) continue
+            var timeIdx = -1
+            var locIdx = -1
+            for (j in anchor + CAPTURE_RUN.size until instanceTypes.size) {
+                if (timeIdx < 0 && instanceTypes[j] == "J") timeIdx = j
+                if (locIdx < 0 && instanceTypes[j] == LOCATION) { locIdx = j; break }
+            }
+            if (timeIdx >= 0 && locIdx >= 0) {
+                return RecordPlan(
+                    focal = anchor,
+                    aperture = anchor + 1,
+                    exposure = anchor + 2,
+                    iso = anchor + 3,
+                    time = timeIdx,
+                    location = locIdx,
+                )
+            }
+            return null
+        }
+        return null
+    }
+
+    /** Field indices (into the instance field list in declared order) for a capture record. */
+    data class RecordPlan(
+        val focal: Int,
+        val aperture: Int,
+        val exposure: Int,
+        val iso: Int,
+        val time: Int,
+        val location: Int,
+    )
+
+    /** A method shaped `f(<record>, Z, I)`, resolved structurally from the DEX. */
+    data class CaptureReceiver(
+        val owner: String,
+        val method: String,
+        val paramCount: Int,
+    )
+
+    private const val LOCATION = "Landroid/location/Location;"
+    private const val MAX_RECORD_FIELDS = 40
 }
