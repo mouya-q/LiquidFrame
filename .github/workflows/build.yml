@@ -3,11 +3,11 @@ name: Build LiquidFrame
 # Debug APK build on every push to main, plus manual dispatch.
 #
 # This deliberately does NOT install an Android SDK action. The ubuntu-latest runner
-# already ships one, and `android-actions/setup-android@v3` currently fails on it with
+# already ships one, and `android-actions/setup-android@v3` fails on it with
 #   Warning: Failed to find package 'tools'
 #   Error: .../sdkmanager failed with exit code 1
 # (observed on run 42855595010) because it tries to install a package that no longer
-# exists upstream. The previous green builds worked for the same reason: no SDK action.
+# exists upstream. The previous green builds never used an SDK action either.
 #
 # Debug is deliberate: on-device behaviour does not depend on the variant, and Debug uses
 # Android's standard debug key, so CI never needs a private keystore. Release builds stay
@@ -55,8 +55,12 @@ jobs:
 
       - name: Verify the module APK contains the hook entry point
         # A green run with an empty or stale artifact is worse than a red one: it looks
-        # shippable. This fails the run if there is no APK, no dex, or the Xposed entry
-        # class is missing from the built dex.
+        # shippable. This fails the run when the APK or its dex is missing, or when the
+        # Xposed entry class and the structural matcher are absent from *any* dex.
+        #
+        # It used to check only classes.dex, which reported a false negative: with
+        # minifyEnabled false AGP still splits the app across classes.dex + classes2.dex,
+        # and LiquidFrameHook landed in the second one.
         run: |
           set -euo pipefail
           APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -n1)
@@ -66,14 +70,32 @@ jobs:
           fi
           echo "artifact: $APK"
           ls -l "$APK"
-          unzip -l "$APK" | grep -E 'classes.*\.dex' \
-            || (echo "::error::no dex in APK"; exit 1)
-          unzip -p "$APK" classes.dex > /tmp/classes.dex
-          if ! strings /tmp/classes.dex | grep -qi 'LiquidFrameHook'; then
-            echo "::error::LiquidFrameHook missing from classes.dex"
+
+          DEXES=$(unzip -l "$APK" | awk '{print $4}' | grep -E '^classes[0-9]*\.dex$' || true)
+          if [ -z "$DEXES" ]; then
+            echo "::error::no dex entries in APK"
             exit 1
           fi
-          echo "hook entry point present"
+          echo "dex entries:"; echo "$DEXES"
+
+          WORK=$(mktemp -d)
+          for d in $DEXES; do
+            unzip -p "$APK" "$d" > "$WORK/$d"
+          done
+
+          if ! cat "$WORK"/*.dex | strings | grep -q 'LiquidFrameHook'; then
+            echo "::error::LiquidFrameHook missing from every dex"
+            exit 1
+          fi
+          if ! cat "$WORK"/*.dex | strings | grep -q 'recordPlan'; then
+            echo "::error::structural matcher (recordPlan) missing from every dex"
+            exit 1
+          fi
+          if ! cat "$WORK"/*.dex | strings | grep -q 'selectFactoryMethod'; then
+            echo "::error::factory matcher (selectFactoryMethod) missing from every dex"
+            exit 1
+          fi
+          echo "hook entry point and both matchers present"
 
       - name: Upload app APK
         uses: actions/upload-artifact@v4
