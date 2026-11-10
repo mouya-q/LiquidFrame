@@ -1,11 +1,17 @@
-name: Build
+name: Build LiquidFrame
 
-# Builds a Debug APK on every push to main plus manual dispatch.
+# Debug APK build on every push to main, plus manual dispatch.
 #
-# Debug is deliberate: the module's on-device behaviour does not depend on the Release
-# variant, and Debug uses Android's standard debug key, so CI never needs a private
-# keystore. Release builds stay a local operation (see SIGNING_SETUP.md) so no signing
-# material can leak into the repository or the workflow logs.
+# This deliberately does NOT install an Android SDK action. The ubuntu-latest runner
+# already ships one, and `android-actions/setup-android@v3` currently fails on it with
+#   Warning: Failed to find package 'tools'
+#   Error: .../sdkmanager failed with exit code 1
+# (observed on run 42855595010) because it tries to install a package that no longer
+# exists upstream. The previous green builds worked for the same reason: no SDK action.
+#
+# Debug is deliberate: on-device behaviour does not depend on the variant, and Debug uses
+# Android's standard debug key, so CI never needs a private keystore. Release builds stay
+# local (see SIGNING_SETUP.md) so no signing material can reach the repo or the logs.
 
 on:
   push:
@@ -19,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  assemble:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -27,50 +33,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: '17'
+          java-version: '21'
+          distribution: 'temurin'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install required SDK packages
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;37.0.0" > /dev/null || \
-            sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          validate-wrappers: false
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
 
-      - name: Assemble Debug
-        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Verify the APK really contains the hook entry point
-        # A green build with an empty or stale artifact is worse than a red one: it looks
-        # shippable. This fails the run if the Xposed entry class is missing from the dex,
-        # or if the version code on disk is not the one this commit declares.
+      - name: Build gallery debug APK
+        run: ./gradlew :gallery:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify the module APK contains the hook entry point
+        # A green run with an empty or stale artifact is worse than a red one: it looks
+        # shippable. This fails the run if there is no APK, no dex, or the Xposed entry
+        # class is missing from the built dex.
         run: |
           set -euo pipefail
           APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -n1)
           if [ -z "$APK" ]; then
-            echo "::error::no debug APK produced"
+            echo "::error::no app debug APK produced"
             exit 1
           fi
           echo "artifact: $APK"
           ls -l "$APK"
-          unzip -l "$APK" | grep -E 'classes.*\.dex' || (echo "::error::no dex in APK"; exit 1)
+          unzip -l "$APK" | grep -E 'classes.*\.dex' \
+            || (echo "::error::no dex in APK"; exit 1)
           unzip -p "$APK" classes.dex > /tmp/classes.dex
           if ! strings /tmp/classes.dex | grep -qi 'LiquidFrameHook'; then
             echo "::error::LiquidFrameHook missing from classes.dex"
@@ -78,10 +75,18 @@ jobs:
           fi
           echo "hook entry point present"
 
-      - name: Upload APK
+      - name: Upload app APK
         uses: actions/upload-artifact@v4
         with:
-          name: liquidframe-apk
+          name: LiquidFrame-app-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload gallery APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiquidFrame-gallery-debug
+          path: gallery/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
           retention-days: 30
