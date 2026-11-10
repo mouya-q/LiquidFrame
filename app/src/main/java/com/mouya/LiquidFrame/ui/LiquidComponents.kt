@@ -3,7 +3,7 @@ package com.mouya.LiquidFrame.ui
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.animateColorAsState
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -186,22 +186,13 @@ fun SettingSection(
         }
         AnimatedVisibility(
             visible = visible,
-            enter = expandVertically(
-                animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = 380f,
-                    visibilityThreshold = IntSize.VisibilityThreshold,
-                ),
-                expandFrom = Alignment.Top,
-            ) + fadeIn(animationSpec = tween(durationMillis = 170, delayMillis = 55)),
-            exit = shrinkVertically(
-                animationSpec = spring(
-                    dampingRatio = 0.92f,
-                    stiffness = 460f,
-                    visibilityThreshold = IntSize.VisibilityThreshold,
-                ),
-                shrinkTowards = Alignment.Top,
-            ) + fadeOut(animationSpec = tween(durationMillis = 110)),
+            // expandVertically/shrinkVertically default to an IntSize spring, which is exactly
+            // what a section body wants. Passing a hand-built spring here would force the
+            // IntSize type parameter to be spelled out at every call site for no gain.
+            enter = expandVertically(expandFrom = Alignment.Top) +
+                    fadeIn(animationSpec = tween(durationMillis = 170, delayMillis = 55)),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top) +
+                    fadeOut(animationSpec = tween(durationMillis = 110)),
         ) {
             Column(
                 modifier = Modifier
@@ -290,24 +281,23 @@ fun SettingDivider(modifier: Modifier = Modifier) {
  *
  * The four pages used to be a bare `when`, so switching tabs replaced the whole screen in one
  * frame while the bottom bar's capsule was still sliding — that mismatch is what made the UI
- * feel unbuilt. This fades and lifts the incoming page by a few pixels, and slides it in from
- * the side the tab sits on, so the content follows the indicator rather than cutting to it.
+ * feel unbuilt. This fades and slides the incoming page by a few pixels from the side the tab
+ * sits on, so the content follows the indicator rather than cutting to it.
  *
- * Only a few pixels of horizontal travel are used: this is a tab switch, not a stack push, and
- * a large slide would fight the bottom bar's own spring.
+ * Only a few pixels of travel are used: this is a tab switch, not a stack push, and a large
+ * slide would fight the bottom bar's own spring.
  */
 @Composable
-fun <T> LiquidPageTransition(
-    page: T,
-    ordinalOf: (T) -> Int,
+fun LiquidPageTransition(
+    page: LiquidPage,
     modifier: Modifier = Modifier,
-    content: @Composable (T) -> Unit,
+    content: @Composable (LiquidPage) -> Unit,
 ) {
     AnimatedContent(
         targetState = page,
         modifier = modifier,
         transitionSpec = {
-            val forward = ordinalOf(targetState) >= ordinalOf(initialState)
+            val forward = targetState.ordinal >= initialState.ordinal
             val shift = 18
             (slideInHorizontally(
                 animationSpec = spring(dampingRatio = 0.88f, stiffness = 620f),
@@ -319,8 +309,11 @@ fun <T> LiquidPageTransition(
                 ) + fadeOut(animationSpec = tween(durationMillis = 110)))
         },
         label = "liquidPage",
-        content = content,
-    )
+    ) { current ->
+        // AnimatedContent hands the body an AnimatedContentScope receiver; the caller only
+        // wants the page value, so it is unwrapped here rather than in every call site.
+        content(current)
+    }
 }
 
 /**
@@ -343,11 +336,13 @@ fun StatusPill(text: String, color: Color) {
             .padding(horizontal = 11.dp, vertical = 7.dp),
     ) {
         // Crossfade keeps the pill's width from snapping when the two labels differ in length.
+        // The target state is typed explicitly: inference alone cannot pick the crossfade key
+        // type from a plain String target in this position.
         Crossfade(
             targetState = text,
             animationSpec = tween(durationMillis = 200),
             label = "statusPillText",
-        ) { label ->
+        ) { label: String ->
             Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = animatedColor)
         }
     }

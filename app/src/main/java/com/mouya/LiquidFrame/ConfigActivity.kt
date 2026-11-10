@@ -410,7 +410,6 @@ class ConfigActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     LiquidPageTransition(
                         page = currentPage,
-                        ordinalOf = { it.ordinal },
                     ) { page ->
                     when (page) {
                         // ---- Home page: enable toggle, display options, maintenance ----
