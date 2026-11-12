@@ -3,9 +3,7 @@ build/
 .gradle/
 .idea/
 local.properties
-# The release keystore at app/keystore/ is INTENTIONALLY committed: CI signs every
-# build with it so a new APK updates over an installed one without an uninstall
-# (see app/build.gradle's signing note). Do not ignore it. Only scratch keystores
-# used for local experiments should match the patterns below.
 keystore.properties
 *.keystore
+*.jks
+analysis/

@@ -353,11 +353,23 @@ object DexScan {
          */
         val captureReceivers = ArrayList<CaptureReceiver>()
 
+        /**
+         * Bitmap-to-capture-frame encoders. On Camera 6.7 the watermark result is converted
+         * into the final `Ki/f` frame by `Mi/b.a|b|c`; intercepting these methods is the last
+         * safe point before YUV/JPEG packing and therefore after Xiaomi has finished composing
+         * its own watermark layers.
+         */
+        val frameEncoders = ArrayList<FrameEncoder>()
+
         /** Adds a receiver once, keyed by owner#method, so the two-pass scan cannot duplicate. */
         fun addReceiver(receiver: CaptureReceiver) {
             if (captureReceivers.none { it.owner == receiver.owner && it.method == receiver.method }) {
                 captureReceivers.add(receiver)
             }
+        }
+
+        fun addFrameEncoder(encoder: FrameEncoder) {
+            if (frameEncoders.none { it.owner == encoder.owner }) frameEncoders.add(encoder)
         }
     }
 
@@ -373,13 +385,13 @@ object DexScan {
     /**
      * Scans every `classes*.dex` inside [archives] and collects structural candidates.
      *
-     * Dexes are read one at a time and released immediately, so peak memory stays at one dex even
-     * for the camera's six-dex 200 MB APK.
+     * DEX byte arrays are released one at a time. Compact class/member summaries are retained
+     * until the cross-DEX receiver and frame-encoder matchers have completed.
      */
     fun scan(archives: List<String>): Found {
         val found = Found()
+        val allClasses = ArrayList<DexClass>(36_000)
         for (archive in archives) {
-            if (found.canvasWrappers.isNotEmpty() && found.compositeClasses.isNotEmpty()) break
             try {
                 ZipFile(archive).use { zip ->
                     val entries = zip.entries().asSequence()
@@ -393,7 +405,7 @@ object DexScan {
                             android.util.Log.w("LiquidFrame", "DexScanner: failed to read ${entry.name}: ${t.javaClass.simpleName}: ${t.message}")
                             continue
                         }
-                        scanDex(bytes, found)
+                        scanDex(bytes, found, allClasses)
                     }
                 }
             } catch (t: Throwable) {
@@ -403,7 +415,8 @@ object DexScan {
         // The record and the method that consumes it can live in different dex files (6.7 puts
         // the record in classes5 and the receiver in classes4), so receivers are matched in a
         // second pass once every record is known.
-        matchCaptureReceivers(archives, found)
+        matchFrameEncoders(allClasses, found)
+        matchCaptureReceivers(allClasses, found)
         return found
     }
 
@@ -414,48 +427,79 @@ object DexScan {
      * be defined after the class that consumes it, and the record set is only complete once all
      * dex files have been scanned.
      */
-    private fun matchCaptureReceivers(archives: List<String>, found: Found) {
+    private fun matchCaptureReceivers(classes: List<DexClass>, found: Found) {
         if (found.captureRecords.isEmpty()) return
         val recordTypes = found.captureRecordTypes.values.toHashSet()
-        for (archive in archives) {
-            if (found.captureReceivers.isNotEmpty()) break
-            try {
-                ZipFile(archive).use { zip ->
-                    val entries = zip.entries().asSequence()
-                        .filter { it.name.startsWith("classes") && it.name.endsWith(".dex") }
-                        .sortedBy { it.name }
-                        .toList()
-                    for (entry in entries) {
-                        val bytes = try {
-                            zip.getInputStream(entry).use { it.readBytes() }
-                        } catch (t: Throwable) {
-                            continue
-                        }
-                        val dex = DexFile(bytes)
-                        if (!dex.isDex()) continue
-                        for (cls in dex.classes()) {
-                            for (m in cls.methods) {
-                                if (m.params.size != 3) continue
-                                if (m.params[0] !in recordTypes) continue
-                                if (m.params[1] != BOOLEAN || m.params[2] != INT) continue
-                                found.addReceiver(
-                                    CaptureReceiver(cls.name, m.name, 3)
-                                )
-                            }
-                        }
-                    }
+        val frameTypes = found.frameEncoders.map { it.wrapperType }.toHashSet()
+        for (cls in classes) {
+            for (m in cls.methods) {
+                val recordIndex = m.params.indexOfFirst { it in recordTypes }
+                if (recordIndex < 0 || m.returnType == VOID) continue
+                val exactLegacyShape = m.params.size == 3 && recordIndex == 0 &&
+                        m.params[1] == BOOLEAN && m.params[2] == INT
+                // New camera builds may insert a parameter or move the record away from arg 0.
+                // A matching frame-wrapper return type ties the broader candidate to the actual
+                // capture processor rather than any helper that happens to read the metadata.
+                val verifiedFrameShape = m.returnType in frameTypes && m.params.size in 1..6
+                if (exactLegacyShape || verifiedFrameShape) {
+                    found.addReceiver(CaptureReceiver(cls.name, m.name, m.params.size, recordIndex))
                 }
-            } catch (t: Throwable) {
-                android.util.Log.w("LiquidFrame", "DexScanner: receiver pass failed on $archive: ${t.javaClass.simpleName}")
             }
         }
     }
 
-    private fun scanDex(bytes: ByteArray, found: Found) {
+    /**
+     * Finds the final Bitmap -> frame-wrapper adapters without depending on obfuscated owner
+     * names. A candidate wrapper carries one image payload object plus at least three integer
+     * dimensions/rotation fields. Its owner must expose at least two static Bitmap adapters to
+     * that wrapper and also consume the capture record alongside a Xiaomi watermark type.
+     * This conjunction is intentionally conservative: on an unknown camera build we prefer
+     * leaving the stock result intact over drawing onto an arbitrary image helper.
+     */
+    private fun matchFrameEncoders(classes: List<DexClass>, found: Found) {
+        if (found.captureRecords.isEmpty()) return
+        val recordTypes = found.captureRecordTypes.values.toSet()
+        val wrappers = classes.filter { cls ->
+            cls.instanceFieldTypes.count { it == INT } >= 3 &&
+                cls.instanceFieldTypes.any { it.startsWith("L") && it.endsWith(";") } &&
+                cls.methods.any { method ->
+                    method.isConstructor && method.params.size >= 4 &&
+                        method.params.lastOrNull() == INT &&
+                        method.params.count { it == INT } >= 2
+                }
+        }.map { it.name }.toHashSet()
+        if (wrappers.isEmpty()) return
+
+        for (cls in classes) {
+            val candidates = cls.methods.filter { method ->
+                method.isStatic && method.returnType in wrappers && BITMAP in method.params
+            }
+            if (candidates.size < 2) continue
+            val consumesCaptureAndWatermark = cls.methods.any { method ->
+                method.params.any { it in recordTypes } &&
+                    method.params.any { it.contains("/watermark/") || it.contains("cam/watermark") }
+            }
+            if (!consumesCaptureAndWatermark) continue
+            val grouped = candidates.groupBy { it.returnType }
+            val best = grouped.entries.maxByOrNull { (_, methods) ->
+                methods.size * 10 + methods.count { it.params.size <= 2 }
+            } ?: continue
+            val encoders = best.value.mapNotNull { method ->
+                val index = method.params.indexOf(BITMAP)
+                if (index < 0) null else FrameEncoderMethod(method.name, method.params.size, index)
+            }
+            if (encoders.size >= 2) {
+                found.addFrameEncoder(FrameEncoder(cls.name, best.key, encoders))
+            }
+        }
+    }
+
+    private fun scanDex(bytes: ByteArray, found: Found, allClasses: MutableList<DexClass>) {
         val dex = DexFile(bytes)
         if (!dex.isDex()) return
-        for (cls in dex.classes()) {
-            if (cls.name in found.canvasWrappers || cls.name in found.compositeClasses) continue
+        val parsed = dex.classes()
+        allClasses.addAll(parsed)
+        for (cls in parsed) {
             if (isCanvasWrapper(cls)) found.canvasWrappers.add(cls.name)
             if (hasComposite(cls)) found.compositeClasses.add(cls.name)
             if (isCaptureRecord(cls)) {
@@ -535,6 +579,7 @@ object DexScan {
                     iso = anchor + 3,
                     time = timeIdx,
                     location = locIdx,
+                    sourceBitmap = instanceTypes.indexOf(BITMAP).takeIf { it >= 0 },
                 )
             }
             return null
@@ -550,6 +595,8 @@ object DexScan {
         val iso: Int,
         val time: Int,
         val location: Int,
+        /** Pristine source image, when the camera stores it on the typed capture record. */
+        val sourceBitmap: Int? = null,
     )
 
     /** A method shaped `f(<record>, Z, I)`, resolved structurally from the DEX. */
@@ -557,6 +604,19 @@ object DexScan {
         val owner: String,
         val method: String,
         val paramCount: Int,
+        val recordParamIndex: Int = 0,
+    )
+
+    data class FrameEncoder(
+        val owner: String,
+        val wrapperType: String,
+        val methods: List<FrameEncoderMethod>,
+    )
+
+    data class FrameEncoderMethod(
+        val name: String,
+        val paramCount: Int,
+        val bitmapParamIndex: Int,
     )
 
     private const val LOCATION = "Landroid/location/Location;"

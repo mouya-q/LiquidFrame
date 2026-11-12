@@ -1,5 +1,50 @@
 # Changelog
 
+## 2.1.2 — Xiaomi 17 post-composition watermark replacement
+
+### Capture pipeline
+
+- Fixed the preview/final-photo mismatch on the Xiaomi Camera 6.7 path. The capture-time
+  watermark factory is no longer painted early; its exact returned composite Bitmap is recorded,
+  then replaced immediately before `Mi/b` converts it into the camera's `Ki/f` frame wrapper.
+- Added a clean-source snapshot hook for `com.xiaomi.libyuv.YuvUtils.I420ToBitmap`. Normal frames
+  keep a full immutable copy; large frames keep a bounded bottom recovery strip (maximum 64 MiB),
+  scaled only as needed to stay within the memory budget.
+- Final-frame replacement is identity-gated: only the exact Bitmap returned by Xiaomi's watermark
+  factory is patched. The separate original-image branch remains untouched. Unverified targets
+  fail open and retain the stock image.
+- Structural capture-receiver discovery now stores the actual record parameter index, and logs it.
+  The frame-encoder matcher discovers Bitmap-to-wrapper methods from DEX shape and revalidates them
+  through reflection.
+
+### Visual refinement
+
+- Rebalanced the capsule to the supplied photo reference: 91% width, taller pill, Apple mark by
+  default, mark around 57.5% width, divider around 63%, and a raised baseline about 14% of the short
+  side from the bottom.
+- Logo options that previously silently displayed a Leica asset under other brand names now use
+  explicit typographic wordmarks; the selector labels them as wordmarks.
+- The settings page keeps related controls grouped and uses native dropdown-style selectors for
+  logo, logo position and capsule alignment.
+
+### Build and key hygiene
+
+- Removed the private signing keystore from the source tree and made external signing opt-in via
+  `LIQUIDFRAME_KEYSTORE*` environment variables / Gradle properties. Debug builds use the local
+  Android debug key; release builds remain unsigned unless an external key is supplied.
+- CI now builds and verifies installable debug APKs for both `app` and `gallery`, without depending
+  on a repository-embedded signing key.
+
+### Verification
+
+- `DexScanner.kt` compiled independently with Kotlin/JVM and its record-plan mapping was checked
+  against the supplied Xiaomi 6.7 class-field listing.
+- Android Gradle build and Xiaomi 17 device capture test were **not run** in this environment:
+  Android SDK is absent and the Gradle 9.8.0 wrapper distribution could not be reached.
+
+### Version
+- `2.1.2`, `versionCode 38`.
+
 ## 2.1.1 — Restored the release-signing pipeline CI never had
 
 ### What was broken

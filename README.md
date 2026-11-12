@@ -38,11 +38,11 @@ tuning that material.
 
 ## What it does
 
-Xiaomi Camera creates a watermark in its photo-output pipeline. LiquidFrame intercepts the verified
-watermark Bitmap factory **before the stock watermark is drawn**, then renders a custom liquid-glass
-capsule directly onto the clean source photo. It does not paint a guessed rectangle over the finished
-JPEG or mistake arbitrary scene pixels for a watermark. In this path the original watermark group
-(text and logo included) is replaced as a whole by the new capsule.
+Xiaomi Camera creates a watermark in its photo-output pipeline. LiquidFrame snapshots clean pixels
+from the YUV-to-Bitmap source, records the exact Bitmap returned by Xiaomi's watermark compositor,
+and replaces only that composed object immediately before frame encoding. It restores the source
+pixels under the stock plate and draws one glass capsule; the camera's separate original-photo
+branch remains untouched.
 
 "Liquid Glass" here means a surface that does more than blur:
 
@@ -54,7 +54,7 @@ JPEG or mistake arbitrary scene pixels for a watermark. In this path the origina
 | **Specular rim** | A hemispheric normal along the rounded edge, lit from two directions, giving two opposing highlights that rotate with the light. |
 | **Inner shadow** | A soft edge-anchoring shade, so the panel reads as a solid object rather than a sticker. |
 
-The current hook targets MIUI Camera `1+6.4.000250.2`; see
+The primary reverse-engineering target is Xiaomi 17 Camera `6.7.000480.0`, with a legacy 6.4 fallback and conservative DEX structural discovery for other builds; see
 [Limitations](#limitations-and-known-issues) for the exact supported path and open gaps.
 
 ## Screenshots
@@ -84,11 +84,11 @@ as a prism on opposite edges rather than a uniform colour fringe:
 app/                    LSPosed module (the watermark hook)
   src/main/java/com/mouya/LiquidFrame/
     WatermarkHooks.kt     hook installation and the composite pipeline
-    DexKitHelper.kt       legacy discovery component (not started by the current exact hook path)
+    DexKitHelper.kt       DEX discovery, reflection verification and late retry
     ConfigStore.kt        settings shared between the module and the camera process
     GlassConfig.kt        the camera-side view of those settings
     ConfigActivity.kt     settings UI: Compose + iOS-style glass, live preview
-    dex/DexScanner.kt     legacy dependency-free DEX reader; current hook uses verified signatures
+    dex/DexScanner.kt     lightweight DEX reader for capture records, receivers and frame adapters
     glass/                the optics engine (no Android dependency)
       LiquidGlassOptics.kt  CPU port of the material
       GlassParams.kt        every quantity in the material
@@ -126,9 +126,10 @@ docs/                   reference renders
 3. Force-stop Xiaomi Camera, then reopen it.
 4. Take a photo with a watermark enabled.
 
-To confirm the current 6.4.000250.2 hook path was installed, check the module log for
-`hooked typed capture metadata` and `hooked real watermark output`. After taking a photo, look for
-`watermark factory: stock watermark replaced`. Missing metadata fields are intentionally omitted;
+Check the module log for the `capture context`, `YUV source adapter`, `watermark factory`, and
+`final capture encoder` hooks. A successful shot should log
+`final capture encoder: replaced composed stock layer with glass`. If the structure cannot be
+verified, the camera's original result is kept. Missing metadata fields are intentionally omitted;
 they are not filled with guessed values.
 
 ## Configuration
@@ -138,8 +139,10 @@ and mirrored to `/data/local/tmp/lf_config.txt` for the camera process. The shar
 need root authorization; the settings page reports whether synchronization actually succeeded. A
 successful sync applies to the next capture without restarting the camera.
 
-The settings screen renders a **live preview** with the same optics the module uses, so the
-material can be judged and tuned without taking a photo. The controls are:
+The settings screen renders a **live preview** with the same optics and capsule proportions used
+for capture. Settings are grouped into collapsible sections (Core, Rendering, Capture Info, Brand,
+Layout, and Maintenance); logo and position choices use native Compose drop-down menus rather than
+always-visible option rows. The controls are:
 
 | Setting | Effect |
 | --- | --- |
@@ -169,9 +172,9 @@ The optics are a port of the reference renderer used by the miuix ecosystem
 mathematics exists in two backends, because the two places it must run have different constraints:
 
 - **`app/glass/LiquidGlassOptics.kt`** — a CPU implementation on integer pixel buffers. The
-  current hook applies it to a cropped region of the clean source photo inside the camera's
-  watermark Bitmap factory, before the stock watermark is drawn. This file has **no Android
-  dependency at all**, which is what makes the optics testable off-device.
+  hook applies it to a cropped region of the verified clean source frame immediately before the
+  camera's final Bitmap-to-frame conversion. This file has **no Android dependency at all**,
+  which is what makes the optics testable off-device.
 - **`gallery/glass/Lens.kt`** — an AGSL `RuntimeShader`, applied as a live `RenderEffect` chain
   through miuix's backdrop engine. This is the real-time path used by the companion app.
 
@@ -220,85 +223,41 @@ provides.
 
 ## How the hook works
 
-The current implementation targets the supplied disassembly of **MIUI Camera `1+6.4.000250.2`**
-(`versionCode 740002502`). It no longer treats `Fe/a->j(...)` as the finished photo and no longer
-walks arbitrary object graphs looking for numbers that happen to resemble EXIF values.
+The primary implementation target is **Xiaomi 17 Camera `6.7.000480.0`**. The supplied archive
+contains its disassembly index and class/method text, not the original APK binary. The module keeps
+a legacy 6.4 fallback and uses structural DEX discovery for other installed camera builds.
 
-### Real capture metadata
+### Real capture metadata and final composition
 
-```text
-CaptureResult / TotalCaptureResult
-        │
-        ▼
-E5/c.b(CaptureResult) -> la/b
-  SENSOR_EXPOSURE_TIME  -> exposure ns
-  LENS_APERTURE         -> aperture
-  La6/N.b(result)       -> ISO
-  La6/O.c(result)       -> 35mm-equivalent focal length
-        │
-        ▼
-E5/c.c(LR9/o)
-  combines result + LR9/p.D:Location + LR9/o.I:timestamp(ms)
-        │
-        ▼
-la/a typed capture record
-  f:S  focal length (35mm equivalent)
-  g:F  aperture
-  h:J  exposure time (ns)
-  i:I  ISO
-  j:J  capture timestamp (ms)
-  k:Location GPS
-        │
-        ▼
-E5/b.h(la/a, boolean, int)
-  LiquidFrame ThreadLocal snapshot
-        │
-        ▼
-com.xiaomi.cam.watermark.b.c(..., Bitmap srcBitmap, ...): Bitmap
-  stock watermark renderer bypassed
-        │
-        ▼
-custom capsule rendered on source photo Bitmap
-```
+The 6.7 still-photo entry point is `W8/d.f(Ki/a, boolean, int) -> Ki/f`. Its typed record carries
+35mm-equivalent focal length (`S`), aperture (`F`), exposure nanoseconds (`J`), ISO (`I`), capture
+time (`J`) and `Location`. The matching `Ki/b` diagnostic names this focal value
+`mFocalLength35mm`; the capsule's `100mm` is therefore a 35mm-equivalent value, not physical lens
+focal length. Values are range-checked and omitted when absent.
 
-`CaptureMeta` accepts only those typed fields and validates their ranges. Exposure nanoseconds are
-converted to seconds; the capture timestamp is interpreted as Unix milliseconds; GPS is accepted
-only as a valid `Location`. Missing or invalid values stay absent — no current-time fallback, random
-number, frame counter, or arbitrary field scan is used.
+The capture path first converts YUV to a clean Bitmap through
+`com.xiaomi.libyuv.YuvUtils.I420ToBitmap`, may scale that source, then calls
+`com.xiaomi.cam.watermark.a.c(...)` which delegates to the original watermark composition in
+`com.xiaomi.cam.watermark.b.c(...)`. The returned Bitmap is the **stock-composited photo**. It is
+then passed to `Mi/b.c(I, Bitmap)`, `Mi/b.b(Bitmap)` or `Mi/b.a(Bitmap)` for `Ki/f` frame creation.
 
-### Watermark replacement point
+LiquidFrame snapshots the clean source (full-frame up to 64 MiB, otherwise a bounded bottom recovery
+strip) and records the factory's exact returned Bitmap identity. Immediately before frame creation,
+it patches only that same object: restore the source pixels, render the glass capsule once, then let
+the camera encode it. The separate untouched-original branch is excluded by identity. The factory's
+selection-preview path remains separately rendered, so the UI preview and final capture share the
+same capsule renderer without drawing the capture capsule too early.
 
-`E5/b.h(la/a, boolean, int)` is the still-photo watermark processing entry point in this build. It
-calls `com.xiaomi.cam.watermark.b.b(Application, Bitmap, Dc/b, int)`, a wrapper that calls the static
-`com.xiaomi.cam.watermark.b.c(b, Context, Bitmap, Dc/b, int, String, int) -> Bitmap`. That method
-creates `com.xiaomi.cam.watermark.c` and enters Xiaomi's original watermark rendering path.
+### Cross-version discovery and boundaries
 
-LiquidFrame hooks the exact static `b.c(...)` method, guarded by the active `E5/b.h` ThreadLocal
-capture context. Its third argument is the source photo Bitmap. The hook bypasses the stock renderer,
-draws the replacement capsule onto the source photo, and returns it. If copying or rendering fails,
-it leaves the hook result unset so the original Xiaomi method proceeds (fail-open).
+The DEX scanner recognizes capture records by the `S,F,J,I` field run followed by timestamp `J` and
+`Location`, records the actual capture argument index, and finds the final Bitmap-to-frame-wrapper
+adapters using their field/constructor shape and relationship to the capture record and Xiaomi
+watermark types. Reflection revalidates every chosen method. It scans installed base/split APKs and
+retries after the background scan completes. Unknown structures fail open and retain the stock photo.
 
-This is not post-processing erasure: the old watermark is not first baked into the JPEG and then
-covered by an opaque patch. `Fe/a->j(...)` rasterizes a `Fe/a` watermark layer tree into a Bitmap; in
-the relevant `WatermarkRemover.getWatermarkData(...)` flow it can create a blank canvas for the layer,
-so it is not a stable handle to the final photograph. Treating that scratch Bitmap as the source photo
-was the wrong target.
-
-`WatermarkRemover.getWatermarkData(Bitmap, Fe/a, ...)` returns a `WatermarkRemover$b` structure
-(status, rectangle/region and image-byte data), not a Bitmap. It is used for watermark-region
-identification/movement and must not be treated as the final photo or as a replaceable Bitmap.
-
-### Scope
-
-- Hook compatibility depends on this build's obfuscated names and signatures: `E5.b#h(la.a,
-  boolean, int)` and `com.xiaomi.cam.watermark.b#c(...)`. Nearby version numbers do not prove
-  compatibility; re-check the target APK.
-- This hook covers the `E5/b.h` Bitmap watermark path. HEIF/MIVI3 or other direct metadata/byte-stream
-  paths may bypass this Bitmap factory and are not claimed as supported here.
-- The original watermark is replaced as a whole, including its text and logo. The new capsule is
-  rebuilt from available capture metadata and the module's optional logo assets.
-- Runtime behaviour still needs device validation: confirm the hook is called by the desired mode
-  and compare the displayed fields against the saved photo's EXIF.
+The structural approach broadens compatibility; it does not prove every camera version or format.
+HEIF/MIVI3, RAW, Live Photo and direct byte-stream paths still require per-build verification.
 
 ## Building
 
@@ -321,17 +280,20 @@ metadata rejects it), which is why these floors are where they are. AGP 9 suppli
 so `org.jetbrains.kotlin.android` is deliberately not applied; the Compose compiler is applied
 separately via `org.jetbrains.kotlin.plugin.compose`.
 
-CI builds `:app` only. `gallery/` needs `compileSdk 37`, so it is built locally, not on every push.
+CI builds and verifies debug APKs for both `:app` and `:gallery`. Release signing is opt-in; see
+[`SIGNING_SETUP.md`](SIGNING_SETUP.md).
 
 ## Troubleshooting
 
-**The original watermark is still present.** Check that the LSPosed scope includes the actual camera
-package (`com.android.camera` or `com.miui.camera`), force-stop and reopen the camera, and look for
-`hooked typed capture metadata` plus `hooked real watermark output` in the module log.
+**The original watermark is still present.** Check for `YUV source adapter hooked`,
+`watermark factory hooked`, and `final capture encoder hooked`. A successful shot should log
+`replaced composed stock layer with glass`. If the final encoder is not reached, the mode may use
+another image branch; the module intentionally leaves the stock photo unchanged.
 
-**No `watermark factory` log appears.** The selected capture mode may not use the `E5/b.h` Bitmap
-watermark path, or the camera method signature may have changed. Verify the camera build and provide
-the full module log.
+**The YUV source adapter is missing.** Some camera builds may rename or relocate `YuvUtils`. The
+factory input is used as a fallback source, but replacement is skipped if source dimensions or
+Bitmap identity cannot be verified. Include the complete module log and camera version when
+reporting a miss.
 
 **A metadata field is missing.** This is deliberate fail-closed behaviour: a field is omitted unless
 it came from the current capture record. Compare the capsule with the saved photo's EXIF and note the
@@ -343,14 +305,15 @@ photo file rather than a screenshot for pixel-level diagnosis.
 
 ## Limitations and known issues
 
-- **Implemented against one disassembled build:** MIUI Camera `1+6.4.000250.2`
-  (`versionCode 740002502`). Obfuscation/signature changes can make the hook miss.
-- **Bitmap watermark path first.** HEIF/MIVI3, RAW, or any other route that bypasses
-  `E5/b.h -> watermark/b.c` is not yet covered; watermark replacement is not guaranteed there.
-- **No Android build or device test was possible in this environment.** Building requires JDK 21,
-  Gradle 9.8.0, AGP 9.4.1 and Android SDK platform 37. The SDK is absent here and the Gradle Wrapper
-  download failed because network access was unavailable. This delivery is a static source repair;
-  build locally or in CI before installation.
+- **Primary reverse-engineering target:** Xiaomi 17 Camera `6.7.000480.0`. The `W8/d.f` capture
+  receiver, `Ki/a` metadata record, `YuvUtils` clean-frame source and `Mi/b` frame adapters are
+  identified from the supplied DEX disassembly. A literal 6.4 receiver fallback and structural
+  matching broaden the compatibility surface, but an unseen camera build still needs verification.
+- **Bitmap watermark path first.** HEIF/MIVI3, RAW, Live Photo, and any route that bypasses the
+  current Bitmap-to-frame conversion are not yet verified.
+- **No Android build or Xiaomi 17 device test was possible in this environment.** The Android SDK
+  is absent and the Gradle Wrapper download failed because network access was unavailable. This
+  source package must be built locally or in CI and then tested on the actual camera build.
 - **The original watermark is replaced as a whole.** Its text and logo are not preserved; the new
   capsule displays fields available in the current capture record.
 - **Some capture fields may be unavailable.** Camera2 capabilities, shooting mode, or Xiaomi's

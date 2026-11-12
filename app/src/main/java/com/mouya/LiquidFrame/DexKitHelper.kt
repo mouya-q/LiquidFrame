@@ -68,6 +68,19 @@ object DexKitHelper {
     @Volatile
     private var captureReceiverParams: Int? = null
 
+    /** Index of the capture-record argument; future camera builds may reorder parameters. */
+    @Volatile
+    private var captureReceiverRecordIndex: Int = 0
+
+    @Volatile
+    private var frameEncoderOwner: String? = null
+
+    @Volatile
+    private var frameEncoderWrapper: String? = null
+
+    @Volatile
+    private var frameEncoderMethods: List<DexScan.FrameEncoderMethod> = emptyList()
+
     fun init(context: Context) {
         if (scanStarted) return
         scanStarted = true
@@ -137,7 +150,8 @@ object DexKitHelper {
     fun awaitDiscovery(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            if (hasAnything()) return true
+            // A candidate field can be populated before the remaining cross-DEX matchers have
+            // finished. Do not wake the late-hook pass until runScan publishes its final result.
             if (scanResult != null) return hasAnything()
             try {
                 Thread.sleep(25L)
@@ -145,7 +159,7 @@ object DexKitHelper {
                 return false
             }
         }
-        return hasAnything()
+        return scanResult != null && hasAnything()
     }
 
     /**
@@ -156,7 +170,8 @@ object DexKitHelper {
      * turns the EXIF line on, and returning false here would skip the retry entirely.
      */
     private fun hasAnything(): Boolean =
-        canvasWrapperName != null || compositeClassName != null || captureRecordName != null
+        canvasWrapperName != null || compositeClassName != null || captureRecordName != null ||
+                frameEncoderOwner != null
 
     private fun runScan(context: Context) {
         try {
@@ -168,7 +183,6 @@ object DexKitHelper {
             }
             val started = System.currentTimeMillis()
             val found = DexScan.scan(apks)
-            scanResult = found
             log(
                 "dex scan: ${apks.size} apk(s), " +
                         "${found.canvasWrappers.size} wrapper candidate(s), " +
@@ -194,9 +208,19 @@ object DexKitHelper {
             captureReceiverOwner = receiver?.owner
             captureReceiverMethod = receiver?.method
             captureReceiverParams = receiver?.paramCount
+            captureReceiverRecordIndex = receiver?.recordParamIndex ?: 0
+
+            val frameEncoder = found.frameEncoders.firstOrNull { candidate ->
+                val loader = classLoader
+                loader != null && load(candidate.owner, loader) != null &&
+                        load(candidate.wrapperType, loader) != null
+            }
+            frameEncoderOwner = frameEncoder?.owner
+            frameEncoderWrapper = frameEncoder?.wrapperType
+            frameEncoderMethods = frameEncoder?.methods.orEmpty()
 
             val receiverLabel = if (receiver != null) {
-                receiver.owner + "#" + receiver.method
+                receiver.owner + "#" + receiver.method + "(recordArg=" + receiver.recordParamIndex + ")"
             } else {
                 "none"
             }
@@ -210,10 +234,25 @@ object DexKitHelper {
                         " composite=" + (compositeClassName ?: "none") +
                         " captureRecord=" + (captureRecordName ?: "none") +
                         " receiver=" + receiverLabel +
+                        " frameEncoder=" + (frameEncoderOwner ?: "none") +
                         " plan=" + planLabel
             )
+            // Publish only after capture record, receiver and final frame adapters are all
+            // resolved. The late-hook thread treats this field as the scan-complete barrier.
+            scanResult = found
         } catch (t: Throwable) {
             log("dex scan failed: ${t.javaClass.simpleName}: ${t.message}")
+            canvasWrapperName = null
+            compositeClassName = null
+            captureRecordName = null
+            capturePlan = null
+            captureReceiverOwner = null
+            captureReceiverMethod = null
+            captureReceiverParams = null
+            captureReceiverRecordIndex = 0
+            frameEncoderOwner = null
+            frameEncoderWrapper = null
+            frameEncoderMethods = emptyList()
             scanResult = DexScan.Found()
         }
     }
@@ -279,13 +318,36 @@ object DexKitHelper {
     /** Field indices inside [findCaptureRecord], or null before discovery completes. */
     fun captureRecordPlan(): DexScan.RecordPlan? = capturePlan
 
+    /** Parameter index of the record in the structurally matched capture receiver. */
+    fun captureReceiverRecordIndex(): Int = captureReceiverRecordIndex
+
     /**
-     * Finds the method that consumes the capture record, i.e. `f(<record>, Z, I)`.
+     * Resolves the structurally identified final Bitmap encoders. Exact return type, static
+     * modifier and Bitmap argument position are revalidated through reflection before hook.
+     */
+    fun findFrameEncoderMethods(loader: ClassLoader): List<Pair<Method, Int>> {
+        val ownerName = frameEncoderOwner ?: return emptyList()
+        val wrapperName = frameEncoderWrapper ?: return emptyList()
+        val owner = load(ownerName, loader) ?: return emptyList()
+        val wrapper = load(wrapperName, loader) ?: return emptyList()
+        return frameEncoderMethods.mapNotNull { plan ->
+            owner.declaredMethods.firstOrNull { method ->
+                method.name == plan.name &&
+                        method.parameterTypes.size == plan.paramCount &&
+                        method.parameterTypes.getOrNull(plan.bitmapParamIndex) == android.graphics.Bitmap::class.java &&
+                        method.returnType == wrapper &&
+                        java.lang.reflect.Modifier.isStatic(method.modifiers)
+            }?.let { it to plan.bitmapParamIndex }
+        }.distinctBy { it.first }
+    }
+
+    /**
+     * Finds the method that consumes the capture record, usually `f(<record>, Z, I)`.
      *
      * 6.4 declared this as `E5/b.h(la/a, Z, I) -> la/f`; 6.7 declares it as
      * `W8/d.f(Ki/a, Z, I) -> Ki/f`. The return type is a per-build wrapper, so it is not
-     * constrained — the parameter shape plus "first parameter is the record" is enough, and
-     * the caller verifies that only one candidate exists.
+     * constrained for the legacy signature; the structural path also stores the record's
+     * actual parameter index, so re-ordered signatures can be resolved safely.
      */
     fun findCaptureReceiver(loader: ClassLoader): Method? {
         // Preferred path: the DEX scan already located the declaring class and method name, so
@@ -298,15 +360,18 @@ object DexKitHelper {
             val cls = load(owner, loader)
             if (cls != null) {
                 val record = findCaptureRecord()
+                val recordIndex = captureReceiverRecordIndex
                 cls.declaredMethods.firstOrNull { m ->
                     m.name == methodName &&
                             m.parameterTypes.size == paramCount &&
-                            (record == null || m.parameterTypes[0] == record)
+                            (record == null || m.parameterTypes.getOrNull(recordIndex) == record)
                 }?.let { return it }
             }
         }
 
-        // Fallback: the record's own declared methods. Some builds put the encoder beside it.
+        // Fallback: the record's own declared methods. This covers only the legacy signature,
+        // where the record is parameter zero; newer structurally discovered receivers retain
+        // their actual record argument index above.
         val record = findCaptureRecord() ?: return null
         val boolType = Boolean::class.javaPrimitiveType ?: return null
         val intType = Int::class.javaPrimitiveType ?: return null

@@ -36,22 +36,22 @@ enum class LogoPreset(
         true,
     ),
     Xiaomi(
-        "小米",
+        "小米字标",
         1.0f,
-        1.2f,
-        false,
+        1.0f,
+        true,
     ),
     Hasselblad(
-        "哈苏",
-        1.2439024f,
-        0.94f,
-        false,
+        "哈苏字标",
+        2.4f,
+        1.0f,
+        true,
     ),
     Zeiss(
-        "蔡司",
+        "蔡司字标",
+        1.8f,
         1.0f,
-        1.05f,
-        false,
+        true,
     ),
     None(
         "无",
@@ -62,11 +62,11 @@ enum class LogoPreset(
 
     companion object {
         /**
-         * Resolve a logo by name string, with fallback to LeicaWhite.
+         * Resolve a logo by name string, with a reference-matching Apple fallback.
          */
         fun fromName(name: String?): LogoPreset {
-            if (name == null) return LeicaWhite
-            return entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: LeicaWhite
+            if (name == null) return Apple
+            return entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: Apple
         }
     }
 }

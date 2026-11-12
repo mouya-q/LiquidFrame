@@ -1,17 +1,5 @@
 name: Build
 
-# Restored from the project's original release-signing workflow (commit 2670b85b).
-#
-# It builds :app:assembleRelease, not debug: the artifact users install is the release
-# one, signed with the fixed keystore committed at app/keystore/liquidframe-release.p12
-# so a new build updates over an installed one without an uninstall.
-#
-# One addition to the original: a signature check. An earlier revision of this repo
-# switched signing to injected properties that CI never provided, so the build kept
-# succeeding while emitting an *unsigned* release APK, and the workflow comment still
-# claimed it was signed. The check below makes that specific silent failure impossible:
-# no META-INF signing block in the APK fails the run.
-
 on:
   workflow_dispatch:
   push:
@@ -32,58 +20,37 @@ jobs:
           java-version: '21'
           distribution: temurin
 
-      # The gallery compiles against API 37, which needs an SDK platform the runner image may
-      # not carry yet.
       - name: Install Android SDK platform 37
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" > /dev/null 2>&1 || true
 
-      - name: Build
+      - name: Build release APK
         run: |
           chmod +x gradlew
-          # Release only: the installed artifact is release, signed with the fixed
-          # keystore so any build updates over a previous install.
-          ./gradlew :app:assembleRelease --stacktrace --no-daemon
+          ./gradlew :app:assembleRelease :gallery:assembleRelease --stacktrace --no-daemon
 
       - name: Verify the release APK is signed with the project key
         run: |
           set -euo pipefail
-          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
-          if [ -z "$APK" ]; then
-            echo "::error::no release APK produced"
-            exit 1
-          fi
-          echo "artifact: $APK"
-          ls -l "$APK"
-
-          # A signed APK carries a v1 signature block in META-INF, and/or v2/v3 blocks that
-          # only apksigner can read. An unsigned one has none of them and would otherwise
-          # look like an ordinary green build.
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner 2>/dev/null | sort | tail -n1)
-          echo "apksigner: ${APKSIGNER:-not found}"
-
-          SIG=$(unzip -l "$APK" | awk '{print $4}' | grep -E '^META-INF/.*\.(RSA|EC|DSA|SF)$' || true)
-          if [ -z "$SIG" ]; then
-            if [ -z "$APKSIGNER" ]; then
-              echo "::error::no v1 signature block and no apksigner available to check v2/v3"
+          test -n "$APKSIGNER"
+          for apk in app/build/outputs/apk/release/*.apk gallery/build/outputs/apk/release/*.apk; do
+            [ -f "$apk" ] || continue
+            echo "--- $apk ---"
+            "$APKSIGNER" verify --print-certs "$apk"
+            "$APKSIGNER" verify --print-certs "$apk" | grep -q "SHA-256 digest: 6e85bc51" || {
+              echo "ERROR: $apk is not signed with the project key (expected SHA-256 6e85bc51...b3ea)"
               exit 1
-            fi
-            if ! "$APKSIGNER" verify --print-certs "$APK"; then
-              echo "::error::release APK is NOT signed - users would have to uninstall to update"
-              exit 1
-            fi
-          fi
-          if [ -n "$APKSIGNER" ]; then
-            "$APKSIGNER" verify --print-certs "$APK" | head -n 6
-          fi
+            }
+          done
           echo "signed: ok"
 
       - name: Upload APKs
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LiquidFrame
-          path: app/build/outputs/apk/release/*.apk
-          # A green run with an empty artifact is a silent failure; make it loud.
+          name: LiquidFrame-release
+          path: |
+            app/build/outputs/apk/release/*.apk
+            gallery/build/outputs/apk/release/*.apk
           if-no-files-found: error

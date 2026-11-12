@@ -371,7 +371,7 @@ object ConfigStore {
     fun capsuleShowLogo(): Boolean = bool(KEY_CAPSULE_LOGO, true)
 
     fun capsuleLogoPreset(): String = cached[KEY_CAPSULE_LOGO_PRESET]?.trim()
-        ?.takeIf { it.isNotBlank() } ?: "LeicaWhite"
+        ?.takeIf { it.isNotBlank() } ?: "Apple"
 
     fun capsuleLogoPosition(): String = cached[KEY_CAPSULE_LOGO_POSITION]?.trim()
         ?.takeIf { it.isNotBlank() } ?: "MIDDLE"

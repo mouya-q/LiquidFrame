@@ -19,11 +19,10 @@ import kotlin.math.roundToLong
 /**
  * Pixel and layout helpers for the replacement capture capsule.
  *
- * On the supported Xiaomi Camera 6.4.000250.2 still-photo path, WatermarkHooks intercepts
- * the real source-photo Bitmap before Xiaomi's stock watermark renderer runs. This class
- * formats only the typed metadata supplied by that hook, measures the replacement capsule,
- * and rasterizes its text layer. It does not discover metadata by reflecting over arbitrary
- * camera objects and does not erase an already-composited watermark.
+ * WatermarkHooks supplies the clean capture bitmap and typed metadata, then calls this renderer
+ * only after Xiaomi has produced its stock-composited frame and immediately before frame encoding.
+ * The hook restores verified clean source pixels under the stock plate before invoking this
+ * renderer. This class owns geometry, typography and the raster text/logo layer.
  *
  * Design rules:
  *  - missing capture fields remain absent; no current-time or numeric-guess fallback;
@@ -50,7 +49,7 @@ object CapsuleRenderer {
         /** Pre-decoded logo bitmap, or null when unavailable. */
         val logo: Bitmap? = null,
         /** Logo preset name, for aspect compensation. */
-        val logoPreset: String = "LeicaWhite",
+        val logoPreset: String = "Apple",
         /** Logo position: "FRONT", "MIDDLE", or "BACK". */
         val logoPosition: String = "MIDDLE",
         /** Metadata line spacing multiplier. */
@@ -67,6 +66,7 @@ object CapsuleRenderer {
     )
 
     class ExifBits(
+        /** Xiaomi camera's 35mm-equivalent focal length, expressed in mm. */
         val focalLengthMm: Double?,
         val aperture: Double?,
         val exposureSeconds: Double?,
@@ -130,11 +130,12 @@ object CapsuleRenderer {
     // width = (photoW - 0.045*photoW*2) * lengthFactor = 0.91*photoW (lengthFactor=1.0)
     // height = watermarkHeightDp clamped to [1, photoH*0.5]
     // horizontal inset = 0.045 * photoW on each side (the 4.5% margin baked into width)
-    // bottom inset = min(photoW, photoH) * 0.016 (offsetY=1.0 → bottom-aligned)
+    // bottom inset = 150 / 1080 of the short side (~14%): the supplied reference
+    // intentionally floats the capsule above the edge instead of pinning it to the frame.
     // corner radius = height * 0.5 (full pill capsule)
     private const val TARGET_WIDTH_FRACTION = 0.91f
-    private const val TARGET_HEIGHT_REF = 128f
-    const val CORNER_RADIUS_REF = 64f
+    private const val TARGET_HEIGHT_REF = 140f
+    const val CORNER_RADIUS_REF = 70f
     private const val PAD_X_FRACTION = 0.05f
     private const val PAD_Y_FRACTION = 0.10f
     const val HORIZONTAL_EDGE_INSET_FRACTION = 0.045f
@@ -144,16 +145,16 @@ object CapsuleRenderer {
     private const val LINE_GAP_REF = 6f
 
     // The reference is deliberately asymmetrical, not a three-equal-column layout:
-    // the Leica mark sits around 63.5%, the divider around 68.5%, and the specs hug right.
-    private const val LOGO_CENTER_X_FRACTION = 0.635f
+    // the Apple mark is centred around 57.5%, the divider sits around 63%, and specs hug right.
+    private const val LOGO_CENTER_X_FRACTION = 0.575f
     private const val LOGO_HEIGHT_FRACTION = 0.42f
-    private const val DIVIDER_X_FRACTION = 0.685f
+    private const val DIVIDER_X_FRACTION = 0.630f
     private const val DIVIDER_HEIGHT_FRACTION = 0.42f
     private const val DIVIDER_GAP_REF = 16f
 
-    /** Bottom inset: min(photoW,photoH)*0.016 ≈ 1.6% of the short side.
-     *  This matches the reference engine's offsetY=1.0 bottom-aligned placement. */
-    const val BOX_INSET_REF = 18f
+    /** Bottom inset in 1080-short-side units. 150 ≈ 14% of the photo short side,
+     *  matching the elevated placement in the supplied camera-watermark reference. */
+    const val BOX_INSET_REF = 150f
 
     /** White iOS-style lettering, with a restrained shadow added at raster time for contrast. */
     const val TEXT_COLOR_WHITE = 0xF2FFFFFF.toInt()
@@ -263,9 +264,9 @@ object CapsuleRenderer {
     /**
      * Fixed-dimension capsule layout matching the iOS liquid-glass reference.
      *
-     * Uses the reference's fixed, asymmetric composition: a ~90%-width, ~12%-of-short-side
-     * capsule, left-aligned to the photo edge; a broad left text area; a wordmark near 63.5%;
-     * a hairline separator near 68.5%; and a compact right-aligned metadata block. The footprint
+     * Uses the reference's fixed, asymmetric composition: a ~91%-width, ~13%-of-short-side
+     * capsule, raised from the photo edge; a broad left text area; a mark near 57.5%; a hairline
+     * separator near 63%; and a compact right-aligned metadata block. The footprint
      * stays stable across shots while each text block independently fits its own reserved area.
      */
     fun measureCapsule(
@@ -301,21 +302,45 @@ object CapsuleRenderer {
             (logoH * logoBmp.width.toFloat() / logoBmp.height.toFloat() * preset.aspectCompensation)
                 .coerceAtMost(capsuleW * 0.15f)
         } else 0f
-        val logoCenterX = LOGO_CENTER_X_FRACTION * capsuleW
+        val logoPosition = LogoPosition.fromName(opts.logoPosition)
+        val logoCenterX = when (logoPosition) {
+            LogoPosition.FRONT -> 0.12f * capsuleW
+            LogoPosition.MIDDLE -> LOGO_CENTER_X_FRACTION * capsuleW
+            LogoPosition.BACK -> 0.88f * capsuleW
+        }
         val logoLeft = logoCenterX - logoW * 0.5f
-        val dividerX = DIVIDER_X_FRACTION * capsuleW
+        val dividerX = when {
+            !hasLogo -> DIVIDER_X_FRACTION * capsuleW
+            logoPosition == LogoPosition.FRONT -> 0.66f * capsuleW
+            logoPosition == LogoPosition.MIDDLE -> DIVIDER_X_FRACTION * capsuleW
+            else -> 0.43f * capsuleW
+        }
+        val leftTextStart = if (hasLogo && logoPosition == LogoPosition.FRONT) {
+            logoLeft + logoW + colGap
+        } else {
+            padX
+        }
+        val rightTextEnd = if (hasLogo && logoPosition == LogoPosition.BACK) {
+            logoLeft - colGap
+        } else {
+            capsuleW - padX
+        }
 
         // Reserve real, fixed zones instead of splitting the capsule into equal columns.
         // This is the defining geometry in the photo: broad breathing room before the mark,
         // then a compact separator-to-specs region on the right.
         val leftAvailableW = if (hasLogo) {
-            (logoLeft - colGap - padX).coerceAtLeast(1f)
+            when (logoPosition) {
+                LogoPosition.FRONT -> (dividerX - colGap - leftTextStart).coerceAtLeast(1f)
+                LogoPosition.MIDDLE -> (logoLeft - colGap - padX).coerceAtLeast(1f)
+                LogoPosition.BACK -> (dividerX - colGap - padX).coerceAtLeast(1f)
+            }
         } else if (rightLines.isNotEmpty()) {
             (dividerX - colGap - padX).coerceAtLeast(1f)
         } else {
             (capsuleW - 2f * padX).coerceAtLeast(1f)
         }
-        val rightAvailableW = (capsuleW - padX - dividerX - colGap).coerceAtLeast(1f)
+        val rightAvailableW = (rightTextEnd - dividerX - colGap).coerceAtLeast(1f)
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         fun preparePaint(ln: Line, factor: Float) {
@@ -371,7 +396,7 @@ object CapsuleRenderer {
                         sizePx = ln.sizeRef * unit * factor,
                         centerX = 0f,
                         baselineY = baseline,
-                        leftX = if (rightAligned) capsuleW - padX else padX,
+                        leftX = if (rightAligned) rightTextEnd else leftTextStart,
                         align = if (rightAligned) 1 else 0,
                     ),
                 )
@@ -385,7 +410,8 @@ object CapsuleRenderer {
         val logoPlacement = if (hasLogo && logoW > 0f && logoH > 0f) {
             LogoPlacement(
                 left = logoLeft,
-                top = (capsuleH - logoH) * 0.5f * preset.verticalAlignment,
+                top = ((capsuleH - logoH) * 0.5f * preset.verticalAlignment)
+                    .coerceIn(0f, (capsuleH - logoH).coerceAtLeast(0f)),
                 width = logoW,
                 height = logoH,
             )
