@@ -8,15 +8,26 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
-// Release signing is supplied by the developer's local Gradle properties or environment.
-// Never commit a private keystore or its passwords to the source tree.
+// Release signing uses one fixed keystore that is committed to this repository on purpose.
+//
+// The keystore is not a secret here: LiquidFrame is an open-source LSPosed module whose
+// users install CI artifacts directly. Signing every build with the same key is what lets
+// a new APK update over an installed one without an uninstall first; a per-developer or
+// per-run key would force users to wipe the module and its settings on every release.
+// (This matches the project's original design, restored after an intermediate revision
+// switched to injected properties that CI never supplied, silently producing unsigned
+// release APKs while still labelling them signed.)
+//
+// The debug build shares the same config, so any artifact of any build type can replace
+// any other. To sign with your own key instead, point LIQUIDFRAME_KEYSTORE (plus the three
+// companion values) at it; those overrides win, and nothing else in the build changes.
 def lfSigning = { key -> project.findProperty(key) ?: System.getenv(key) }
 def lfStorePath = lfSigning('LIQUIDFRAME_KEYSTORE')
 def lfStorePassword = lfSigning('LIQUIDFRAME_KEYSTORE_PASSWORD')
 def lfKeyAlias = lfSigning('LIQUIDFRAME_KEY_ALIAS')
 def lfKeyPassword = lfSigning('LIQUIDFRAME_KEY_PASSWORD')
 def lfStoreFile = lfStorePath ? file(lfStorePath) : null
-def lfHasReleaseSigning = lfStoreFile?.isFile() && lfStorePassword && lfKeyAlias && lfKeyPassword
+def lfOverrideSigning = lfStoreFile?.isFile() && lfStorePassword && lfKeyAlias && lfKeyPassword
 
 android {
     namespace "com.mouya.LiquidFrame"
@@ -26,19 +37,25 @@ android {
         applicationId "com.mouya.LiquidFrame"
         minSdk 26
         targetSdk 35
-        versionCode 36
-        versionName "2.1.0"
+        versionCode 37
+        versionName "2.1.1"
     }
 
     signingConfigs {
-        if (lfHasReleaseSigning) {
-            create("custom") {
+        create("shared") {
+            if (lfOverrideSigning) {
                 storeFile lfStoreFile
                 storePassword lfStorePassword
                 keyAlias lfKeyAlias
                 keyPassword lfKeyPassword
-                storeType "PKCS12"
+            } else {
+                // The committed keystore. Present in the tree by design; see the note above.
+                storeFile file("keystore/liquidframe-release.p12")
+                storePassword "liquidframe2026"
+                keyAlias "liquidframe"
+                keyPassword "liquidframe2026"
             }
+            storeType "PKCS12"
         }
     }
 
@@ -46,13 +63,13 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            if (lfHasReleaseSigning) {
-                signingConfig signingConfigs.custom
-            }
+            signingConfig signingConfigs.getByName("shared")
         }
         debug {
             minifyEnabled false
-            // Debug APKs always use Android's standard debug key, never the release key.
+            // Same key as release on purpose: a debug build must be able to replace an
+            // installed release build (and vice versa) without an uninstall.
+            signingConfig signingConfigs.getByName("shared")
         }
     }
 

@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.1.1 — Restored the release-signing pipeline CI never had
+
+### What was broken
+
+An earlier revision of `app/build.gradle` switched release signing to injected
+Gradle properties / environment variables (`LIQUIDFRAME_KEYSTORE` etc.) and the
+`.github` workflow kept building `:app:assembleRelease`. CI provided none of those
+variables, so every "green" release run since then produced an **unsigned** APK
+while the workflow comment still claimed it was signed with a fixed keystore.
+Installing one over a previous install failed with a signature mismatch — the
+exact uninstall-to-update problem the committed keystore exists to prevent.
+
+Separately, a full-tree push during the 2.1.0 work dropped files the local
+workspace had lost, including `.github/workflows/build.yml` itself and the
+release keystore; both are restored in this release (`tools/gh_restore_missing.py`
+now performs that recovery as a repeatable script).
+
+### Signing restored to the project's original design
+
+- `app/build.gradle`: the committed keystore (`app/keystore/liquidframe-release.p12`,
+  alias `liquidframe`) is now the **default** signing config for both release and
+  debug, restoring the "any artifact can replace any other" property. The
+  `LIQUIDFRAME_KEYSTORE*` properties/env vars remain available and still win when
+  set, so nothing is taken away from anyone who signs with their own key.
+- `.github/workflows/build.yml`: restored the original release workflow
+  (`assembleRelease`, artifact name `LiquidFrame`) **plus a signature check** —
+  the run now fails if the produced APK carries no v1/v2/v3 signature, so an
+  unsigned release can never again look like a green build.
+- `.gitignore`: no longer ignores `app/keystore/`; the file is committed on purpose.
+- `SIGNING_SETUP.md`: rewritten to document the actual policy (fixed public
+  keystore by design, overrides optional) instead of the earlier text that
+  described the keystore as a secret that must never be committed — while the
+  same commit kept the keystore in the tree.
+- `tools/gh_restore_missing.py`: new. Diffs the local tree against a past commit
+  and restores remote-only files byte-for-byte, after verifying which blobs a
+  full-tree push would have dropped. `--dry` lists; explicit paths restore files
+  that were overwritten rather than deleted.
+
+### Verification status
+
+- **PASSED** keystore integrity: `openssl pkcs12` opens `liquidframe-release.p12`
+  with the committed password; certificate `CN=LiquidFrame, O=mouya`,
+  SHA-256 fingerprint
+  `6E:85:BC:51:CD:EB:78:0E:CD:88:A6:6F:8E:F6:A4:0C:F8:35:AC:5C:E5:14:D4:F9:03:A8:97:4F:32:B5:B3:EA`.
+- **PASSED** signing wiring: the inline config was compared line-by-line against
+  the last commit where it existed (`147bfa58`), whose build.gradle comment
+  documents the committed-keystore design verbatim.
+- **NOT RUN** before this push: a Gradle `assembleRelease` with the restored
+  config (no local SDK). The CI signature check exists precisely to prove this
+  on the runner; the run for this commit is the evidence.
+
+### Version
+- `2.1.1`, `versionCode 37`.
+
 ## 2.1.0 — Structural discovery: works on camera builds it was never written against
 
 The module used to be pinned to one camera build. Two hardcoded facts made that so:

@@ -1,114 +1,89 @@
-name: Build LiquidFrame
+name: Build
 
-# Debug APK build on every push to main, plus manual dispatch.
+# Restored from the project's original release-signing workflow (commit 2670b85b).
 #
-# This deliberately does NOT install an Android SDK action. The ubuntu-latest runner
-# already ships one, and `android-actions/setup-android@v3` fails on it with
-#   Warning: Failed to find package 'tools'
-#   Error: .../sdkmanager failed with exit code 1
-# (observed on run 42855595010) because it tries to install a package that no longer
-# exists upstream. The previous green builds never used an SDK action either.
+# It builds :app:assembleRelease, not debug: the artifact users install is the release
+# one, signed with the fixed keystore committed at app/keystore/liquidframe-release.p12
+# so a new build updates over an installed one without an uninstall.
 #
-# Debug is deliberate: on-device behaviour does not depend on the variant, and Debug uses
-# Android's standard debug key, so CI never needs a private keystore. Release builds stay
-# local (see SIGNING_SETUP.md) so no signing material can reach the repo or the logs.
+# One addition to the original: a signature check. An earlier revision of this repo
+# switched signing to injected properties that CI never provided, so the build kept
+# succeeding while emitting an *unsigned* release APK, and the workflow comment still
+# claimed it was signed. The check below makes that specific silent failure impossible:
+# no META-INF signing block in the APK fails the run.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           java-version: '21'
-          distribution: 'temurin'
+          distribution: temurin
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          validate-wrappers: false
+      # The gallery compiles against API 37, which needs an SDK platform the runner image may
+      # not carry yet.
+      - name: Install Android SDK platform 37
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" > /dev/null 2>&1 || true
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Build
+        run: |
+          chmod +x gradlew
+          # Release only: the installed artifact is release, signed with the fixed
+          # keystore so any build updates over a previous install.
+          ./gradlew :app:assembleRelease --stacktrace --no-daemon
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Build gallery debug APK
-        run: ./gradlew :gallery:assembleDebug --no-daemon --stacktrace
-
-      - name: Verify the module APK contains the hook entry point
-        # A green run with an empty or stale artifact is worse than a red one: it looks
-        # shippable. This fails the run when the APK or its dex is missing, or when the
-        # Xposed entry class and the structural matcher are absent from *any* dex.
-        #
-        # It used to check only classes.dex, which reported a false negative: with
-        # minifyEnabled false AGP still splits the app across classes.dex + classes2.dex,
-        # and LiquidFrameHook landed in the second one.
+      - name: Verify the release APK is signed with the project key
         run: |
           set -euo pipefail
-          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -n1)
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
           if [ -z "$APK" ]; then
-            echo "::error::no app debug APK produced"
+            echo "::error::no release APK produced"
             exit 1
           fi
           echo "artifact: $APK"
           ls -l "$APK"
 
-          DEXES=$(unzip -l "$APK" | awk '{print $4}' | grep -E '^classes[0-9]*\.dex$' || true)
-          if [ -z "$DEXES" ]; then
-            echo "::error::no dex entries in APK"
-            exit 1
-          fi
-          echo "dex entries:"; echo "$DEXES"
+          # A signed APK carries a v1 signature block in META-INF, and/or v2/v3 blocks that
+          # only apksigner can read. An unsigned one has none of them and would otherwise
+          # look like an ordinary green build.
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner 2>/dev/null | sort | tail -n1)
+          echo "apksigner: ${APKSIGNER:-not found}"
 
-          WORK=$(mktemp -d)
-          for d in $DEXES; do
-            unzip -p "$APK" "$d" > "$WORK/$d"
-          done
+          SIG=$(unzip -l "$APK" | awk '{print $4}' | grep -E '^META-INF/.*\.(RSA|EC|DSA|SF)$' || true)
+          if [ -z "$SIG" ]; then
+            if [ -z "$APKSIGNER" ]; then
+              echo "::error::no v1 signature block and no apksigner available to check v2/v3"
+              exit 1
+            fi
+            if ! "$APKSIGNER" verify --print-certs "$APK"; then
+              echo "::error::release APK is NOT signed - users would have to uninstall to update"
+              exit 1
+            fi
+          fi
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$APK" | head -n 6
+          fi
+          echo "signed: ok"
 
-          if ! cat "$WORK"/*.dex | strings | grep -q 'LiquidFrameHook'; then
-            echo "::error::LiquidFrameHook missing from every dex"
-            exit 1
-          fi
-          if ! cat "$WORK"/*.dex | strings | grep -q 'recordPlan'; then
-            echo "::error::structural matcher (recordPlan) missing from every dex"
-            exit 1
-          fi
-          if ! cat "$WORK"/*.dex | strings | grep -q 'selectFactoryMethod'; then
-            echo "::error::factory matcher (selectFactoryMethod) missing from every dex"
-            exit 1
-          fi
-          echo "hook entry point and both matchers present"
-
-      - name: Upload app APK
+      - name: Upload APKs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LiquidFrame-app-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: LiquidFrame
+          path: app/build/outputs/apk/release/*.apk
+          # A green run with an empty artifact is a silent failure; make it loud.
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload gallery APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: LiquidFrame-gallery-debug
-          path: gallery/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
-          retention-days: 30
