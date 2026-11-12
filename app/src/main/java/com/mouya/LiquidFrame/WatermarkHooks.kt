@@ -17,7 +17,6 @@ import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.LogoPreset
 import com.mouya.LiquidFrame.glass.PanelRect
 import com.mouya.LiquidFrame.glass.CropRect
-import de.robv.android.xposed.AndroidAppHelper
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -275,7 +274,12 @@ object WatermarkHooks {
                 // Prefer the installed module package context for both vector resources and
                 // assets. Open the APK ZIP only as a fallback when the package context is absent.
                 val moduleContext = try {
-                    AndroidAppHelper.currentApplication()?.createPackageContext(
+                    // AndroidAppHelper.currentApplication() is not available in the
+                    // compile-only Xposed API jar.  Use ActivityThread.currentApplication()
+                    // via reflection — same object, no extra dependency.
+                    val atClass = Class.forName("android.app.ActivityThread")
+                    val currentApp = atClass.getMethod("currentApplication").invoke(null)
+                    (currentApp as? android.content.Context)?.createPackageContext(
                         "com.mouya.LiquidFrame",
                         android.content.Context.CONTEXT_IGNORE_SECURITY,
                     )
