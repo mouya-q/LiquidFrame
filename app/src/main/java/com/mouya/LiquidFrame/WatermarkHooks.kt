@@ -202,7 +202,8 @@ object WatermarkHooks {
                             )
                             if (ctx != null) return ctx.resources
                             return try {
-                                val assets = android.content.res.AssetManager()
+                                val assets = android.content.res.AssetManager::class.java
+                                    .getDeclaredConstructor().apply { isAccessible = true }.newInstance()
                                 assets.javaClass.getMethod("addAssetPath", String::class.java)
                                     .invoke(assets, apkPath)
                                 val system = android.content.res.Resources.getSystem()
