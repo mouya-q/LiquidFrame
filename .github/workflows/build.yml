@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner 2>/dev/null | sort | tail -n1)
           test -n "$APKSIGNER"
-          for apk in app/build/outputs/apk/release/*.apk gallery/build/outputs/apk/release/*.apk; do
+          for apk in app/build/outputs/apk/release/*.apk; do
             [ -f "$apk" ] || continue
             echo "--- $apk ---"
             "$APKSIGNER" verify --print-certs "$apk"
