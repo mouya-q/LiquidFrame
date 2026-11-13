@@ -347,3 +347,39 @@ fun StatusPill(text: String, color: Color) {
         }
     }
 }
+/** A compact MIUIX-style preference row backed by a real anchored selection menu. */
+@Composable
+fun SettingDropdownRow(
+    title: String,
+    subtitle: String,
+    selected: String,
+    options: List<Pair<String, String>>,
+    onSelected: (String) -> Unit,
+) {
+    var expanded by remember(title) { mutableStateOf(false) }
+    androidx.compose.foundation.layout.Box {
+        SettingRow(
+            title = title,
+            subtitle = subtitle,
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(selected, color = LiquidColors.blue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = textSecondary())
+                }
+            },
+            onClick = { expanded = true },
+        )
+        androidx.compose.material3.DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            options.forEach { (value, label) ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = { expanded = false; onSelected(value) },
+                )
+            }
+        }
+    }
+}

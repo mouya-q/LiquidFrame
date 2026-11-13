@@ -36,13 +36,14 @@ object ConfigStore {
     private const val LEGACY_DIR = "/data/local/tmp"
 
     private const val FILE_NAME = "lf_config.txt"
+    private const val PRESET_FILE_NAME = "lf_presets.txt"
 
     /** Allow runtime override of the primary directory (e.g. from Context.getFilesDir()). */
     fun init(context: android.content.Context) {
         primaryDir = context.filesDir.absolutePath
     }
 
-    private const val VERSION = 1
+    private const val VERSION = 2
 
     /** How long the camera process may cache settings before re-reading them. */
     private const val RELOAD_INTERVAL_MS = 2_000L
@@ -55,6 +56,8 @@ object ConfigStore {
 
     /** Legacy file for camera process reads. */
     private val legacyFile: File get() = File(LEGACY_DIR, FILE_NAME)
+    private val presetFile: File get() = File(primaryDir, PRESET_FILE_NAME)
+    private val legacyPresetFile: File get() = File(LEGACY_DIR, PRESET_FILE_NAME)
 
     @Volatile
     private var lastLoadedMs = 0L
@@ -177,7 +180,7 @@ object ConfigStore {
      * and having got it, it relaxes the directory once so a slider drag does not fork `su`
      * per frame.
      */
-    private fun writeText(target: File, text: String): Int {
+    private fun writeText(target: File, text: String, verifyKey: String? = KEY_ENABLED): Int {
         val plain = try {
             val parent = target.parentFile
             if (parent != null && !parent.exists()) parent.mkdirs()
@@ -217,7 +220,7 @@ object ConfigStore {
 
         // Verify by reading the file back so the status we report is measured, not assumed.
         val readBack = try {
-            target.exists() && parse(target.readText()).containsKey(KEY_ENABLED)
+            target.exists() && (verifyKey == null || parse(target.readText()).containsKey(verifyKey))
         } catch (t: Throwable) {
             LogHelper.log(TAG, "read-back verify failed: ${t.javaClass.simpleName}: ${t.message}")
             false
@@ -262,6 +265,72 @@ object ConfigStore {
 
     private fun sizeOf(text: String): Int = text.toByteArray(Charsets.UTF_8).size
 
+
+    /** Persist a named material preset independently from the active camera config. */
+    fun savePreset(name: String, values: Map<String, String>): Boolean {
+        val clean = name.trim().take(32)
+        if (clean.isBlank() || clean.any { it == '\n' || it == '\r' || it == '=' }) return false
+        val encoded = android.util.Base64.encodeToString(
+            values.filterKeys { it.startsWith("refraction_") || it in setOf(
+                KEY_BAND, KEY_AMOUNT, KEY_BLUR, KEY_LIFT, KEY_TINT, KEY_RIM, KEY_DEPTH,
+                KEY_ANGLE, KEY_DISPERSION, KEY_ADAPTIVE, KEY_PRESERVE
+            ) }.toSortedMap().entries.joinToString("\n") { "${it.key}=${it.value}" }.toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE,
+        )
+        val current = readPresetMap().toMutableMap()
+        current[clean] = encoded
+        val body = buildString {
+            appendLine("# LiquidFrame material presets")
+            current.toSortedMap().forEach { (k, v) -> appendLine("${android.util.Base64.encodeToString(k.toByteArray(), android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)}=$v") }
+        }
+        val a = writeText(presetFile, body, null)
+        val b = writeText(legacyPresetFile, body, null)
+        return a != WRITE_FAIL || b != WRITE_FAIL
+    }
+
+    fun presetNames(): List<String> = readPresetMap().keys.sorted()
+
+    /** Explicitly remove both app-private and root-shared state (including custom presets). */
+    fun clearPersistentData(): Boolean {
+        val localOk = runCatching {
+            file.delete(); presetFile.delete()
+            !file.exists() && !presetFile.exists()
+        }.getOrDefault(false)
+        val sharedOk = try {
+            runSu("rm -f ${shellQuote(legacyFile.absolutePath)} ${shellQuote(legacyPresetFile.absolutePath)}") == 0
+        } catch (_: Throwable) { false }
+        cached = LinkedHashMap()
+        lastLoadedMs = 0L
+        lastWriteMs = 0L
+        lastWriteStatus = if (localOk && sharedOk) "已清除本地与共享配置" else "部分配置清除失败，请检查 Root 权限"
+        return localOk && sharedOk
+    }
+
+
+    fun loadPreset(name: String): Map<String, String>? {
+        val encoded = readPresetMap()[name] ?: return null
+        return try {
+            val raw = android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE).toString(Charsets.UTF_8)
+            parse(raw)
+        } catch (_: Throwable) { null }
+    }
+
+    private fun readPresetMap(): Map<String, String> {
+        val source = when {
+            presetFile.exists() -> presetFile
+            legacyPresetFile.exists() -> legacyPresetFile
+            else -> return emptyMap()
+        }
+        return try {
+            source.readLines().mapNotNull { line ->
+                val i = line.indexOf('=')
+                if (i <= 0 || line.startsWith("#")) return@mapNotNull null
+                val name = try { android.util.Base64.decode(line.substring(0, i), android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE).toString(Charsets.UTF_8) } catch (_: Throwable) { return@mapNotNull null }
+                name to line.substring(i + 1).trim()
+            }.toMap()
+        } catch (_: Throwable) { emptyMap() }
+    }
+
     // ---------------------------------------------------------------------------------------
     // Typed accessors
     // ---------------------------------------------------------------------------------------
@@ -284,34 +353,39 @@ object ConfigStore {
 
     fun glassParams(): GlassParams {
         val d = GlassParams.Default
+        // Version 2 changes the material model from a broad frosted veil to edge-focused optics.
+        // Old persisted values would otherwise keep the washed-out appearance after upgrade.
+        val legacyMaterial = (cached["version"]?.toIntOrNull() ?: 1) < 2
+        fun materialFloat(key: String, default: Float) = if (legacyMaterial) default else float(key, default)
+        fun materialBool(key: String, default: Boolean) = if (legacyMaterial) default else bool(key, default)
         return GlassParams(
-            refractionHeightFraction = float(KEY_BAND, d.refractionHeightFraction),
-            refractionAmountFraction = float(KEY_AMOUNT, d.refractionAmountFraction),
+            refractionHeightFraction = materialFloat(KEY_BAND, d.refractionHeightFraction),
+            refractionAmountFraction = materialFloat(KEY_AMOUNT, d.refractionAmountFraction),
             cornerRadiusFraction = d.cornerRadiusFraction,
-            blurFraction = float(KEY_BLUR, d.blurFraction),
+            blurFraction = materialFloat(KEY_BLUR, d.blurFraction),
             vibrancy = d.vibrancy,
             vibrancyBrightness = d.vibrancyBrightness,
-            depthEffect = float(KEY_DEPTH, d.depthEffect),
-            chromaticAberration = bool(KEY_DISPERSION, d.chromaticAberration),
+            depthEffect = materialFloat(KEY_DEPTH, d.depthEffect),
+            chromaticAberration = materialBool(KEY_DISPERSION, d.chromaticAberration),
             dispersionIntensity = d.dispersionIntensity,
             tintColor = d.tintColor,
             tintHueWeight = d.tintHueWeight,
-            tintAlpha = float(KEY_TINT, d.tintAlpha),
+            tintAlpha = materialFloat(KEY_TINT, d.tintAlpha),
             surfaceAlpha = d.surfaceAlpha,
-            interiorLift = float(KEY_LIFT, d.interiorLift),
+            interiorLift = materialFloat(KEY_LIFT, d.interiorLift),
             highlightGain = d.highlightGain,
-            highlightAngleDeg = float(KEY_ANGLE, d.highlightAngleDeg),
+            highlightAngleDeg = materialFloat(KEY_ANGLE, d.highlightAngleDeg),
             highlightFalloff = d.highlightFalloff,
-            rimAlpha = float(KEY_RIM, d.rimAlpha),
+            rimAlpha = materialFloat(KEY_RIM, d.rimAlpha),
             rimWidthFraction = d.rimWidthFraction,
             rimBlurFraction = d.rimBlurFraction,
             rimAmbient = d.rimAmbient,
-            innerShadowAlpha = float(KEY_SHADOW, d.innerShadowAlpha),
+            innerShadowAlpha = materialFloat(KEY_SHADOW, d.innerShadowAlpha),
             innerShadowRadiusFraction = d.innerShadowRadiusFraction,
             innerShadowOffsetXFraction = d.innerShadowOffsetXFraction,
             innerShadowOffsetYFraction = d.innerShadowOffsetYFraction,
-            adaptive = bool(KEY_ADAPTIVE, d.adaptive),
-            preserveContent = bool(KEY_PRESERVE, d.preserveContent),
+            adaptive = materialBool(KEY_ADAPTIVE, d.adaptive),
+            preserveContent = materialBool(KEY_PRESERVE, d.preserveContent),
         )
     }
 
@@ -370,8 +444,15 @@ object ConfigStore {
 
     fun capsuleShowLogo(): Boolean = bool(KEY_CAPSULE_LOGO, true)
 
-    fun capsuleLogoPreset(): String = cached[KEY_CAPSULE_LOGO_PRESET]?.trim()
-        ?.takeIf { it.isNotBlank() } ?: "Apple"
+    fun capsuleLogoPreset(): String {
+        val version = cached["version"]?.toIntOrNull() ?: 1
+        if (version < 2) return "Apple"
+        val stored = cached[KEY_CAPSULE_LOGO_PRESET]?.trim().orEmpty()
+        return when (stored) {
+            "Apple", "Leica", "LeicaWhite", "None" -> stored
+            else -> "Apple"
+        }
+    }
 
     fun capsuleLogoPosition(): String = cached[KEY_CAPSULE_LOGO_POSITION]?.trim()
         ?.takeIf { it.isNotBlank() } ?: "MIDDLE"

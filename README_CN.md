@@ -35,7 +35,7 @@ LSPosed 模块：将小米相机照片水印的背景替换为 Apple 风格**液
 
 ## 功能
 
-小米相机会在照片输出链路中生成水印。LiquidFrame 不在预览层做“看起来替换了”的假处理：拍摄时先从 YUV→Bitmap 源帧留存干净像素，再记录小米水印工厂的**确切合成输出对象**；在该对象进入 Bitmap→帧封装前，只替换这张带原厂水印的合成图，恢复底图并绘制一次液态玻璃胶囊。相机同时保留的原图分支不会被改写。
+小米相机会在照片输出链路中生成水印。LiquidFrame 在已确认的照片水印 Bitmap 工厂处拦截原相机渲染，并在**原水印绘制前**把自定义液态玻璃胶囊直接绘制到干净照片上。这样不会在成片上用纯色块覆盖旧水印，也不会把普通场景像素误判成水印区域。当前实现会整体替换该路径中的原水印（包括原文字与 Logo），再按设置绘制新胶囊。
 
 这里的"液态玻璃"指不止于模糊的表面：
 
@@ -47,7 +47,7 @@ LSPosed 模块：将小米相机照片水印的背景替换为 Apple 风格**液
 | **镜面边缘** | 圆角边缘的半球法线，双向受光，产生随光线旋转的两个对向高光 |
 | **内阴影** | 柔和的贴边阴影，使面板读作实体而非贴纸 |
 
-当前验证重点为 Xiaomi 17 相机 `6.7.000480.0` 的拍摄链路，并保留 6.4 时代的结构/字面回退；未知版本采用 DEX 结构发现并在未验证时 fail-open。
+当前 Hook 以 MIUI Camera `1+6.4.000250.2` 为目标；兼容范围与未覆盖路径见[限制](#限制与已知问题)
 
 ## 截图
 
@@ -69,11 +69,11 @@ LSPosed 模块：将小米相机照片水印的背景替换为 Apple 风格**液
 app/                    LSPosed 模块（水印 Hook）
   src/main/java/com/mouya/LiquidFrame/
     WatermarkHooks.kt     Hook 安装与合成管线
-    DexKitHelper.kt       DEX 结构发现、反射复核与晚到重试
+    DexKitHelper.kt       旧版动态发现组件（当前精确 Hook 路径不启动它）
     ConfigStore.kt        模块与相机进程共享的设置
     GlassConfig.kt        相机侧的设置视图
     ConfigActivity.kt     设置 UI：Compose + 玻璃质感，实时预览
-    dex/DexScanner.kt     轻量 DEX 读取器：识别拍摄记录、接收方法与最终帧封装器
+    dex/DexScanner.kt     旧版无依赖 DEX 读取器；当前构建按已验证签名安装 Hook
     glass/                光学引擎（无 Android 依赖）
       LiquidGlassOptics.kt  材质的 CPU 移植
       GlassParams.kt        材质中的每个量
@@ -109,13 +109,13 @@ docs/                   参考渲染图
 3. 强停小米相机后重开
 4. 开启水印拍照
 
-确认 Hook 已安装：查看 `capture context`、`YUV source adapter`、`watermark factory` 和 `final capture encoder` 日志。成功拍摄应出现 `final capture encoder: replaced composed stock layer with glass`。如果结构发现没有得到唯一且可复核的目标，模块保留小米原图，不对不确定的 Bitmap 做擦除。
+确认 Hook 已安装：查看模块日志是否出现 `hooked typed capture metadata` 与 `hooked real watermark output`。完成一张拍摄后，若出现 `watermark factory: stock watermark replaced`，表示本次命中了替换路径。缺失的拍摄字段会留空，不再用猜测值补齐。
 
 ## 配置
 
 从桌面打开模块。设置先保存在应用私有目录，并镜像同步到相机进程可读取的 `/data/local/tmp/lf_config.txt`。共享文件写入可能需要 Root 授权；设置页会显示实际同步状态。成功同步后，下一次拍摄即可应用，无需重启相机。
 
-设置页用与模块相同的光学渲染**实时预览**，无需拍照即可评判与调校材质。设置按「核心、显示与渲染、拍摄信息、品牌标识、胶囊布局、维护」折叠分组；Logo、Logo 位置与胶囊水平位置均改为下拉菜单，避免把选项常驻铺满页面。预览同步使用约 91% 照片宽度、约 13% 短边高度、约 14% 短边底部留白的胶囊比例，默认 Apple 标识与参考图相同。控件：
+设置页用与模块相同的光学渲染**实时预览**，无需拍照即可评判与调校材质。控件：
 
 | 设置 | 效果 |
 | --- | --- |
@@ -169,56 +169,63 @@ docs/                   参考渲染图
 
 ## Hook 原理
 
-当前 Hook 的主验证目标是 **Xiaomi 17 相机 `6.7.000480.0`**。ZIP 内提供的是该版本 APK 的反编译索引与 DEX 类/方法文本，而非可直接安装的 APK 二进制。实现同时保留 6.4 时代的旧签名回退；对其他版本则按字段、方法参数、返回包装类型和调用关系进行结构扫描，不仅依赖混淆类名。
+当前 Hook 针对上传的相机反编译产物 **MIUI Camera `1+6.4.000250.2`**（`versionCode 740002502`）。不再使用旧版 `Fe/a->j` 成片猜测，也不再从 Bitmap 参数或对象字段中遍历任意数字来推断 EXIF。
 
 ### 真实拍摄参数链
 
 ```text
-Xiaomi Camera 6.7 capture path
-  W8/d.f(Ki/a, boolean, int) -> Ki/f
+CaptureResult / TotalCaptureResult
         │
-        ├─ Ki/a typed capture record
-        │    f:S  35mm-equivalent focal length
-        │    g:F  aperture
-        │    h:J  exposure time (ns)
-        │    i:I  ISO
-        │    l:J  capture timestamp (ms)
-        │    m:Location  capture GPS
+        ▼
+E5/c.b(CaptureResult) -> la/b
+  SENSOR_EXPOSURE_TIME  -> exposure ns
+  LENS_APERTURE         -> aperture
+  La6/N.b(result)       -> ISO
+  La6/O.c(result)       -> 35mm-equivalent focal length
         │
-        ├─ YuvUtils.I420ToBitmap(Bitmap, ...)
-        │    └─ snapshot clean source pixels before scaling/recycling
+        ▼
+E5/c.c(LR9/o)
+  combines result + LR9/p.D:Location + LR9/o.I:timestamp(ms)
         │
-        ├─ com.xiaomi.cam.watermark.a.c(...)
-        │    └─ com.xiaomi.cam.watermark.b.c(...)
-        │         └─ returns Xiaomi's composed stock-watermark Bitmap
+        ▼
+la/a typed capture record
+  f:S  focal length (35mm equivalent)
+  g:F  aperture
+  h:J  exposure time (ns)
+  i:I  ISO
+  j:J  capture timestamp (ms)
+  k:Location GPS
         │
-        └─ Mi/b.c(I, Bitmap) / Mi/b.b(Bitmap) / Mi/b.a(Bitmap)
-             └─ Bitmap -> Ki/f frame wrapper
-                  └─ restore clean pixels + render glass exactly once
+        ▼
+E5/b.h(la/a, boolean, int)
+  ThreadLocal capture snapshot in LiquidFrame
+        │
+        ▼
+com.xiaomi.cam.watermark.b.c(..., Bitmap srcBitmap, ...): Bitmap
+  original watermark renderer is bypassed
+        │
+        ▼
+render custom capsule on source photo Bitmap
 ```
 
-字段顺序由 `DexScan.recordPlan()` 从声明字段类型序列识别，而不是固定读取 obfuscation 字母。Xiaomi 的 `Ki/b.toString()` 明确将对应短整型字段命名为 `mFocalLength35mm`；因此水印中的 `100mm` 表示 35mm 等效焦距，不应误解为镜头的物理焦距。光圈来自 `F`，曝光时间以纳秒存储并转换为秒，ISO 来自 `I`，拍摄时间按 Unix 毫秒解释，GPS 只接受本次记录中的 `Location`。缺失或越界的字段留空，不使用系统当前时间、默认 ISO 或虚构参数补齐。
+`CaptureMeta` 只接受上述强类型字段和合法范围。曝光纳秒转秒，拍摄时间按毫秒解释；GPS 只接受 `Location` 对象和合法经纬度。字段没有返回或校验失败时，该项留空，不会以当前系统时间、随机数字、帧计数或普通对象字段补齐。
 
-### 为什么预览正常、成片却被原水印盖住
+### 原水印渲染与替换点
 
-相机的选择预览和静态照片封装不是同一个渲染阶段。旧实现把玻璃绘制到水印工厂的输入/中间 Bitmap，但小米随后还会执行 `a.c → b.c` 的原厂水印合成；新胶囊于是处在原厂水印下面，刚拍完的临时预览可能正常，最后保存的 JPEG 却重新出现原厂文字/Logo。
+`E5/b.h(la/a, boolean, int)` 是该构建的照片水印处理入口。其调用 `com.xiaomi.cam.watermark.b.b(Application, Bitmap, Dc/b, int)`；包装方法继续调用静态 `com.xiaomi.cam.watermark.b.c(b, Context, Bitmap, Dc/b, int, String, int)`，后者创建 `com.xiaomi.cam.watermark.c` 并进入小米原始水印渲染流程。
 
-本次改造分成三处：
+LiquidFrame 精确 Hook 静态 `b.c(...) -> Bitmap`，仅在 `E5/b.h` 的 ThreadLocal 拍摄上下文有效时生效。第三个参数是照片源 Bitmap。Hook 在这里绕过原水印渲染，将新胶囊绘制到源照片后返回。若复制/渲染失败，则不设置 Hook 结果，让小米原始方法继续运行，属于 fail-open；因此不会因为替换失败就返回一张猜测修补过的照片。
 
-1. `YuvUtils.I420ToBitmap` 返回后、相机缩放或回收源 Bitmap 前，保存原图像素。普通尺寸保存完整副本；超大图只保存底部恢复带，并在 64 MiB 上限内自适应降采样。
-2. 水印工厂 Hook 不再在拍摄态提前画玻璃，而是在 `afterHookedMethod` 中记录它返回的确切合成 Bitmap 对象。
-3. DEX 扫描定位 `Mi/b` 中的 Bitmap→`Ki/f` 静态封装方法。编码前只接受与工厂返回对象**同一实例**的参数，恢复清洁图像像素后再画一次新胶囊。相机的原图/备用图分支因对象身份不同而保持不变。
+这与后处理擦除不同：不会先把水印烤进 JPEG，再拿照片底部的某个矩形覆盖掉。旧版 `Fe/a->j(...)` 实际上用于把 `Fe/a` 水印布局树绘制到一个独立 Bitmap；在 `WatermarkRemover.getWatermarkData(...)` 对应流程中，它可创建空白画布并返回水印层图，不是稳定的最终成片 Bitmap。把它当成原图，会造成目标对象错位。
 
-因此这不是在最终照片上猜一个矩形盖住原水印，也不是对所有 Bitmap 盲目绘制。对于无法确认“源图—合成图—帧封装”关系的新版本，模块会保留原相机结果并输出诊断日志，避免把照片内容或原图副本破坏掉。
+`WatermarkRemover.getWatermarkData(Bitmap, Fe/a, ...)` 的返回类型是 `WatermarkRemover$b`，其内容包含状态、区域/矩形和图像字节等信息，不是 Bitmap。它用于水印区域识别/移动处理，不应被当作最终照片或可直接替换的 Bitmap。
 
-### 跨版本适配与边界
+### 当前边界
 
-- 目标相机可为 `com.android.camera` 或 `com.miui.camera`；DEX 扫描会检查 base APK 和安装的 split APK。
-- 拍摄记录按 `S,F,J,I` + 后续时间 `J` + `Location` 的类型组合识别；拍摄入口记录参数索引，允许未来版本调整参数位置。
-- 最终封装器按包装对象的字段结构、构造器参数、多个静态 Bitmap 适配器，以及同一 owner 同时消费拍摄记录/小米 watermark 类型的关系进行匹配；反射阶段会再次复核签名。
-- 首次扫描完成后会重试 Hook，避免 Application 初始化时 DEX 扫描尚未结束导致漏装。
-- 6.7 主链路已依据本次反编译文本定位；6.4 旧路径有兼容回退。其他版本尚不能宣称全部兼容，未知结构会 fail-open。
-- 当前处理范围是已识别的 Bitmap/JPEG 封装支路。HEIF/MIVI3、RAW、Live Photo 或直接写入字节流的其它分支仍需逐个相机版本验证。
+- Hook 依赖此 APK 的混淆类名和方法签名：`E5.b#h(la.a, boolean, int)`、`com.xiaomi.cam.watermark.b#c(...)`。其他相机版本需要重新反编译并校验签名，不能仅凭版本号相近就认为兼容。
+- 此 Hook 覆盖 `E5/b.h` 的 Bitmap 水印路径。HEIF/MIVI3 或其他直接写入元数据/字节流的路径可能绕过该 Bitmap 工厂；当前报告不宣称已经处理这些路径。
+- 当前是“整体替换原水印”，不是保留原水印文字的背景皮肤化。新胶囊从拍摄记录重绘型号、时间、EXIF 和 GPS；可选 Logo 使用模块资源。
+- 需要真机确认 Hook 是否被目标拍摄模式调用，并对比保存照片的真实 EXIF 与胶囊显示值。
 
 ## 构建
 
@@ -235,17 +242,15 @@ app/build/outputs/apk/debug/app-debug.apk          # LSPosed 模块
 gallery/build/outputs/apk/debug/gallery-debug.apk  # 伴生应用
 ```
 
-无外部密钥时，debug 使用本机 Android debug key；release 保持未签名。正式分发请使用自己的外部签名密钥，具体配置见 `SIGNING_SETUP.md`。
-
 工具链：Android Gradle Plugin **9.4.1**、Kotlin **2.4.20**、Gradle **9.8.0**。`miuix 0.9.4 / Compose 1.12` 依赖链拒绝被更旧工具链消费（其 AAR 元数据直接拒绝），门槛因此在此。AGP 9 自带 Kotlin，故刻意不应用 `org.jetbrains.kotlin.android`；Compose 编译器经 `org.jetbrains.kotlin.plugin.compose` 单独应用
 
-CI 会构建并校验 `:app` 与 `:gallery` 的 debug APK。Release 签名为外部密钥可选项，详见 `SIGNING_SETUP.md`。
+CI 仅构建 `:app`。`gallery/` 需要 `compileSdk 37`，故本地构建，不随每次推送
 
 ## 故障排查
 
-**原水印仍在成片上。** 检查 `YUV source adapter hooked`、`watermark factory hooked`、`final capture encoder hooked` 是否出现；拍摄时应再出现 `replaced composed stock layer with glass`。如果只显示 encoder 未命中，通常是当前模式走了另一条图片封装支路；模块会保留原相机图，不对错误 Bitmap 擦除。
+**原水印没有被替换。** 确认 LSPosed 作用域包含实际相机包名（`com.android.camera` 或 `com.miui.camera`），强停相机后重开，并查看日志是否出现 `hooked typed capture metadata` 和 `hooked real watermark output`。
 
-**缺少 YUV adapter。** 某些版本可能更改了 `YuvUtils` 包名/转换方法。此时模块会尝试从水印工厂输入留存源图；若尺寸或身份不能核实，宁可不做擦除。请附相机版本与诊断日志。
+**没有 `watermark factory` 日志。** 当前拍摄模式可能没有进入 `E5/b.h` Bitmap 水印路径，或相机 APK 的混淆签名已变化。请先确认相机版本，再提供完整模块日志。
 
 **胶囊参数缺失。** 这是 fail-closed 设计：字段未从本次拍摄记录取得就不显示。请将胶囊与照片 EXIF 对比，并记录拍摄模式、格式（JPEG/HEIF）和相机版本。
 
@@ -255,9 +260,9 @@ CI 会构建并校验 `:app` 与 `:gallery` 的 debug APK。Release 签名为外
 
 ## 限制与已知问题
 
-- **主验证构建为 Xiaomi 17 Camera `6.7.000480.0`。** 同时保留 6.4 旧路径和跨版本结构扫描，但尚需更多真机/版本矩阵验证。
-- **Bitmap 水印路径优先。** HEIF/MIVI3、RAW 或不经过当前 Bitmap→帧封装结构的处理路径尚未验证，不能保证这些格式已替换原水印。
-- **尚未在当前运行环境完成 Android APK 构建和小米 17 真机验证。** 当前容器没有 Android SDK，Gradle Wrapper 下载亦因网络不可用失败。因此交付是已做静态检查的源码包，不是可直接安装的 APK。
+- **当前仅按一个反编译构建实现：** MIUI Camera `1+6.4.000250.2`（`versionCode 740002502`）。类名/签名混淆变化会导致 Hook 不命中。
+- **Bitmap 水印路径优先。** HEIF/MIVI3、RAW 或其他不经过 `E5/b.h -> watermark/b.c` 的处理路径尚未完成 Hook，不能保证原水印被替换。
+- **尚未在当前运行环境完成 Android 构建和真机验证。** 构建需要 JDK 21、Gradle 9.8.0、AGP 9.4.1 与 Android SDK platform 37；本次环境无 Android SDK，且 Gradle Wrapper 下载因网络不可用失败。因此本次交付是源码静态修复，需在本地/CI 构建。
 - **整体替换原水印。** 原水印的文字和 Logo 不会保留；新胶囊显示本次拍摄记录中可用的字段。
 - **部分拍摄信息可能缺失。** Camera2 设备能力、模式、缓存或相机内部适配器可能不给出某项 CaptureResult；程序会省略字段，不填充猜测值。
 - **需要 Root 与 LSPosed。** 修改相机进程输出依赖 Xposed Hook。
@@ -272,3 +277,12 @@ CI 会构建并校验 `:app` 与 `:gallery` 的 debug APK。Release 签名为外
 所有改编文件的头部注释统一指向 `NOTICE`，完整上游归属与许可均记录于该文件
 
 本项目以 Apache License 2.0 许可——见 [LICENSE](LICENSE)
+
+## 2.1.2 材质与预览更新
+
+- 默认材质调整为清透边缘玻璃：降低整体白色蒙层，移除内部提亮，将折射、高光和轻微色散集中在胶囊边缘。
+- 设置页预览与拍摄共用胶囊布局、玻璃像素渲染和场景亮度调节代码；预览中的 EXIF/时间/GPS 是示例值，实际照片仍使用相机本次拍摄数据。
+- 新增 Edge Clear、Edge Soft、Night Clear 内置材质预设和命名自定义预设。
+- 品牌、Logo 位置和胶囊对齐方式改为展开式下拉菜单。
+- 配置清除入口可同时清理应用私有配置、`/data/local/tmp/lf_config.txt` 和自定义预设。
+- 配置文件 v1 自动迁移到新的清透边缘默认材质；保留胶囊布局设置。

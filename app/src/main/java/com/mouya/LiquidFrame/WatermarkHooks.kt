@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.location.Location
@@ -23,8 +22,6 @@ import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
-import java.util.Collections
-import java.util.IdentityHashMap
 import java.util.Locale
 object WatermarkHooks {
 
@@ -115,119 +112,14 @@ object WatermarkHooks {
 
     /**
      * The camera builds this typed record immediately before its watermark encoder. The
-     * capture receiver and watermark renderer are synchronous on the same capture thread, so
-     * a thread-local snapshot associates metadata with the correct frame even when
+     * enclosing E5/b.h call and the watermark renderer are synchronous on the same capture
+     * thread, so a thread-local snapshot associates metadata with the correct frame even when
      * several captures are processed concurrently.
      */
     private data class CaptureState(
         val meta: CapsuleRenderer.CaptureMeta,
-        @Volatile var sourcePhoto: Bitmap? = null,
-        @Volatile var sourceWidth: Int = 0,
-        @Volatile var sourceHeight: Int = 0,
-        @Volatile var sourceSnapshot: Bitmap? = null,
-        /** Source-space rect represented by sourceSnapshot (full frame or bottom recovery strip). */
-        @Volatile var sourceSnapshotRect: Rect? = null,
-        /** Exact output of Xiaomi's watermark factory; prevents patching its separate original-image branch. */
-        @Volatile var composedPhoto: Bitmap? = null,
-    ) {
-        val patchedBitmaps: MutableSet<Bitmap> =
-            Collections.newSetFromMap(IdentityHashMap<Bitmap, Boolean>())
-
-        /**
-         * Remember the input to Xiaomi's stock watermark factory before its output is composed.
-         * Keep a bounded immutable snapshot when feasible; very large images use a bounded
-         * bottom recovery strip so the stock watermark plate can be removed without copying
-         * an entire 50 MP frame.
-         */
-        @Synchronized
-        fun rememberPristineSource(bitmap: Bitmap) {
-            if (bitmap.isRecycled || bitmap.width < 64 || bitmap.height < 64) return
-            val current = sourcePhoto
-            val currentSnapshot = sourceSnapshot
-            val hasUsablePreviousSource = currentSnapshot != null && !currentSnapshot.isRecycled ||
-                    current != null && !current.isRecycled
-            if (hasUsablePreviousSource &&
-                sourceWidth.toLong() * sourceHeight >= bitmap.width.toLong() * bitmap.height
-            ) return
-            sourcePhoto = bitmap
-            sourceWidth = bitmap.width
-            sourceHeight = bitmap.height
-            sourceSnapshot?.let { if (!it.isRecycled) it.recycle() }
-            sourceSnapshot = null
-            sourceSnapshotRect = null
-
-            // Full-frame preservation is best for normal resolutions. For 24–200 MP shots,
-            // retain only the bottom recovery strip (the Xiaomi watermark compositor's plate
-            // is bottom-anchored), bounded to 64 MiB. This avoids doubling the camera's peak
-            // memory while still restoring the pixels underneath the original plate.
-            val fullBytes = bitmap.width.toLong() * bitmap.height * 4L
-            val fullFrame = fullBytes <= MAX_SOURCE_SNAPSHOT_BYTES
-            val cropHeight = if (fullFrame) bitmap.height else {
-                (bitmap.height * SOURCE_RECOVERY_STRIP_FRACTION).toInt().coerceIn(1, bitmap.height)
-            }
-            val top = bitmap.height - cropHeight
-            // Preserve the complete watermark zone even on very wide 100–200 MP frames.
-            // Downsample the recovery strip only as much as required to remain within 64 MiB;
-            // drawing it back is preferable to leaving a slice of the OEM plate untouched.
-            var sample = 1
-            while (!fullFrame &&
-                (bitmap.width.toLong() / sample) * (cropHeight.toLong() / sample) * 4L > MAX_SOURCE_SNAPSHOT_BYTES
-            ) sample++
-            sourceSnapshot = try {
-                if (fullFrame) {
-                    bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                } else {
-                    // Draw the source crop directly into the bounded destination. Creating a
-                    // full-resolution crop first would temporarily allocate >64 MiB on 100–200 MP
-                    // shots, defeating the memory cap even if that crop were scaled afterwards.
-                    val targetWidth = (bitmap.width / sample).coerceAtLeast(1)
-                    val targetHeight = (cropHeight / sample).coerceAtLeast(1)
-                    Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888).also { target ->
-                        val canvas = Canvas(target)
-                        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                            isDither = true
-                        }
-                        canvas.drawBitmap(
-                            bitmap,
-                            Rect(0, top, bitmap.width, bitmap.height),
-                            Rect(0, 0, targetWidth, targetHeight),
-                            paint,
-                        )
-                    }
-                }
-            } catch (_: Throwable) {
-                null
-            }
-            if (sourceSnapshot != null) {
-                sourceSnapshotRect = Rect(0, top, bitmap.width, bitmap.height)
-                if (!fullFrame) {
-                    LogHelper.log("LiquidFrame", "source snapshot: bottom recovery strip ${bitmap.width}x$cropHeight sample=$sample")
-                }
-            }
-        }
-
-        @Synchronized
-        fun rememberComposedPhoto(bitmap: Bitmap?) {
-            if (bitmap == null || bitmap.isRecycled || bitmap.width < 64 || bitmap.height < 64) return
-            composedPhoto = bitmap
-        }
-
-        @Synchronized
-        fun release() {
-            sourceSnapshot?.let { if (!it.isRecycled) it.recycle() }
-            sourceSnapshot = null
-            sourceSnapshotRect = null
-            sourcePhoto = null
-            sourceWidth = 0
-            sourceHeight = 0
-            composedPhoto = null
-            patchedBitmaps.clear()
-        }
-    }
-
-    /** Upper bound for the optional clean-source safety copy (64 MiB). */
-    private const val MAX_SOURCE_SNAPSHOT_BYTES = 64L * 1024L * 1024L
-    private const val SOURCE_RECOVERY_STRIP_FRACTION = 0.22f
+        var capsuleRendered: Boolean = false,
+    )
     private val activeCapture = ThreadLocal<CaptureState?>()
     private val captureStack = ThreadLocal.withInitial { ArrayList<CaptureState?>() }
     private val hookedCaptureMethods = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -271,98 +163,80 @@ object WatermarkHooks {
                     log("loadLogo: preset is None, skipping")
                     return null
                 }
-                // Prefer the installed module package context for both vector resources and
-                // assets. Open the APK ZIP only as a fallback when the package context is absent.
-                val moduleContext = try {
-                    // AndroidAppHelper.currentApplication() is not available in the
-                    // compile-only Xposed API jar.  Use ActivityThread.currentApplication()
-                    // via reflection — same object, no extra dependency.
-                    val atClass = Class.forName("android.app.ActivityThread")
-                    val currentApp = atClass.getMethod("currentApplication").invoke(null)
-                    (currentApp as? android.content.Context)?.createPackageContext(
-                        "com.mouya.LiquidFrame",
-                        android.content.Context.CONTEXT_IGNORE_SECURITY,
-                    )
-                } catch (t: Throwable) {
-                    log("loadLogo: module package context unavailable: ${t.javaClass.simpleName}")
-                    null
-                }
-                val apkPath = if (moduleContext == null) {
-                    resolveModuleApkPath()?.takeIf { java.io.File(it).isFile }
-                } else null
-                val zip = try {
-                    apkPath?.let { java.util.zip.ZipFile(it) }
-                } catch (t: Throwable) {
-                    log("loadLogo: module APK cannot be opened: ${t.javaClass.simpleName}")
-                    null
-                }
-                if (moduleContext == null && zip == null) {
-                    log("loadLogo: module resources/assets unavailable")
+                // For presets with a drawable resource, try decoding from the APK's
+                // resources/drawable path first (vector drawables are stored as XML).
+                val apkPath = resolveModuleApkPath()
+                if (apkPath == null) {
+                    log("loadLogo: module APK path not found")
                     return null
                 }
-                val bmp: Bitmap? = try {
+                val apk = java.io.File(apkPath)
+                if (!apk.isFile) {
+                    log("loadLogo: module APK file does not exist: $apkPath")
+                    return null
+                }
+                val bmp: Bitmap? = java.util.zip.ZipFile(apk).use { z ->
                     fun decodeAsset(name: String): Bitmap? {
-                        if (moduleContext != null) {
-                            try {
-                                return moduleContext.assets.open(name).use { stream ->
-                                    android.graphics.BitmapFactory.decodeStream(stream)
-                                }
-                            } catch (_: Throwable) { /* try APK entry below */ }
-                        }
-                        val entry = zip?.getEntry("assets/$name") ?: return null
-                        return zip.getInputStream(entry).use { stream ->
+                        val entry = z.getEntry("assets/$name") ?: return null
+                        return z.getInputStream(entry).use { stream ->
                             android.graphics.BitmapFactory.decodeStream(stream)
                         }
                     }
                     fun decodeDrawable(name: String): Bitmap? {
-                        // APK resources are compiled binary XML; inflate them through the
-                        // installed module package Resources, not a plain XmlPullParser.
-                        val resources = moduleContext?.resources ?: return null
-                        val resourceName = name.substringAfterLast('/').substringBeforeLast('.')
-                        val resourceId = resources.getIdentifier(
-                            resourceName,
-                            "drawable",
-                            "com.mouya.LiquidFrame",
-                        )
-                        if (resourceId == 0) return null
-                        val drawable = resources.getDrawable(resourceId, null)
-                        val w = drawable.intrinsicWidth.coerceAtLeast(24)
-                        val h = drawable.intrinsicHeight.coerceAtLeast(24)
-                        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                        val canvas = Canvas(bitmap)
-                        drawable.setBounds(0, 0, w, h)
-                        drawable.draw(canvas)
-                        return bitmap
-                    }
-                    fun wordmark(label: String, width: Int = 320): Bitmap {
-                        val height = 112
-                        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                        val canvas = Canvas(result)
-                        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-                            color = android.graphics.Color.WHITE
-                            textAlign = Paint.Align.CENTER
-                            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-                            textSize = 54f
-                            setShadowLayer(2f, 0f, 1f, 0x44000000)
+                        // Inflate the module resource with the module APK's own Resources.
+                        // Resources.getSystem() cannot resolve app/vector attributes reliably.
+                        // Two paths to the module Resources, most robust first:
+                        //   1. createPackageContext of the installed module (LSPosed keeps the
+                        //      module package installed, so this resolves like any normal app).
+                        //   2. Hidden-API AssetManager+addAssetPath reflection (works even when
+                        //      the module package cannot be seen from the camera process).
+                        fun moduleResources(): android.content.res.Resources? {
+                            val pkgContext = try {
+                                Class.forName("android.app.ActivityThread")
+                                    .getMethod("currentApplication")
+                                    .invoke(null) as? android.content.Context
+                            } catch (t: Throwable) { null }
+                            val ctx = pkgContext?.createPackageContext(
+                                "com.mouya.LiquidFrame",
+                                android.content.Context.CONTEXT_IGNORE_SECURITY,
+                            )
+                            if (ctx != null) return ctx.resources
+                            return try {
+                                val assets = android.content.res.AssetManager()
+                                assets.javaClass.getMethod("addAssetPath", String::class.java)
+                                    .invoke(assets, apkPath)
+                                val system = android.content.res.Resources.getSystem()
+                                android.content.res.Resources(assets, system.displayMetrics, system.configuration)
+                            } catch (t: Throwable) { null }
                         }
-                        val baseline = (height - (paint.ascent() + paint.descent())) * 0.5f
-                        canvas.drawText(label, width * 0.5f, baseline, paint)
-                        return result
+                        return try {
+                            val moduleRes = moduleResources() ?: return null
+                            val resourceName = name.substringAfterLast('/').substringBeforeLast('.')
+                            val id = moduleRes.getIdentifier(resourceName, "drawable", "com.mouya.LiquidFrame")
+                            if (id == 0) return null
+                            val drawable = moduleRes.getDrawable(id, null)
+                            val w = drawable.intrinsicWidth.coerceAtLeast(64)
+                            val h = drawable.intrinsicHeight.coerceAtLeast(64)
+                            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bmp ->
+                                val canvas = Canvas(bmp)
+                                drawable.setBounds(0, 0, w, h)
+                                drawable.draw(canvas)
+                            }
+                        } catch (t: Throwable) {
+                            log("decode drawable failed: ${t.javaClass.simpleName}: ${t.message}")
+                            null
+                        }
                     }
-                    // Only use the actual bundled marks for Apple/Leica. Other brands are
-                    // explicitly labelled as typographic wordmarks in the selector; never
-                    // silently substitute a Leica asset for a different brand.
+                    // Try asset-based logos (Leica wordmark and badge) first.
                     when (preset) {
                         LogoPreset.Leica -> decodeAsset("leica_logo.png")
                         LogoPreset.LeicaWhite -> decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
                         LogoPreset.Apple -> decodeDrawable("drawable/logo_apple.xml")
-                        LogoPreset.Xiaomi -> wordmark("Xiaomi", 300)
-                        LogoPreset.Hasselblad -> wordmark("HASSELBLAD", 360)
-                        LogoPreset.Zeiss -> wordmark("ZEISS", 300)
-                        LogoPreset.None -> null
+                        else -> {
+                            // For presets without bundled assets, fall back to Leica assets.
+                            decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
+                        }
                     }
-                } finally {
-                    try { zip?.close() } catch (_: Throwable) { }
                 }
                 if (bmp != null) log("loadLogo: decoded ${bmp.width}x${bmp.height} for preset ${preset.name}")
                 else log("loadLogo: asset not found for preset ${preset.name}")
@@ -518,12 +392,7 @@ object WatermarkHooks {
         }
         val key = target.declaringClass.name + "#" + target.name + "(structural)"
         if (!hookedCaptureMethods.add(key)) return true
-        installCaptureHook(
-            target,
-            plan,
-            "structural ${record.simpleName}",
-            DexKitHelper.captureReceiverRecordIndex(),
-        )
+        installCaptureHook(target, plan, "structural ${record.simpleName}")
         return true
     }
 
@@ -561,32 +430,24 @@ object WatermarkHooks {
         target: Method,
         plan: DexScan.RecordPlan?,
         label: String,
-        recordParamIndex: Int = 0,
     ) {
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
-                val context = p.args?.getOrNull(recordParamIndex) ?: return
+                val context = p.args?.getOrNull(0) ?: return
                 val stack = captureStack.get()
                 stack.add(activeCapture.get())
-                activeCapture.set(
-                    CaptureState(
-                        meta = readCaptureMeta(context, plan),
-                        sourcePhoto = readCaptureSourceBitmap(context, plan),
-                    ),
-                )
+                activeCapture.set(CaptureState(readCaptureMeta(context, plan)))
             }
 
             override fun afterHookedMethod(p: MethodHookParam) {
                 val stack = captureStack.get()
                 val previous = if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) else null
-                activeCapture.get()?.takeIf { it !== previous }?.release()
                 activeCapture.set(previous)
                 if (stack.isEmpty()) captureStack.remove()
             }
         })
         log("hooked capture metadata [$label]: ${target.declaringClass.name}#${target.name} " +
-                "params=${target.parameterTypes.size} recordArg=$recordParamIndex " +
-                "plan=${if (plan != null) "indexed" else "names"}")
+                "params=${target.parameterTypes.size} plan=${if (plan != null) "indexed" else "names"}")
     }
 
     /**
@@ -626,8 +487,6 @@ object WatermarkHooks {
         fun raw(idx: Int?, fallback: String): Any? =
             if (plan != null) byIndex(idx) else byName(fallback)
 
-        // Ki/a.f is the Xiaomi camera's 35mm-equivalent focal length; Ki/b's
-        // corresponding diagnostic field is explicitly named mFocalLength35mm.
         val focal = (raw(plan?.focal, "f") as? Number)?.toDouble()
             ?.takeIf { it in 1.0..2000.0 }
         val aperture = (raw(plan?.aperture, "g") as? Number)?.toDouble()
@@ -653,27 +512,6 @@ object WatermarkHooks {
                 "time=${captureMillis > 0} focal=${focal != null} aperture=${aperture != null} " +
                 "exposure=${exposure != null} iso=${iso != null} gps=${location != null}")
         return CapsuleRenderer.CaptureMeta(captureMillis, location, exif)
-    }
-
-    /** Reads the camera's original bitmap slot when this build exposes one on its shot record. */
-    private fun readCaptureSourceBitmap(
-        context: Any,
-        plan: DexScan.RecordPlan?,
-    ): Bitmap? {
-        return try {
-            val fields = context.javaClass.declaredFields.filter {
-                !Modifier.isStatic(it.modifiers)
-            }
-            val index = plan?.sourceBitmap ?: fields.indexOfFirst {
-                Bitmap::class.java.isAssignableFrom(it.type)
-            }.takeIf { it >= 0 }
-            val field = index?.let { fields.getOrNull(it) } ?: return null
-            if (!Bitmap::class.java.isAssignableFrom(field.type)) return null
-            field.isAccessible = true
-            (field.get(context) as? Bitmap)?.takeUnless { it.isRecycled }
-        } catch (_: Throwable) {
-            null
-        }
     }
 
     /**
@@ -778,20 +616,17 @@ object WatermarkHooks {
                 val state = activeCapture.get()
                 GlassConfig.refresh()
                 if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
+                // When there is no capture context (a build whose receiver hook did not match),
+                // use an empty CaptureMeta so the capsule still renders with the device name and
+                // the capture clock, just without EXIF/GPS.
+                val meta = state?.meta ?: CapsuleRenderer.CaptureMeta(0L, null, null)
                 val source = p.args?.getOrNull(bitmapParamIndex) as? Bitmap ?: return
                 if (source.isRecycled || source.width < 64 || source.height < 64) return
 
-                // A capture is not a preview. Keep the clean source at this layer and wait until
-                // the fully composed frame is about to be converted to YUV/JPEG. Drawing here is
-                // precisely what allowed Xiaomi's later watermark pass to cover the glass.
-                if (state != null) {
-                    state.rememberPristineSource(source)
+                if (state?.capsuleRendered == true) {
+                    p.result = source
                     return
                 }
-
-                // Outside a capture context this method feeds the watermark-selection preview.
-                // Keep its live glass preview, but never claim camera EXIF/GPS that is not present.
-                val meta = CapsuleRenderer.CaptureMeta(0L, null, null)
                 val output = if (source.isMutable && source.config != Bitmap.Config.HARDWARE) {
                     source
                 } else {
@@ -802,8 +637,9 @@ object WatermarkHooks {
                 }
                 try {
                     if (renderCaptureCapsule(output, meta)) {
+                        state?.capsuleRendered = true
                         p.result = output
-                        log("watermark factory: selection preview glass rendered ${output.width}x${output.height}")
+                        log("watermark factory: stock watermark replaced on ${output.width}x${output.height}")
                     } else if (output !== source) {
                         output.recycle()
                     }
@@ -812,179 +648,14 @@ object WatermarkHooks {
                     log("watermark replacement failed: ${t.javaClass.simpleName}: ${t.message}")
                 }
             }
-
-            override fun afterHookedMethod(p: MethodHookParam) {
-                // The source parameter is the unwatermarked photograph; p.result is Xiaomi's
-                // completed stock-watermark bitmap. Bind by identity so a later encoder cannot
-                // accidentally modify the separately retained original-photo output.
-                activeCapture.get()?.rememberComposedPhoto(p.result as? Bitmap)
-            }
         })
-    }
-
-    /**
-     * Capture the clean, full-resolution Bitmap produced from the camera's YUV frame before
-     * Xiaomi scales it for watermark layout. On Camera 6.7 this is the first I420ToBitmap call
-     * inside W8/d.f; the stock watermark factory later receives a potentially scaled copy.
-     */
-    private fun hookYuvSourceAdapters(loader: ClassLoader) {
-        val owner = findClass("com.xiaomi.libyuv.YuvUtils", loader) ?: run {
-            log("YUV source adapter: com.xiaomi.libyuv.YuvUtils absent; factory input remains the fallback source")
-            return
-        }
-        val targets = owner.declaredMethods.filter { method ->
-            method.name == "I420ToBitmap" && Modifier.isStatic(method.modifiers) &&
-                    method.parameterTypes.firstOrNull() == Bitmap::class.java
-        }
-        if (targets.isEmpty()) {
-            log("YUV source adapter: no I420ToBitmap(Bitmap, ...) methods")
-            return
-        }
-        for (target in targets) {
-            val key = "${target.declaringClass.name}#${target.name}(source-bitmap)"
-            if (!hookedCaptureMethods.add(key)) continue
-            try {
-                XposedBridge.hookMethod(target, object : XC_MethodHook() {
-                    override fun afterHookedMethod(p: MethodHookParam) {
-                        val state = activeCapture.get() ?: return
-                        GlassConfig.refresh()
-                        if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
-                        val bitmap = p.args?.firstOrNull() as? Bitmap ?: return
-                        state.rememberPristineSource(bitmap)
-                    }
-                })
-                log("YUV source adapter hooked: ${target.name}${target.parameterTypes.map { it.simpleName }}")
-            } catch (t: Throwable) {
-                log("YUV source adapter hook failed: ${t.javaClass.simpleName}: ${t.message}")
-            }
-        }
-    }
-
-    /**
-     * Hooks the camera's final Bitmap -> frame adapters discovered from DEX structure. The
-     * adapter is called after `com.xiaomi.cam.watermark.a.c()` has composed the stock content,
-     * but before the result is packed into YUV/JPEG. We restore the pristine factory input over
-     * that composed bitmap and draw our capsule once, so the stock watermark cannot sit above it.
-     */
-    private fun hookCaptureFrameEncoders(loader: ClassLoader) {
-        val encoders = DexKitHelper.findFrameEncoderMethods(loader)
-        if (encoders.isEmpty()) {
-            log("final capture encoder: no verified structural encoder candidate; safe final replacement unavailable")
-            return
-        }
-        var installed = 0
-        for ((target, bitmapIndex) in encoders) {
-            val key = "${target.declaringClass.name}#${target.name}(final-bitmap=$bitmapIndex)"
-            if (!hookedCaptureMethods.add(key)) continue
-            try {
-                XposedBridge.hookMethod(target, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(p: MethodHookParam) {
-                        val state = activeCapture.get() ?: return
-                        GlassConfig.refresh()
-                        if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
-                        val input = p.args?.getOrNull(bitmapIndex) as? Bitmap ?: return
-                        if (input.isRecycled || input.width < 256 || input.height < 256) return
-                        val composedPhoto = state.composedPhoto
-                        if (composedPhoto == null || composedPhoto !== input) {
-                            // Mi/b is also called for the untouched original-image branch. Only
-                            // patch the exact bitmap returned by Xiaomi's watermark factory.
-                            return
-                        }
-                        synchronized(state.patchedBitmaps) {
-                            if (!state.patchedBitmaps.add(input)) return
-                        }
-
-                        val snapshot = state.sourceSnapshot
-                        val pristine = snapshot ?: state.sourcePhoto
-                        if (pristine == null || pristine.isRecycled) {
-                            synchronized(state.patchedBitmaps) { state.patchedBitmaps.remove(input) }
-                            log("final capture encoder: skipped; no verified clean source bitmap")
-                            return
-                        }
-                        if (!compatibleAspect(state.sourceWidth, state.sourceHeight, input)) {
-                            synchronized(state.patchedBitmaps) { state.patchedBitmaps.remove(input) }
-                            log("final capture encoder: skipped; source/output aspect mismatch " +
-                                    "${state.sourceWidth}x${state.sourceHeight} -> ${input.width}x${input.height}")
-                            return
-                        }
-
-                        val output = if (input.isMutable && input.config != Bitmap.Config.HARDWARE) {
-                            input
-                        } else {
-                            copyForRendering(input) ?: run {
-                                synchronized(state.patchedBitmaps) { state.patchedBitmaps.remove(input) }
-                                log("final capture encoder: output is immutable and copy failed")
-                                return
-                            }
-                        }
-                        try {
-                            val clean = snapshot ?: state.sourcePhoto ?: pristine
-                            if (clean !== output || snapshot != null) {
-                                val canvas = Canvas(output)
-                                val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                                    isDither = true
-                                }
-                                val sourceRect = state.sourceSnapshotRect
-                                if (snapshot != null && sourceRect != null && sourceRect.top > 0) {
-                                    val sourceHeight = state.sourceHeight.takeIf { it > 0 } ?: clean.height
-                                    val topFraction = sourceRect.top.toFloat() / sourceHeight.coerceAtLeast(1)
-                                    val heightFraction = sourceRect.height().toFloat() / sourceHeight.coerceAtLeast(1)
-                                    val dstTop = (output.height * topFraction).toInt().coerceIn(0, output.height - 1)
-                                    val dstBottom = (output.height * (topFraction + heightFraction))
-                                        .toInt().coerceIn(dstTop + 1, output.height)
-                                    canvas.drawBitmap(
-                                        clean,
-                                        Rect(0, 0, clean.width, clean.height),
-                                        Rect(0, dstTop, output.width, dstBottom),
-                                        paint,
-                                    )
-                                } else {
-                                    canvas.drawBitmap(
-                                        clean,
-                                        null,
-                                        Rect(0, 0, output.width, output.height),
-                                        paint,
-                                    )
-                                }
-                            }
-                            if (renderCaptureCapsule(output, state.meta)) {
-                                if (output !== input) p.args[bitmapIndex] = output
-                                log("final capture encoder: replaced composed stock layer with glass on " +
-                                        "${output.width}x${output.height}")
-                            } else {
-                                if (output !== input && !output.isRecycled) output.recycle()
-                                synchronized(state.patchedBitmaps) { state.patchedBitmaps.remove(input) }
-                                log("final capture encoder: capsule render failed; original camera frame kept")
-                            }
-                        } catch (t: Throwable) {
-                            if (output !== input && !output.isRecycled) output.recycle()
-                            synchronized(state.patchedBitmaps) { state.patchedBitmaps.remove(input) }
-                            log("final capture encoder failed: ${t.javaClass.simpleName}: ${t.message}")
-                        }
-                    }
-                })
-                installed++
-                log("final capture encoder hooked: $key")
-            } catch (t: Throwable) {
-                log("final capture encoder hook failed [$key]: ${t.javaClass.simpleName}: ${t.message}")
-            }
-        }
-        log("final capture encoder: $installed method(s) installed")
-    }
-
-    private fun compatibleAspect(sourceWidth: Int, sourceHeight: Int, output: Bitmap): Boolean {
-        if (sourceWidth <= 0 || sourceHeight <= 0) return false
-        if ((sourceWidth > sourceHeight) != (output.width > output.height)) return false
-        val sourceRatio = sourceWidth.toDouble() / sourceHeight
-        val outputRatio = output.width.toDouble() / output.height.coerceAtLeast(1)
-        return kotlin.math.abs(sourceRatio - outputRatio) / maxOf(sourceRatio, outputRatio) <= 0.025
     }
 
     private fun copyForRendering(source: Bitmap): Bitmap? = try {
         source.copy(Bitmap.Config.ARGB_8888, true)
     } catch (_: Throwable) { null }
 
-    /** Draw on the verified clean capture after the stock composite has been restored. */
+    /** Draw on the real source photograph before the camera's stock watermark renderer runs. */
     private fun renderCaptureCapsule(out: Bitmap, meta: CapsuleRenderer.CaptureMeta): Boolean {
         val started = SystemClock.elapsedRealtime()
         val w = out.width
@@ -1010,10 +681,7 @@ object WatermarkHooks {
         val capsuleH = metrics.capsuleHeight
         if (capsuleW >= w || capsuleH >= h) return false
 
-        // Placement is independent of the capsule size slider: keep the same raised baseline
-        // as the preview even when the user scales the glass panel.
-        val bottomMargin = (shortSide * (CapsuleRenderer.BOX_INSET_REF / 1080f))
-            .coerceIn(4f, shortSide * 0.18f)
+        val bottomMargin = (shortSide * 0.016f).coerceIn(4f, shortSide * 0.06f)
         val capsuleBottom = (h - bottomMargin).coerceAtLeast(capsuleH + 4f)
         val capsuleTop = capsuleBottom - capsuleH
         val horizontalInset = (w * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
@@ -1094,9 +762,7 @@ object WatermarkHooks {
                 // Re-run the exact hooks now that the structural names are known. A build that
                 // already matched literally is unaffected: the signature keys deduplicate.
                 hookCaptureContext(loader)
-                hookYuvSourceAdapters(loader)
                 hookWatermarkBitmapFactory(loader)
-                hookCaptureFrameEncoders(loader)
                 log("late discovery: re-install complete, total=${hookedCaptureMethods.size}")
 
                 DexKitHelper.findCanvasWrapper()?.let { cls ->
@@ -1113,34 +779,31 @@ object WatermarkHooks {
     }
 
     /**
-     * Install the typed capture pipeline. Camera 6.7 uses a DEX-identified record receiver
-     * (`W8/d.f`) and frame adapters (`Mi/b.a|b|c`); the 6.4 literal receiver remains as a
-     * fallback. The stock watermark factory is also hooked for selection previews, while the
-     * final capture adapter is identity-gated so only the OEM-composited photo is replaced.
-     * Unknown signatures are left untouched rather than guessed at runtime.
+     * Install all typed pipeline hooks. On 6.4.x both the capture context (E5/b.h) and the
+     * watermark factory (b.c) are expected to match. On 6.7+ the capture context will not
+     * match (E5/b is obfuscated away), but the watermark factory still matches because
+     * com.xiaomi.cam.watermark.b is a stable, non-obfuscated class name.
+     *
+     * When the capture context hook fails, the watermark factory hook still works — it just
+     * uses default/empty metadata (no EXIF, no GPS, no timestamp). This is a deliberate
+     * graceful degradation: the capsule renders with whatever data is available.
      */
     private fun installTypedPipelineHooks(loader: ClassLoader) {
         log("=== hook install begin ===")
         log("host=${hostFingerprint()}")
         hookCaptureContext(loader)
-        hookYuvSourceAdapters(loader)
         hookWatermarkBitmapFactory(loader)
-        hookCaptureFrameEncoders(loader)
 
         val captureOk = hookedCaptureMethods.any {
             it.contains("(structural)") || it.contains("(la.a;ZI)")
         }
         val factoryOk = hookedCaptureMethods.any { it.contains("bitmapIdx=") }
-        val finalEncoderOk = hookedCaptureMethods.any { it.contains("final-bitmap=") }
         log(
             "=== hook install summary: capture=${if (captureOk) "OK" else "MISSING"} " +
-                    "factory=${if (factoryOk) "OK" else "MISSING"} " +
-                    "finalEncoder=${if (finalEncoderOk) "OK" else "MISSING"} " +
-                    "total=${hookedCaptureMethods.size} ==="
+                    "factory=${if (factoryOk) "OK" else "MISSING"} total=${hookedCaptureMethods.size} ==="
         )
         when {
-            captureOk && factoryOk && finalEncoderOk -> log("status: post-composition capture pipeline hooked (EXIF/GPS available)")
-            captureOk && factoryOk -> log("status: partial — metadata and preview hooks active, but final encoder not verified; stock watermark will not be destructively overwritten")
+            captureOk && factoryOk -> log("status: full pipeline hooked (EXIF/GPS available)")
             !captureOk && factoryOk -> log(
                 "status: partial — watermark replacement works, but no capture context matched, " +
                         "so the capsule will show device name + clock only. " +
@@ -1797,13 +1460,18 @@ object WatermarkHooks {
             PANEL_CROP_PAD_FRACTION * minOf(capsuleW, capsuleH),
             LiquidGlassOptics.requiredPanelPaddingPx(protoCapsule, cropParams).toFloat(),
         ).coerceAtMost(capsuleH * 0.5f)
-        // Placement cap. The capsule's bottom edge sits at [placementCap - bottomMargin],
-        // so the capsule is always inside the photograph. The elevated baseline keeps it clear
-        // of a stock plate near the lower edge while matching the live-preview composition.
+        val inset = (CapsuleRenderer.BOX_INSET_REF * metrics.unitPx)
+            .coerceIn(4f, shortSide * 0.12f)
+        // Placement cap. The capsule's bottom edge sits at [placementCap - inset],
+        // so the capsule is always inside the photograph. When the stock plate
+        // survived (eraseMode still "none") the capsule must stay clear of it,
+        // but the gap is the inset itself — the capsule's bottom is already inset
+        // above the photo's bottom edge, which is at or above the plate's top.
         val placementCap = anchorY
-        // Keep the same elevated baseline as the direct post-composition capture path.
-        val bottomMargin = (shortSide * (CapsuleRenderer.BOX_INSET_REF / 1080f))
-            .coerceIn(4f, shortSide * 0.18f)
+        // Bottom margin: min(photoW, photoH) * 0.016, matching the reference engine's
+        // offsetY=1.0 bottom-aligned placement. The old BOX_INSET_REF=104 gave ~9.6% which
+        // left the capsule floating too high above the bottom edge.
+        val bottomMargin = (minOf(w, h) * 0.016f).coerceIn(4f, shortSide * 0.06f)
         val capsuleBottom = (placementCap - bottomMargin).coerceAtLeast(capsuleH + 4f)
         val capsuleTop = capsuleBottom - capsuleH
         val horizontalInset = (w * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
@@ -1987,45 +1655,8 @@ object WatermarkHooks {
      * the material has to cope with — averaging the whole photo would let a bright sky decide
      * how dense a shadow strip at the bottom of the frame is rendered.
      */
-    private fun resolveParams(pixels: IntArray, w: Int, h: Int, panel: PanelRect): GlassParams {
-        // The user's settings, exactly as written by the settings screen.
-        val user = GlassConfig.params()
-        if (!user.adaptive) return user
-
-        val left = panel.left.toInt().coerceIn(0, w - 1)
-        val top = panel.top.toInt().coerceIn(0, h - 1)
-        val right = panel.right.toInt().coerceIn(left + 1, w)
-        val bottom = panel.bottom.toInt().coerceIn(top + 1, h)
-        var total = 0.0
-        var count = 0
-        for (y in top until bottom) {
-            val row = y * w
-            var x = left
-            while (x < right) {
-                val p = pixels[row + x]
-                total += 0.213 * ((p shr 16) and 0xFF) +
-                        0.715 * ((p shr 8) and 0xFF) +
-                        0.072 * (p and 0xFF)
-                count++
-                x += 2
-            }
-        }
-        if (count == 0) return user
-        val mean = total / count / 255.0
-
-        // A bright backdrop needs a denser veil for the white labels; a dark one needs less.
-        // The ratios match what BrightScene/DarkScene used to hardcode, but they are applied as
-        // multipliers on the user's own values rather than as replacements for them.
-        val veilGain = if (mean < 0.42) 0.62f else 1.75f
-        val rimGain = if (mean < 0.42) 0.80f else 1.12f
-        return user.copy(
-            tintAlpha = (user.tintAlpha * veilGain).coerceIn(0f, 1f),
-            surfaceAlpha = (user.surfaceAlpha * veilGain).coerceIn(0f, 1f),
-            rimAlpha = (user.rimAlpha * rimGain).coerceIn(0f, 1.5f),
-            // Brightness adaptation is already folded into the multipliers above.
-            adaptive = false,
-        )
-    }
+    private fun resolveParams(pixels: IntArray, w: Int, h: Int, panel: PanelRect): GlassParams =
+        com.mouya.LiquidFrame.glass.GlassSceneTuner.resolveParams(pixels, w, h, panel, GlassConfig.params())
 
     /**
      * The pixel fallback, run on a downscaled copy.

@@ -11,6 +11,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.location.Location
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -45,16 +46,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -81,6 +82,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.mouya.LiquidFrame.glass.GlassParams
+import com.mouya.LiquidFrame.glass.GlassSceneTuner
+import com.mouya.LiquidFrame.glass.CapsuleRenderer
 import com.mouya.LiquidFrame.glass.LiquidGlassOptics
 import com.mouya.LiquidFrame.glass.LogoPreset
 import com.mouya.LiquidFrame.glass.LogoPosition
@@ -95,6 +98,7 @@ import com.mouya.LiquidFrame.ui.LiquidPageTransition
 import com.mouya.LiquidFrame.ui.LiquidSliderRow
 import com.mouya.LiquidFrame.ui.LiquidToggleRow
 import com.mouya.LiquidFrame.ui.SettingDivider
+import com.mouya.LiquidFrame.ui.SettingDropdownRow
 import com.mouya.LiquidFrame.ui.SettingRow
 import com.mouya.LiquidFrame.ui.SettingSection
 import com.mouya.LiquidFrame.ui.StatusPill
@@ -116,11 +120,11 @@ class ConfigActivity : ComponentActivity() {
         const val PREVIEW_H = 420
 
         // The reference panel is about 12% of the photo's short side, not of its width.
-        const val PREVIEW_PANEL_H_FRACTION = 0.13f
+        const val PREVIEW_PANEL_H_FRACTION = 0.12f
         // Asymmetric leading inset matching the reference engine's 4.5% horizontal margin.
         const val PREVIEW_SIDE_FRACTION = 0.045f
-        // 150 / 1080 short-side units, matching the elevated reference placement.
-        const val PREVIEW_BOTTOM_FRACTION = 0.139f
+        // 18 / 1080 short-side units, matching BOX_INSET_REF in the camera hook.
+        const val PREVIEW_BOTTOM_FRACTION = 0.0167f
         const val PREVIEW_WIDTH_FRACTION = 0.91f
     }
 
@@ -284,6 +288,11 @@ class ConfigActivity : ComponentActivity() {
         var previewSource by remember { mutableStateOf(backdropSource) }
         var writeStatus by remember { mutableStateOf(ConfigStore.lastWriteStatus()) }
         val initial = remember { ConfigStore.glassParams() }
+        var presetMenuExpanded by remember { mutableStateOf(false) }
+        var savePresetDialog by remember { mutableStateOf(false) }
+        var clearConfigDialog by remember { mutableStateOf(false) }
+        var presetName by remember { mutableStateOf("") }
+        var presetLabel by remember { mutableStateOf("Edge Clear") }
 
         var enabled by remember { mutableStateOf(ConfigStore.isEnabled()) }
         var capsuleEnabled by remember { mutableStateOf(ConfigStore.capsuleEnabled()) }
@@ -296,9 +305,6 @@ class ConfigActivity : ComponentActivity() {
         var capsuleShowLogo by remember { mutableStateOf(ConfigStore.capsuleShowLogo()) }
         var capsuleLogoPreset by remember { mutableStateOf(ConfigStore.capsuleLogoPreset()) }
         var capsuleLogoPosition by remember { mutableStateOf(ConfigStore.capsuleLogoPosition()) }
-        var logoMenuExpanded by remember { mutableStateOf(false) }
-        var logoPositionMenuExpanded by remember { mutableStateOf(false) }
-        var capsulePositionMenuExpanded by remember { mutableStateOf(false) }
         var capsuleScale by remember { mutableStateOf(ConfigStore.capsuleScale()) }
         var adaptive by remember { mutableStateOf(initial.adaptive) }
         var preserveContent by remember { mutableStateOf(initial.preserveContent) }
@@ -385,6 +391,43 @@ class ConfigActivity : ComponentActivity() {
             }
         }
 
+        fun applyPresetValues(values: Map<String, String>) {
+            band = values[ConfigStore.KEY_BAND]?.toFloatOrNull() ?: band
+            amount = values[ConfigStore.KEY_AMOUNT]?.toFloatOrNull() ?: amount
+            blur = values[ConfigStore.KEY_BLUR]?.toFloatOrNull() ?: blur
+            lift = values[ConfigStore.KEY_LIFT]?.toFloatOrNull() ?: lift
+            tint = values[ConfigStore.KEY_TINT]?.toFloatOrNull() ?: tint
+            rim = values[ConfigStore.KEY_RIM]?.toFloatOrNull() ?: rim
+            angle = values[ConfigStore.KEY_ANGLE]?.toFloatOrNull() ?: angle
+            depth = values[ConfigStore.KEY_DEPTH]?.toFloatOrNull() ?: depth
+            adaptive = values[ConfigStore.KEY_ADAPTIVE]?.toBooleanStrictOrNull() ?: adaptive
+            preserveContent = values[ConfigStore.KEY_PRESERVE]?.toBooleanStrictOrNull() ?: preserveContent
+            dispersion = values[ConfigStore.KEY_DISPERSION]?.toBooleanStrictOrNull() ?: dispersion
+        }
+
+        fun applyBuiltInPreset(name: String) {
+            val d = GlassParams.Default
+            val p = when (name) {
+                "Edge Soft" -> d.copy(refractionHeightFraction = 0.16f, refractionAmountFraction = 0.22f, blurFraction = 0.04f, tintAlpha = 0.012f, surfaceAlpha = 0.012f, rimAlpha = 0.16f, rimAmbient = 0.12f)
+                "Night Clear" -> d.copy(refractionHeightFraction = 0.22f, refractionAmountFraction = 0.38f, blurFraction = 0.10f, tintAlpha = 0.026f, surfaceAlpha = 0.03f, rimAlpha = 0.24f, rimAmbient = 0.2f)
+                else -> d
+            }
+            applyPresetValues(mapOf(
+                ConfigStore.KEY_BAND to p.refractionHeightFraction.toString(),
+                ConfigStore.KEY_AMOUNT to p.refractionAmountFraction.toString(),
+                ConfigStore.KEY_BLUR to p.blurFraction.toString(),
+                ConfigStore.KEY_LIFT to p.interiorLift.toString(),
+                ConfigStore.KEY_TINT to p.tintAlpha.toString(),
+                ConfigStore.KEY_RIM to p.rimAlpha.toString(),
+                ConfigStore.KEY_ANGLE to p.highlightAngleDeg.toString(),
+                ConfigStore.KEY_DEPTH to p.depthEffect.toString(),
+                ConfigStore.KEY_ADAPTIVE to p.adaptive.toString(),
+                ConfigStore.KEY_PRESERVE to p.preserveContent.toString(),
+                ConfigStore.KEY_DISPERSION to p.chromaticAberration.toString(),
+            ))
+            presetLabel = name
+        }
+
         fun resetDefaults() {
             val d = GlassParams.Default
             enabled = true
@@ -410,6 +453,50 @@ class ConfigActivity : ComponentActivity() {
             capsuleLogoPreset = "Apple"
             capsuleLogoPosition = "MIDDLE"
             capsuleScale = 1f
+            presetLabel = "Edge Clear"
+        }
+
+        if (clearConfigDialog) {
+            AlertDialog(
+                onDismissRequest = { clearConfigDialog = false },
+                title = { Text("清除所有配置？") },
+                text = { Text("将删除应用内配置、/data/local/tmp/lf_config.txt 以及自定义预设。此操作不可撤销。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val ok = ConfigStore.clearPersistentData()
+                        Toast.makeText(context, if (ok) "配置已清除" else "清除不完整，请检查 Root 授权", Toast.LENGTH_LONG).show()
+                        clearConfigDialog = false
+                    }) { Text("清除", color = LiquidColors.error) }
+                },
+                dismissButton = { TextButton(onClick = { clearConfigDialog = false }) { Text("取消") } },
+            )
+        }
+
+        if (savePresetDialog) {
+            AlertDialog(
+                onDismissRequest = { savePresetDialog = false },
+                title = { Text("保存材质预设") },
+                text = {
+                    OutlinedTextField(value = presetName, onValueChange = { presetName = it.take(32) }, singleLine = true, label = { Text("预设名称") })
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val values = ConfigStore.snapshot().apply {
+                            this[ConfigStore.KEY_BAND] = band.toString(); this[ConfigStore.KEY_AMOUNT] = amount.toString()
+                            this[ConfigStore.KEY_BLUR] = blur.toString(); this[ConfigStore.KEY_LIFT] = lift.toString()
+                            this[ConfigStore.KEY_TINT] = tint.toString(); this[ConfigStore.KEY_RIM] = rim.toString()
+                            this[ConfigStore.KEY_ANGLE] = angle.toString(); this[ConfigStore.KEY_DEPTH] = depth.toString()
+                            this[ConfigStore.KEY_ADAPTIVE] = adaptive.toString(); this[ConfigStore.KEY_PRESERVE] = preserveContent.toString()
+                            this[ConfigStore.KEY_DISPERSION] = dispersion.toString()
+                        }
+                        val ok = ConfigStore.savePreset(presetName, values)
+                        Toast.makeText(context, if (ok) "预设已保存" else "保存失败，请检查 Root 权限", Toast.LENGTH_SHORT).show()
+                        if (ok) presetLabel = presetName.trim()
+                        savePresetDialog = false
+                    }) { Text("保存") }
+                },
+                dismissButton = { TextButton(onClick = { savePresetDialog = false }) { Text("取消") } },
+            )
         }
 
         Box(Modifier.fillMaxSize()) {
@@ -442,7 +529,7 @@ class ConfigActivity : ComponentActivity() {
                                         modifier = Modifier.size(44.dp),
                                     )
                                     Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                        Text("LiquidFrame", fontSize = 25.sp, fontWeight = FontWeight.SemiBold, color = textPrimary())
+                                        Text("liquidFrame", fontSize = 25.sp, fontWeight = FontWeight.SemiBold, color = textPrimary())
                                         Text(
                                             "CAMERA MATERIAL",
                                             fontSize = 9.sp,
@@ -498,158 +585,104 @@ class ConfigActivity : ComponentActivity() {
 
                             SettingSection("核心", collapsible = true, initiallyExpanded = true) {
                                 LiquidToggleRow(
-                                    "启用 LiquidFrame",
+                                    "启用 liquidFrame",
                                     enabled,
                                     { enabled = !enabled },
                                     "下一次拍照开始生效",
                                 )
                             }
 
+                            SettingSection("材质预设", collapsible = true, initiallyExpanded = true) {
+                                Box {
+                                    SettingRow(
+                                        title = "当前材质",
+                                        subtitle = "选择内置风格或载入已保存的自定义预设",
+                                        trailing = { Text(presetLabel, color = LiquidColors.blue, fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                                        onClick = { presetMenuExpanded = true },
+                                    )
+                                    DropdownMenu(expanded = presetMenuExpanded, onDismissRequest = { presetMenuExpanded = false }) {
+                                        listOf("Edge Clear", "Edge Soft", "Night Clear").forEach { name ->
+                                            DropdownMenuItem(text = { Text(name) }, onClick = { presetMenuExpanded = false; applyBuiltInPreset(name) })
+                                        }
+                                        ConfigStore.presetNames().forEach { name ->
+                                            DropdownMenuItem(text = { Text(name) }, onClick = {
+                                                presetMenuExpanded = false
+                                                ConfigStore.loadPreset(name)?.let { applyPresetValues(it); presetLabel = name }
+                                            })
+                                        }
+                                    }
+                                }
+                                SettingDivider()
+                                SettingRow(
+                                    title = "保存当前预设",
+                                    subtitle = "将当前玻璃参数保存为可重复使用的配置",
+                                    trailing = { Text("保存", color = LiquidColors.blue, fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                                    onClick = { presetName = ""; savePresetDialog = true },
+                                )
+                            }
+
                             SettingSection("显示与渲染", collapsible = true, initiallyExpanded = false) {
                                 LiquidToggleRow("自适应明暗", adaptive, { adaptive = !adaptive }, "按画面亮度自动调整玻璃存在感")
                                 SettingDivider()
-                                LiquidToggleRow("预览中保留示例文字", preserveContent, { preserveContent = !preserveContent }, "仅影响设置页示例；真实拍摄会在最终编码前恢复干净底图并重新绘制胶囊")
-                                SettingDivider()
-                                LiquidToggleRow("色散", dispersion, { dispersion = !dispersion }, "开启边缘的轻微彩色折射")
+                                LiquidToggleRow("边缘色散", dispersion, { dispersion = !dispersion }, "仅在边缘折射带产生轻微色彩分离")
                             }
 
-                            SettingSection("拍摄信息", collapsible = true, initiallyExpanded = true) {
+                            SettingSection("胶囊显示", collapsible = true, initiallyExpanded = true) {
                                 LiquidToggleRow(
-                                    "重建拍摄水印",
+                                    "重建胶囊",
                                     capsuleEnabled,
                                     { capsuleEnabled = !capsuleEnabled },
-                                    "在最终照片编码前恢复干净底图，再绘制一次液态玻璃胶囊",
+                                    "在相机水印输出阶段替换原水印",
                                 )
                                 SettingDivider()
                                 LiquidToggleRow(
-                                    "拍摄时间",
+                                    "日期时间",
                                     capsuleShowDatetime,
                                     { capsuleShowDatetime = !capsuleShowDatetime },
-                                    "使用本次拍摄记录的时间；缺失时不以系统当前时间冒充",
+                                    "使用相机本次拍摄记录的时间，不使用当前系统时间代替",
                                 )
                                 SettingDivider()
                                 LiquidToggleRow(
-                                    "镜头参数",
+                                    "相机参数",
                                     capsuleShowExif,
                                     { capsuleShowExif = !capsuleShowExif },
-                                    "读取本次拍摄的焦距、光圈、快门和 ISO；缺失字段不猜测",
+                                    "仅显示本次拍摄记录的 35mm 等效焦距、光圈、快门和 ISO；缺失项不猜测",
                                 )
                                 SettingDivider()
                                 LiquidToggleRow(
-                                    "GPS 坐标",
+                                    "位置信息",
                                     capsuleShowGps,
                                     { capsuleShowGps = !capsuleShowGps },
-                                    "仅显示相机本次拍摄记录中的有效定位数据",
+                                    "读取本次拍摄记录中的 GPS Location",
                                 )
                             }
 
-                            SettingSection("品牌标识", collapsible = true, initiallyExpanded = false) {
-                                LiquidToggleRow(
-                                    "显示 Logo",
-                                    capsuleShowLogo,
-                                    { capsuleShowLogo = !capsuleShowLogo },
-                                    "在中间留白区域显示品牌标识",
-                                )
-                                AnimatedVisibility(
-                                    visible = capsuleShowLogo,
-                                    enter = expandVertically() + fadeIn(),
-                                    exit = shrinkVertically() + fadeOut(),
-                                ) {
-                                    Column {
-                                        SettingDivider()
-                                        Box(Modifier.fillMaxWidth()) {
-                                            SettingRow(
-                                                title = "Logo 样式",
-                                                subtitle = "选择胶囊中间的标识",
-                                                trailing = {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Text(
-                                                            LogoPreset.fromName(capsuleLogoPreset).displayName,
-                                                            color = LiquidColors.blue,
-                                                            fontSize = 14.sp,
-                                                            fontWeight = FontWeight.Medium,
-                                                        )
-                                                        Icon(
-                                                            Icons.Filled.KeyboardArrowDown,
-                                                            contentDescription = null,
-                                                            tint = textSecondary(),
-                                                            modifier = Modifier.size(20.dp),
-                                                        )
-                                                    }
-                                                },
-                                                onClick = { logoMenuExpanded = true },
-                                            )
-                                            DropdownMenu(
-                                                expanded = logoMenuExpanded,
-                                                onDismissRequest = { logoMenuExpanded = false },
-                                            ) {
-                                                LogoPreset.entries.forEach { preset ->
-                                                    DropdownMenuItem(
-                                                        text = { Text(preset.displayName) },
-                                                        trailingIcon = {
-                                                            if (preset.name == capsuleLogoPreset) {
-                                                                Icon(Icons.Outlined.Check, contentDescription = null, tint = LiquidColors.blue)
-                                                            }
-                                                        },
-                                                        onClick = {
-                                                            capsuleLogoPreset = preset.name
-                                                            logoMenuExpanded = false
-                                                        },
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        SettingDivider()
-                                        Box(Modifier.fillMaxWidth()) {
-                                            SettingRow(
-                                                title = "Logo 位置",
-                                                subtitle = "调整标识在胶囊中的相对位置",
-                                                trailing = {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Text(
-                                                            LogoPosition.fromName(capsuleLogoPosition).displayName,
-                                                            color = LiquidColors.blue,
-                                                            fontSize = 14.sp,
-                                                            fontWeight = FontWeight.Medium,
-                                                        )
-                                                        Icon(
-                                                            Icons.Filled.KeyboardArrowDown,
-                                                            contentDescription = null,
-                                                            tint = textSecondary(),
-                                                            modifier = Modifier.size(20.dp),
-                                                        )
-                                                    }
-                                                },
-                                                onClick = { logoPositionMenuExpanded = true },
-                                            )
-                                            DropdownMenu(
-                                                expanded = logoPositionMenuExpanded,
-                                                onDismissRequest = { logoPositionMenuExpanded = false },
-                                            ) {
-                                                LogoPosition.entries.forEach { position ->
-                                                    DropdownMenuItem(
-                                                        text = { Text(position.displayName) },
-                                                        trailingIcon = {
-                                                            if (position.name == capsuleLogoPosition) {
-                                                                Icon(Icons.Outlined.Check, contentDescription = null, tint = LiquidColors.blue)
-                                                            }
-                                                        },
-                                                        onClick = {
-                                                            capsuleLogoPosition = position.name
-                                                            logoPositionMenuExpanded = false
-                                                        },
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
+                            SettingSection("品牌与布局", collapsible = true, initiallyExpanded = false) {
+                                LiquidToggleRow("Logo", capsuleShowLogo, { capsuleShowLogo = !capsuleShowLogo }, "选择胶囊中的品牌标识")
+                                if (capsuleShowLogo) {
+                                    SettingDivider()
+                                    SettingDropdownRow(
+                                        title = "品牌标识",
+                                        subtitle = "选择胶囊中显示的品牌图形",
+                                        selected = LogoPreset.fromName(capsuleLogoPreset).displayName,
+                                        options = LogoPreset.entries.filter { it == LogoPreset.Apple || it == LogoPreset.Leica || it == LogoPreset.LeicaWhite || it == LogoPreset.None }.map { it.name to it.displayName },
+                                        onSelected = { capsuleLogoPreset = it },
+                                    )
+                                    SettingDivider()
+                                    SettingDropdownRow(
+                                        title = "标识位置",
+                                        subtitle = "设置 Logo 在胶囊中的相对位置",
+                                        selected = LogoPosition.fromName(capsuleLogoPosition).displayName,
+                                        options = LogoPosition.entries.map { it.name to it.displayName },
+                                        onSelected = { capsuleLogoPosition = it },
+                                    )
                                 }
                                 SettingDivider()
                                 LiquidToggleRow(
                                     "自定义设备名称",
                                     capsuleModelEnabled,
                                     { capsuleModelEnabled = !capsuleModelEnabled },
-                                    "默认读取系统机型名称，可在此覆盖显示文字",
+                                    "使用自定义文字替代系统机型名",
                                 )
                                 AnimatedVisibility(
                                     visible = capsuleModelEnabled,
@@ -661,13 +694,11 @@ class ConfigActivity : ComponentActivity() {
                                         onValueChange = { if (it.length <= 32) capsuleModel = it },
                                         singleLine = true,
                                         label = { Text("设备名称", fontSize = 13.sp, color = textSecondary()) },
-                                        placeholder = { Text("例如 Xiaomi 17 Pro", fontSize = 13.sp, color = textSecondary()) },
+                                        placeholder = { Text("输入自定义机型文字", fontSize = 13.sp, color = textSecondary()) },
                                         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
                                     )
                                 }
-                            }
-
-                            SettingSection("胶囊布局", collapsible = true, initiallyExpanded = false) {
+                                SettingDivider()
                                 LiquidSliderRow(
                                     "胶囊大小",
                                     capsuleScale,
@@ -676,52 +707,13 @@ class ConfigActivity : ComponentActivity() {
                                     valueLabel = String.format(java.util.Locale.ROOT, "%.2f×", capsuleScale),
                                 ) { capsuleScale = it }
                                 SettingDivider()
-                                Box(Modifier.fillMaxWidth()) {
-                                    SettingRow(
-                                        title = "水平位置",
-                                        subtitle = "沿照片底边放置胶囊",
-                                        trailing = {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(
-                                                    when (capsulePos) {
-                                                        "center" -> "居中"
-                                                        "right" -> "靠右"
-                                                        else -> "靠左"
-                                                    },
-                                                    color = LiquidColors.blue,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                )
-                                                Icon(
-                                                    Icons.Filled.KeyboardArrowDown,
-                                                    contentDescription = null,
-                                                    tint = textSecondary(),
-                                                    modifier = Modifier.size(20.dp),
-                                                )
-                                            }
-                                        },
-                                        onClick = { capsulePositionMenuExpanded = true },
-                                    )
-                                    DropdownMenu(
-                                        expanded = capsulePositionMenuExpanded,
-                                        onDismissRequest = { capsulePositionMenuExpanded = false },
-                                    ) {
-                                        listOf("left" to "靠左", "center" to "居中", "right" to "靠右").forEach { (value, label) ->
-                                            DropdownMenuItem(
-                                                text = { Text(label) },
-                                                trailingIcon = {
-                                                    if (value == capsulePos) {
-                                                        Icon(Icons.Outlined.Check, contentDescription = null, tint = LiquidColors.blue)
-                                                    }
-                                                },
-                                                onClick = {
-                                                    capsulePos = value
-                                                    capsulePositionMenuExpanded = false
-                                                },
-                                            )
-                                        }
-                                    }
-                                }
+                                SettingDropdownRow(
+                                    title = "胶囊位置",
+                                    subtitle = "沿照片底边选择对齐方式",
+                                    selected = when (capsulePos) { "center" -> "居中"; "right" -> "靠右"; else -> "靠左" },
+                                    options = listOf("left" to "靠左", "center" to "居中", "right" to "靠右"),
+                                    onSelected = { capsulePos = it },
+                                )
                             }
 
                             SettingSection("维护", collapsible = true, initiallyExpanded = false) {
@@ -732,6 +724,13 @@ class ConfigActivity : ComponentActivity() {
                                         Icon(Icons.Outlined.Refresh, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
                                     },
                                     onClick = ::resetDefaults,
+                                )
+                                SettingDivider()
+                                SettingRow(
+                                    title = "清除持久化配置",
+                                    subtitle = "删除 /data/local/tmp 中的配置与自定义预设",
+                                    trailing = { Text("清除", color = LiquidColors.error, fontSize = 14.sp, fontWeight = FontWeight.Medium) },
+                                    onClick = { clearConfigDialog = true },
                                 )
                                 SettingDivider()
                                 SettingRow(
@@ -1051,31 +1050,78 @@ class ConfigActivity : ComponentActivity() {
     }
 
     private fun renderPreview(bitmap: Bitmap, params: GlassParams): String {
-        val shortSide = minOf(bitmap.width, bitmap.height)
-        val panelH = (shortSide * PREVIEW_PANEL_H_FRACTION).toInt().coerceAtLeast(48)
-        val side = (bitmap.width * PREVIEW_SIDE_FRACTION).toInt()
-        val panelW = (bitmap.width * PREVIEW_WIDTH_FRACTION).toInt().coerceAtLeast(1)
-        val bottomMargin = (shortSide * PREVIEW_BOTTOM_FRACTION).toInt()
-        val panel = PanelRect(
-            left = side.toFloat(),
-            top = (bitmap.height - bottomMargin - panelH).toFloat(),
-            width = panelW.toFloat(),
-            height = panelH.toFloat(),
-            cornerRadiusPx = panelH * 0.5f,
+        val width = bitmap.width
+        val height = bitmap.height
+        val shortSide = minOf(width, height)
+        if (width < 160 || height < 160) return "预览图尺寸不足"
+        val previewMeta = CapsuleRenderer.CaptureMeta(
+            captureMillis = 1_792_657_488_000L,
+            location = Location("preview").apply { latitude = 27.925; longitude = 118.549 },
+            exif = CapsuleRenderer.ExifBits(100.0, 2.8, 1.0 / 461.0, 50),
         )
-        val result = try {
-            val pixels = IntArray(bitmap.width * bitmap.height)
-            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            val r = LiquidGlassOptics.renderPanel(
-                pixels, bitmap.width, bitmap.height, panel, params,
-                panelIsOpaquePlate = false,
-            )
-            if (!r.startsWith("skip")) bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            r
+        val showLogo = ConfigStore.capsuleShowLogo()
+        val logo = if (showLogo) loadPreviewLogo(ConfigStore.capsuleLogoPreset()) else null
+        val options = CapsuleRenderer.Options(
+            modelOverride = ConfigStore.capsuleModel(),
+            position = ConfigStore.capsulePos(),
+            showDateTime = ConfigStore.capsuleShowDatetime(),
+            showExif = ConfigStore.capsuleShowExif(),
+            showGps = ConfigStore.capsuleShowGps(),
+            scale = ConfigStore.capsuleScale(),
+            showLogo = showLogo,
+            logo = logo,
+            logoPreset = ConfigStore.capsuleLogoPreset(),
+            logoPosition = ConfigStore.capsuleLogoPosition(),
+        )
+        val lines = CapsuleRenderer.buildLines(options, previewMeta, shortSide)
+        val metrics = CapsuleRenderer.measureCapsule(width, shortSide, options.scale, lines, options)
+            ?: return "预览内容不足"
+        val leftInset = (width * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
+        val left = when (options.position) {
+            "right" -> width - leftInset - metrics.capsuleWidth
+            "center" -> (width - metrics.capsuleWidth) * 0.5f
+            else -> leftInset
+        }.coerceIn(0f, (width - metrics.capsuleWidth).coerceAtLeast(0f))
+        val bottomMargin = (shortSide * 0.016f).coerceIn(4f, shortSide * 0.06f)
+        val top = height - bottomMargin - metrics.capsuleHeight
+        val panel = PanelRect(left, top, metrics.capsuleWidth, metrics.capsuleHeight, metrics.capsuleHeight * 0.5f)
+        return try {
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            val tuned = GlassSceneTuner.resolveParams(pixels, width, height, panel, params).copy(preserveContent = false)
+            val glassResult = LiquidGlassOptics.renderPanel(pixels, width, height, panel, tuned, panelIsOpaquePlate = false)
+            if (glassResult.startsWith("skip")) return "玻璃渲染跳过：$glassResult"
+            val textLayer = CapsuleRenderer.drawTextLayer(width, height, panel, metrics, CapsuleRenderer.TEXT_COLOR_WHITE)
+                ?: return "文字层生成失败"
+            CapsuleRenderer.blendTextOver(pixels, textLayer)
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+            "共用成片渲染器 · 参数为示例值 · ${metrics.capsuleWidth.toInt()}×${metrics.capsuleHeight.toInt()} · $glassResult"
         } catch (t: Throwable) {
             "预览失败：${t.javaClass.simpleName}"
+        } finally {
+            logo?.takeIf { !it.isRecycled }?.recycle()
         }
-        return result
+    }
+
+    private fun loadPreviewLogo(name: String): Bitmap? {
+        return try {
+            when (LogoPreset.fromName(name)) {
+                LogoPreset.None -> null
+                LogoPreset.Apple -> {
+                    val drawable = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.logo_apple) ?: return null
+                    val w = drawable.intrinsicWidth.coerceAtLeast(64)
+                    val h = drawable.intrinsicHeight.coerceAtLeast(64)
+                    Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bmp ->
+                        val canvas = Canvas(bmp)
+                        drawable.setBounds(0, 0, w, h)
+                        drawable.draw(canvas)
+                    }
+                }
+                LogoPreset.Leica -> assets.open("leica_logo.png").use { BitmapFactory.decodeStream(it) }
+                LogoPreset.LeicaWhite -> assets.open("leica_wordmark_white.png").use { BitmapFactory.decodeStream(it) }
+                else -> null
+            }
+        } catch (_: Throwable) { null }
     }
 
     // ---------------------------------------------------------------------------------------

@@ -27,7 +27,7 @@ data class GlassParams(
      * Calibrated against the reference project's own Apple comparison, where a 300 px glass
      * uses `inputInnerRefractionHeight = 20`: a band of ~7% of the panel.
      */
-    val refractionHeightFraction: Float = 0.08f,
+    val refractionHeightFraction: Float = 0.20f,
 
     /**
      * Peak displacement, as a fraction of the refraction band.
@@ -35,7 +35,7 @@ data class GlassParams(
      * The watermark capsule is much wider than tall, so the reference look uses a gentle
      * displacement instead of the exaggerated lens bending produced by values near 3.0.
      */
-    val refractionAmountFraction: Float = 1.2f,
+    val refractionAmountFraction: Float = 0.34f,
 
     /** Corner radius as a fraction of the panel's short side, when it cannot be measured. */
     val cornerRadiusFraction: Float = 0.5f,
@@ -44,7 +44,7 @@ data class GlassParams(
 
     /** Gaussian blur before the lens, as a fraction of the refraction band.
      *  Set to 0 per VitreMark defaults (blurRadiusDp = 0). */
-    val blurFraction: Float = 0f,
+    val blurFraction: Float = 0.08f,
 
     /** `vibrancy()`. Disabled by default per VitreMark (vibrancyEnabled = false). */
     val vibrancy: Float = 1f,
@@ -57,8 +57,8 @@ data class GlassParams(
 
     /** Split refraction into the reference's seven-tap spectrum.
      *  Disabled by default per VitreMark (chromaticAberration = false). */
-    val chromaticAberration: Boolean = false,
-    val dispersionIntensity: Float = 1f,
+    val chromaticAberration: Boolean = true,
+    val dispersionIntensity: Float = 0.18f,
 
     // ---- surface ------------------------------------------------------------------------
 
@@ -67,11 +67,11 @@ data class GlassParams(
     val tintHueWeight: Float = 0.75f,
 
     /** Alpha of the tint's normal-blend pass. */
-    val tintAlpha: Float = 0.08f,
+    val tintAlpha: Float = 0.018f,
 
     /** Additional flat white veil; the reference's `surfaceColor`.
      * Set to 0.15 per the iOS reference analysis (background transparency ≈ 15%). */
-    val surfaceAlpha: Float = 0.15f,
+    val surfaceAlpha: Float = 0.022f,
 
     /**
      * Additive frosted lift applied across the whole panel, in 0-255 units.
@@ -83,7 +83,7 @@ data class GlassParams(
      * 10 -> 6: the stacked veil (tint + surface + lift ~= 19%) read as a grey slab on
      * the lower half of a flat capsule, where there is no top highlight to balance it.
      */
-    val interiorLift: Float = 6f,
+    val interiorLift: Float = 0f,
 
     /**
      * Keep the camera's own labels on top of the material.
@@ -104,13 +104,13 @@ data class GlassParams(
 
     /** The reference's `Highlight` modifier: 0.5.dp white stroke at [rimAlpha].
      * Set to 0.30 per the iOS reference analysis (edge highlight opacity ≈ 30%). */
-    val rimAlpha: Float = 0.30f,
+    val rimAlpha: Float = 0.22f,
 
     /** Stroke width, as a fraction of the refraction band. */
-    val rimWidthFraction: Float = 0.22f,
+    val rimWidthFraction: Float = 0.16f,
 
     /** Stroke blur (sigma), as a fraction of the refraction band. */
-    val rimBlurFraction: Float = 0.20f,
+    val rimBlurFraction: Float = 0.24f,
 
     /**
      * Mix between an all-round rim ([rimAmbient], which is what a blurred stroke alone
@@ -118,7 +118,7 @@ data class GlassParams(
      * shader. The material needs both: the stroke is what makes the edge read as glass, the
      * direction is what makes the light look like it comes from somewhere.
      */
-    val rimAmbient: Float = 0.45f,
+    val rimAmbient: Float = 0.18f,
 
     // ---- inner shadow -------------------------------------------------------------------
 
