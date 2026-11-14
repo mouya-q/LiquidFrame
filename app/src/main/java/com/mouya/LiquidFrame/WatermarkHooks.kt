@@ -119,6 +119,18 @@ object WatermarkHooks {
     private data class CaptureState(
         val meta: CapsuleRenderer.CaptureMeta,
         var capsuleRendered: Boolean = false,
+        /** Width of the frame the factory produced, so the encoder guard can sanity-check size. */
+        var renderedWidth: Int = 0,
+        /** Height of the frame the factory produced. */
+        var renderedHeight: Int = 0,
+        /**
+         * Bitmaps that already received the glass capsule at the encoder boundary, tracked by
+         * identity. A single capture can reach `bitmapToJpeg` twice with two different bitmaps
+         * (the factory output and a scaled variant), so a plain boolean would let the second
+         * one through untouched.
+         */
+        val guardedBitmaps: MutableSet<Bitmap> =
+            java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Bitmap, Boolean>()),
     )
     private val activeCapture = ThreadLocal<CaptureState?>()
     private val captureStack = ThreadLocal.withInitial { ArrayList<CaptureState?>() }
@@ -639,6 +651,8 @@ object WatermarkHooks {
                 try {
                     if (renderCaptureCapsule(output, meta)) {
                         state?.capsuleRendered = true
+                        state?.renderedWidth = output.width
+                        state?.renderedHeight = output.height
                         p.result = output
                         log("watermark factory: stock watermark replaced on ${output.width}x${output.height}")
                     } else if (output !== source) {
@@ -655,6 +669,82 @@ object WatermarkHooks {
     private fun copyForRendering(source: Bitmap): Bitmap? = try {
         source.copy(Bitmap.Config.ARGB_8888, true)
     } catch (_: Throwable) { null }
+
+    /**
+     * Final guard: burn the glass capsule into every bitmap on its way into the JPEG encoder.
+     *
+     * Why this exists
+     * ---------------
+     * On Xiaomi builds the stock photo path is
+     *     S8/d.f(captureRecord, Z, I) -> xi/e
+     * which decodes the YUV plane with `YuvUtils.I420ToBitmap`, runs the watermark factory, and
+     * finally calls `com.xiaomi.gl.texture.Jpeg.bitmapToJpeg(Bitmap, int)`. Replacing the
+     * factory's return value is not sufficient: the record also carries `[B` watermark data that
+     * `WatermarkRemover` consumes, and a second branch encodes a bitmap the factory never saw.
+     * Hooking the *encoder* is the only point guaranteed to run after all of that, so it is the
+     * one that decides what actually lands in the file.
+     *
+     * The bitmap is drawn in place: `bitmapToJpeg` reads it synchronously right after this hook,
+     * so mutating it is safe and avoids an extra full-frame copy on 50 MP shots.
+     */
+    private fun hookFinalJpegEncoder(loader: ClassLoader) {
+        val cls = findClass("com.xiaomi.gl.texture.Jpeg", loader) ?: run {
+            log("final jpeg guard: com.xiaomi.gl.texture.Jpeg absent on this build")
+            return
+        }
+        val targets = cls.declaredMethods.filter { m ->
+            m.name == "bitmapToJpeg" && Modifier.isStatic(m.modifiers) &&
+                    m.parameterTypes.firstOrNull() == Bitmap::class.java &&
+                    m.returnType == ByteArray::class.java
+        }
+        if (targets.isEmpty()) {
+            log("final jpeg guard: no static bitmapToJpeg(Bitmap, ...) returning byte[] on ${cls.name}")
+            return
+        }
+        for (target in targets) {
+            val key = "${target.declaringClass.name}#${target.name}(final-jpeg)"
+            if (!hookedCaptureMethods.add(key)) continue
+            XposedBridge.hookMethod(target, object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    val state = activeCapture.get() ?: return
+                    GlassConfig.refresh()
+                    if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
+                    val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
+                    synchronized(state.guardedBitmaps) {
+                        if (bitmap in state.guardedBitmaps) return
+                    }
+                    if (bitmap.isRecycled || bitmap.width < 256 || bitmap.height < 256) return
+                    if (!bitmap.isMutable || bitmap.config == Bitmap.Config.HARDWARE) {
+                        log("final jpeg guard: bitmap is immutable/hardware; cannot burn in place")
+                        return
+                    }
+                    if (!compatibleAspect(state.renderedWidth, state.renderedHeight, bitmap)) return
+                    try {
+                        if (renderCaptureCapsule(bitmap, state.meta)) {
+                            synchronized(state.guardedBitmaps) { state.guardedBitmaps.add(bitmap) }
+                            log("final jpeg guard: glass burned into ${bitmap.width}x${bitmap.height} " +
+                                    "immediately before encoding")
+                        }
+                    } catch (t: Throwable) {
+                        log("final jpeg guard failed: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+            })
+            log("final jpeg guard: hooked ${target.name}${target.parameterTypes.map { it.simpleName }}")
+        }
+    }
+
+    /**
+     * Whether a source frame and the bitmap about to be encoded describe the same picture.
+     * Prevents the capsule from being stamped onto a thumbnail or a differently cropped frame.
+     */
+    private fun compatibleAspect(sourceWidth: Int, sourceHeight: Int, output: Bitmap): Boolean {
+        if (sourceWidth <= 0 || sourceHeight <= 0) return true
+        if ((sourceWidth > sourceHeight) != (output.width > output.height)) return false
+        val sourceRatio = sourceWidth.toDouble() / sourceHeight
+        val outputRatio = output.width.toDouble() / output.height.coerceAtLeast(1)
+        return kotlin.math.abs(sourceRatio - outputRatio) / maxOf(sourceRatio, outputRatio) <= 0.025
+    }
 
     /** Draw on the real source photograph before the camera's stock watermark renderer runs. */
     private fun renderCaptureCapsule(out: Bitmap, meta: CapsuleRenderer.CaptureMeta): Boolean {
@@ -764,6 +854,7 @@ object WatermarkHooks {
                 // already matched literally is unaffected: the signature keys deduplicate.
                 hookCaptureContext(loader)
                 hookWatermarkBitmapFactory(loader)
+                hookFinalJpegEncoder(loader)
                 log("late discovery: re-install complete, total=${hookedCaptureMethods.size}")
 
                 DexKitHelper.findCanvasWrapper()?.let { cls ->
@@ -794,14 +885,18 @@ object WatermarkHooks {
         log("host=${hostFingerprint()}")
         hookCaptureContext(loader)
         hookWatermarkBitmapFactory(loader)
+        hookFinalJpegEncoder(loader)
 
         val captureOk = hookedCaptureMethods.any {
             it.contains("(structural)") || it.contains("(la.a;ZI)")
         }
         val factoryOk = hookedCaptureMethods.any { it.contains("bitmapIdx=") }
+        val finalGuardOk = hookedCaptureMethods.any { it.contains("(final-jpeg)") }
         log(
             "=== hook install summary: capture=${if (captureOk) "OK" else "MISSING"} " +
-                    "factory=${if (factoryOk) "OK" else "MISSING"} total=${hookedCaptureMethods.size} ==="
+                    "factory=${if (factoryOk) "OK" else "MISSING"} " +
+                    "finalGuard=${if (finalGuardOk) "OK" else "MISSING"} " +
+                    "total=${hookedCaptureMethods.size} ==="
         )
         when {
             captureOk && factoryOk -> log("status: full pipeline hooked (EXIF/GPS available)")

@@ -1,3 +1,19 @@
+## 2.2.1 — Final encoder guard keeps the glass from being overwritten
+
+The merged 2.2.0 pipeline replaced only the watermark factory's return value, which is not
+where the photo actually gets its pixels from. DEX evidence from camera 6.6.000460.1:
+
+- The capture path is `S8/d.f(xi/a, Z, I) -> xi/e` (log tag `CloudWatermark/processWatermark`).
+- `S8/d.e(xi/a) -> Bitmap` is the *preview* path (`processPreviewWatermark`); the factory hook
+  was landing there, which is why the glass appeared during processing but not in the file.
+- `f` decodes the record's YUV plane with `YuvUtils.I420ToBitmap`, runs `a.K(...)`
+  (WatermarkRemover) and `a.c(...)`, then emits the frame through
+  `com.xiaomi.gl.texture.Jpeg.bitmapToJpeg(Bitmap, int)` — twice, on two different bitmaps.
+
+Fix: a final guard on `Jpeg.bitmapToJpeg` burns the capsule into the bitmap immediately before
+encoding, tracked per bitmap identity so both encoder calls are covered. The install summary now
+reports `finalGuard=OK|MISSING` next to `capture=` and `factory=`.
+
 ## 2.2.0 — Xiaomi camera 6.6 support and merged EdgeGlass build
 
 - Structural matchers verified against camera 6.6.000460.1: the capture record resolves to `xi/a` (contiguous `S,F,J,I` anchor at index 5, capture time `l`, GPS `m`), the receiver to `S8/d.f(xi/a, Z, I)`, and the watermark factory candidates include the same `a.d` (7-arg static) and `b.c` (9-arg instance) shapes as 6.7 — no matcher changes were required (`tools/verify_matchers.py`, RESULT: PASS).
