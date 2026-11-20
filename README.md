@@ -1,4 +1,8 @@
-# LiquidFrame
+<p align="center">
+  <img src="icon_LiquidFrame.png" alt="LiquidFrame" width="120">
+</p>
+
+<h1 align="center">LiquidFrame</h1>
 
 [English](README.md) | [简体中文](README_CN.md)
 
