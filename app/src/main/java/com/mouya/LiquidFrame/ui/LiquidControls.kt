@@ -1,14 +1,5 @@
 package com.mouya.LiquidFrame.ui
 
-/*
- * LiquidSlider and LiquidToggle — glass controls for the config UI.
- *
- * The slider drag is not stolen by the page scroll anymore: the thumb's drag
- * detector awaits pointer events directly and gates on horizontal motion, so a
- * vertical scroll never consumes the gesture and a horizontal drag never scrolls
- * the page. Taps on the track jump straight to the tapped position.
- */
-
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -79,10 +70,6 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
 
-// =====================================================================================
-// LiquidSlider — drag-gated against the page scroll
-// =====================================================================================
-
 @Composable
 fun LiquidSlider(
     value: Float,
@@ -152,9 +139,7 @@ fun LiquidSlider(
         }
 
         LaunchedEffect(dampedDragAnimation) {
-            // The upstream slider (attribution in NOTICE) uses value: () -> Float here. The previous
-            // Float capture only observed the first composition, so the thumb could
-            // keep animating toward stale state and appear impossible to drag.
+
             snapshotFlow { latestValue.value }
                 .collectLatest { v ->
                     if (dampedDragAnimation.targetValue != v) {
@@ -163,8 +148,6 @@ fun LiquidSlider(
                 }
         }
 
-        // The visible track is 6dp, but its hit target is 36dp. Tapping near the
-        // track works on real phones; vertical gestures remain available to the page.
         Box(
             Modifier
                 .layerBackdrop(trackBackdrop)
@@ -172,11 +155,7 @@ fun LiquidSlider(
                 .height(36.dp)
                 .then(
                     if (enabled) Modifier.pointerInput(valueRange, trackWidth, isLtr) {
-                        // One gesture recognizer handles both taps and horizontal drags.
-                        // The old implementation only listened for taps on the 6dp track;
-                        // that was too narrow and never moved the value during a drag.
-                        // A vertical gesture is intentionally left unconsumed so the parent
-                        // LazyColumn can scroll normally.
+
                         val touchSlop = viewConfiguration.touchSlop
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
@@ -248,8 +227,6 @@ fun LiquidSlider(
             )
         }
 
-        // Thumb: glass sphere. Its drag detector awaits pointer events directly with a
-        // horizontal-motion gate, so the page scroll cannot consume the gesture.
         Box(
             Modifier
                 .graphicsLayer {
@@ -307,11 +284,7 @@ fun LiquidSlider(
                                 scaleY = (dampedDragAnimation.scaleY.finiteOrZero() * widenFactor).finiteOrZero()
                             },
                             onDrawSurface = {
-                                // The resting bead keeps only a faint frost. An earlier
-                                // revision painted a fully opaque white here (alpha
-                                // 1f - progress is 1 at rest), which read as a solid
-                                // white mask sitting on the glass; the press now thins
-                                // the frost instead of building it.
+
                                 val progress = dampedDragAnimation.pressProgress
                                 drawRect(Color.White.copy(alpha = (1f - progress) * if (isLightTheme) 0.09f else 0.055f))
                             }
@@ -330,10 +303,6 @@ fun LiquidSlider(
     }
 }
 
-// =====================================================================================
-// LiquidToggle — glass switch
-// =====================================================================================
-
 @Composable
 fun LiquidToggle(
     checked: Boolean,
@@ -342,8 +311,7 @@ fun LiquidToggle(
     modifier: Modifier = Modifier,
 ) {
     val dark = isSystemInDarkTheme()
-    // iOS system green: the enabled track is green, matching the reference
-    // switch control. The thumb is white glass with refraction.
+
     val accent = if (dark) Color(0xFF30D158) else Color(0xFF34C759)
     val track = if (dark) Color(0xFF787880).copy(alpha = 0.36f) else Color(0xFF787878).copy(alpha = 0.20f)
     val density = LocalDensity.current
@@ -371,8 +339,7 @@ fun LiquidToggle(
                 val desired = if (didDrag) targetValue >= 0.5f else !wasChecked
                 fraction = if (desired) 1f else 0f
                 didDrag = false
-                // The callback contract is a toggle, so call it only when the final
-                // drag target differs from the external state.
+
                 if (desired != wasChecked) {
                     latestOnToggle.value()
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -493,10 +460,6 @@ fun LiquidToggle(
         )
     }
 }
-
-// =====================================================================================
-// Convenience row wrappers
-// =====================================================================================
 
 @Composable
 fun LiquidToggleRow(

@@ -15,7 +15,6 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Cross-process logger for the settings app and the camera process. */
 object LFLogger {
 
     private const val TAG = "LiquidFrame"
@@ -33,7 +32,6 @@ object LFLogger {
     private val timeFmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
     private var lastRootAttemptMs = 0L
 
-    // Keep disk / su work off the camera render thread and bound queued diagnostics.
     private val fileWriter = ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(512),
@@ -105,16 +103,13 @@ object LFLogger {
         }
     }
 
-    /** Local-process tail retained for callers that explicitly need only this process. */
     fun tail(n: Int = 500): List<String> {
         val all = ring.toList()
         return all.takeLast(n.coerceIn(1, RING_CAPACITY))
     }
 
-    /** Read the shared camera/app log. Call from Dispatchers.IO, never the main thread. */
     fun readTail(n: Int = 200): List<String> {
-        // Wait for events already accepted by the bounded writer before reading the
-        // shared file, otherwise the first refresh can race the logger thread.
+
         runCatching { fileWriter.submit {}.get(2, TimeUnit.SECONDS) }
         val count = n.coerceIn(1, 2_000)
         val direct = runCatching {
@@ -129,7 +124,6 @@ object LFLogger {
         return tail(count)
     }
 
-    /** Clears the shared file and local ring. Call from an IO dispatcher. */
     fun clear() {
         runCatching { fileWriter.submit {}.get(2, TimeUnit.SECONDS) }
         ring.clear()
@@ -175,8 +169,7 @@ object LFLogger {
                 }, "LiquidFrame-SuReader").apply { isDaemon = true }
                 reader.start()
                 runCatching { activeProcess.outputStream.close() }
-                // Bound the wait independently from stream drainage. A root-consent
-                // prompt must never stall the logger's only writer thread indefinitely.
+
                 if (!activeProcess.waitFor(4, TimeUnit.SECONDS)) {
                     activeProcess.destroyForcibly()
                     reader.join(250)

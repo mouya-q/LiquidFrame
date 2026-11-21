@@ -120,16 +120,14 @@ class ConfigActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "LiquidFrame"
-        // Preview resolution. Taller than a wide photo strip so the capsule has real
-        // content above it; the window still fills the card width.
+
         const val PREVIEW_W = 900
         const val PREVIEW_H = 560
 
-        // The reference panel is about 12% of the photo's short side, not of its width.
         const val PREVIEW_PANEL_H_FRACTION = 0.12f
-        // Asymmetric leading inset matching the reference engine's 4.5% horizontal margin.
+
         const val PREVIEW_SIDE_FRACTION = 0.045f
-        // 18 / 1080 short-side units, matching BOX_INSET_REF in the camera hook.
+
         const val PREVIEW_BOTTOM_FRACTION = 0.0167f
         const val PREVIEW_WIDTH_FRACTION = 0.91f
     }
@@ -197,18 +195,12 @@ class ConfigActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Backdrop picker
-    // ---------------------------------------------------------------------------------------
-
     private fun chooseBackdrop() {
         pickBackdrop.launch(arrayOf("image/*"))
     }
 
     private fun loadBackdrop(uri: Uri) {
-        // Opening a user image is a preview task, not UI work. Read bounds first and
-        // decode only enough pixels for the 900x420 preview; this avoids decoding a
-        // 50–100 MP camera photo on the main thread only to shrink it immediately.
+
         val generation = backdropLoadGeneration.incrementAndGet()
         previewExecutor.execute {
             val decoded = try {
@@ -245,9 +237,7 @@ class ConfigActivity : ComponentActivity() {
                     Toast.makeText(this, "无法读取这张图片", Toast.LENGTH_SHORT).show()
                     return@post
                 }
-                // The old photo is not recycled here: a pending render may still hold
-                // it. Its pixels live on the Java heap, so dropping the reference is
-                // enough once nothing draws it.
+
                 basePhoto = cropped
                 backdropRevision.intValue++
             }
@@ -277,10 +267,6 @@ class ConfigActivity : ComponentActivity() {
             scaled
         }
     }
-
-    // ---------------------------------------------------------------------------------------
-    // Dashboard
-    // ---------------------------------------------------------------------------------------
 
     @Composable
     private fun LiquidFrameDashboard() {
@@ -331,9 +317,6 @@ class ConfigActivity : ComponentActivity() {
             }
         }
 
-        // Persist every live control from one coherent snapshot. Separate effects used to
-        // save the material and capsule maps concurrently; each took a stale snapshot and
-        // could overwrite the other's last slider / logo selection.
         LaunchedEffect(
             enabled, adaptive, preserveContent, dispersion,
             band, amount, blur, lift, tint, rim, angle, depth,
@@ -491,7 +474,7 @@ class ConfigActivity : ComponentActivity() {
                         page = currentPage,
                     ) { page ->
                     when (page) {
-                        // ---- Home page: enable toggle, display options, maintenance ----
+
                         LiquidPage.Home -> Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -531,12 +514,7 @@ class ConfigActivity : ComponentActivity() {
                                     )
                                     IconButton(
                                         onClick = {
-                                            // Restart the camera so the next capture picks up the
-                                            // current module state. Primary path: an explicit
-                                            // broadcast to the camera's kill switch (registered in
-                                            // LiquidFrameHook); fallback: forceStopPackage via
-                                            // reflection (a @hide API, usually denied to a plain app
-                                            // process, hence only a best-effort second path).
+
                                             val pm = context.packageManager
                                             val restart = Intent("com.mouya.LiquidFrame.ACTION_RESTART_CAMERA")
                                                 .setPackage("com.android.camera")
@@ -800,7 +778,6 @@ class ConfigActivity : ComponentActivity() {
                             Spacer(Modifier.height(12.dp))
                         }
 
-                        // ---- Glass params page: preview at top, all params flat below ----
                         LiquidPage.Glass -> {
                             Column(
                                 modifier = Modifier
@@ -816,7 +793,6 @@ class ConfigActivity : ComponentActivity() {
                                     color = textPrimary(),
                                 )
 
-                                // Preview
                                 GlassCard {
                                     Box(
                                         modifier = Modifier
@@ -843,8 +819,7 @@ class ConfigActivity : ComponentActivity() {
                                         ) {
                                             Text("实时预览", color = ComposeColor.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                         }
-                                        // Backdrop picker: a small corner action rather than a
-                                        // caption row under the image.
+
                                         Box(
                                             Modifier
                                                 .align(Alignment.TopEnd)
@@ -885,7 +860,6 @@ class ConfigActivity : ComponentActivity() {
                                     LiquidSliderRow("边缘高光", rim, 0f..1.2f, "") { rim = it }
                                 }
 
-                                // Detail params (flat)
                                 SettingSection("细节", collapsible = true, initiallyExpanded = false) {
                                     LiquidSliderRow("高光方向", angle, 0f..360f, "°", valueLabel = "${angle.roundToInt()}°")
                                         { angle = it }
@@ -1016,9 +990,7 @@ class ConfigActivity : ComponentActivity() {
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            // Edge-to-edge leaves the physical screen edge under this
-                            // box: reserve the gesture/nav inset, then float the capsule
-                            // clear of both the edge and the page content.
+
                             .navigationBarsPadding()
                             .padding(horizontal = 24.dp, vertical = 8.dp),
                     )
@@ -1026,10 +998,6 @@ class ConfigActivity : ComponentActivity() {
             }
         }
     }
-
-    // ---------------------------------------------------------------------------------------
-    // Preview rendering
-    // ---------------------------------------------------------------------------------------
 
     private fun replaceDisplayedPreview(bitmap: Bitmap) {
         val previous = displayedPreviewBitmap
@@ -1056,9 +1024,7 @@ class ConfigActivity : ComponentActivity() {
             val params = ConfigStore.glassParams()
             val settings = ConfigStore.snapshot().toMap()
             previewExecutor.execute {
-                // Skip this render entirely if a newer one was scheduled while this
-                // one sat in the queue — that queue is what let the preview lag
-                // behind rapid parameter changes.
+
                 if (generation != previewGeneration.get()) {
                     copy.recycle()
                     return@execute
@@ -1180,10 +1146,6 @@ class ConfigActivity : ComponentActivity() {
         } catch (_: Throwable) { null }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Asset backdrop
-    // ---------------------------------------------------------------------------------------
-
     private fun loadAssetBackdrop(): Bitmap? {
         return try {
             assets.open("background-a.jpg").use { stream ->
@@ -1199,10 +1161,6 @@ class ConfigActivity : ComponentActivity() {
             null
         }
     }
-
-    // ---------------------------------------------------------------------------------------
-    // Synthetic sample
-    // ---------------------------------------------------------------------------------------
 
     private fun buildSamplePhoto(w: Int, h: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)

@@ -1,16 +1,5 @@
 package com.mouya.LiquidFrame.ui
 
-/*
- * Damped spring drag animation for the glass slider and switch.
- *
- * Wraps an Animatable with a MutatorMutex so a new drag cancels any in-flight
- * motion, a velocity tracker for the release-flick behavior, and press/scale
- * animations that drive the press feedback of a glass control.
- *
- * Press progress is allowed to overshoot [0, 1] briefly so the release reads as
- * bouncy; every consumer clamps it through safeProgress() before feeding a shader.
- */
-
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.MutatorMutex
@@ -67,16 +56,6 @@ class DampedDragAnimation(
     val scaleY: Float get() = scaleYAnimation.value
     val velocity: Float get() = velocityAnimation.value
 
-    /**
-     * Horizontal drag detector wired to the animation. Attached by the thumb.
-     *
-     * The gesture is claimed only once the pointer's *horizontal* movement passes the
-     * touch slop: a mostly vertical move never claims the stream, so the page's scroll
-     * wins the race and a downward flick scrolls instead of dragging. Once claimed every
-     * change is consumed, so the page cannot steal the drag mid-gesture. The accumulated
-     * slop distance is fed to [onDrag] as the first delta so the thumb tracks the finger
-     * from the moment the drag starts instead of jumping.
-     */
     val modifier: Modifier = Modifier.pointerInput(Unit) {
                 awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
@@ -100,7 +79,6 @@ class DampedDragAnimation(
         }
     }
 
-    /** Begins the press feedback: scale up and highlight. */
     fun press() {
         velocityTracker.resetTracking()
         animationScope.launch {
@@ -110,7 +88,6 @@ class DampedDragAnimation(
         }
     }
 
-    /** Ends the press feedback and waits for the spring to settle near its target. */
     fun release() {
         animationScope.launch {
             withFrameNanos { }
@@ -126,7 +103,6 @@ class DampedDragAnimation(
         }
     }
 
-    /** Animates toward a new value without cancelling unrelated in-flight motions. */
     fun updateValue(value: Float) {
         val targetValue = value.coerceIn(valueRange)
         animationScope.launch {
@@ -134,7 +110,6 @@ class DampedDragAnimation(
         }
     }
 
-    /** Cancels any in-flight motion and animates to the target as a single gesture. */
     fun animateToValue(value: Float) {
         animationScope.launch {
             mutatorMutex.mutate {

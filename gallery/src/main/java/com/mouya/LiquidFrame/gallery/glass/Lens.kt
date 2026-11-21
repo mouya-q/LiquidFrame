@@ -1,11 +1,3 @@
-// Copyright 2026, LiquidFrame contributors
-// SPDX-License-Identifier: Apache-2.0
-//
-// Adapted from compose-miuix-ui/miuix's example (`component/liquid/Lens.kt`), which is itself
-// adapted from a reference renderer that NOTICE attributes. Both are Apache-2.0. Kept here
-// rather than imported because miuix ships the backdrop engine but deliberately leaves the lens
-// to the app.
-
 package com.mouya.LiquidFrame.gallery.glass
 
 import androidx.compose.foundation.shape.CornerBasedShape
@@ -15,25 +7,6 @@ import top.yukonga.miuix.kmp.blur.BackdropEffectScope
 import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.blur.runtimeShaderEffect
 
-/**
- * Rounded-rect refraction lens with optional chromatic dispersion.
- *
- * The lens is what separates real liquid glass from a plain frosted panel: the backdrop is not
- * merely blurred behind the surface, it is *bent* — sampled at an offset that grows as
- * `circleMap` toward the silhouette, so the shape magnifies what sits behind it and the edges
- * pick up a compressed rim of the surrounding content.
- *
- * @param refractionHeight Thickness of the refracting band along the silhouette. A control of
- *   height `h` wants roughly `0.15 * h … 0.35 * h`; too small and the lens reads as a hairline,
- *   too large and the whole surface warps like a fisheye.
- * @param refractionAmount Peak displacement at the silhouette. Around `1x … 3x`
- *   [refractionHeight]; the reference's own Apple comparison uses `3x`.
- * @param depthEffect Leans the surface normal toward the centre, thickening the dome so the
- *   glass reads as a solid piece rather than a flat pane.
- * @param chromaticAberration Strength of the rim's spectral split. `0` disables it and takes the
- *   cheaper single-tap shader. `0.1` is subtle, `0.2` reads as an Apple pill, `0.3+` is a
- *   pronounced rainbow halo.
- */
 fun BackdropEffectScope.lens(
     refractionHeight: Float,
     refractionAmount: Float,
@@ -43,8 +16,6 @@ fun BackdropEffectScope.lens(
     if (!isRuntimeShaderSupported()) return
     if (refractionHeight <= 0f || refractionAmount <= 0f) return
 
-    // The lens samples outside its own bounds, so the recording has to grow to cover the reach
-    // or the displaced samples land on transparent black.
     if (padding < refractionAmount) {
         padding = refractionAmount
     }
@@ -59,9 +30,6 @@ fun BackdropEffectScope.lens(
     }
     val key = if (dispersionEnabled) "LiquidFrameLensDispersion" else "LiquidFrameLens"
 
-    // When an earlier effect (a blur) downscaled the recording, every pixel-space uniform is in
-    // that downscaled space, so all of them are divided by the factor here. Getting this wrong
-    // puts the SDF far outside the layer and every sample returns transparent black.
     val sf = downscaleFactor.coerceAtLeast(1).toFloat()
     val scaledRadii = FloatArray(radii.size) { radii[it] / sf }
 
@@ -74,7 +42,7 @@ fun BackdropEffectScope.lens(
         setFloatUniform("offset", -padding / sf, -padding / sf)
         setFloatUniform("cornerRadii", scaledRadii)
         setFloatUniform("refractionHeight", refractionHeight / sf)
-        // The shader's own sign convention: the reference passes the amount negated.
+
         setFloatUniform("refractionAmount", -(refractionAmount / sf))
         setFloatUniform("depthEffect", if (depthEffect) 1f else 0f)
         if (dispersionEnabled) {
@@ -83,12 +51,6 @@ fun BackdropEffectScope.lens(
     }
 }
 
-/**
- * The four corner radii of the scope's shape, or `null` when the shape is not corner-based.
- *
- * The shader takes a `float4` in (topLeft, topRight, bottomRight, bottomLeft) order, resolved
- * against the layout direction so a start/end shape is not mirrored.
- */
 private fun BackdropEffectScope.roundedRectCornerRadii(): FloatArray? {
     val cornerShape = shape as? CornerBasedShape ?: return null
     val sizePx = size
@@ -106,7 +68,6 @@ private fun BackdropEffectScope.roundedRectCornerRadii(): FloatArray? {
     )
 }
 
-/** Shared SDF helpers, identical to the reference's `RoundedRectSDF`. */
 private const val ROUNDED_RECT_SDF = """
 float radiusAt(float2 coord, float4 radii) {
     if (coord.x >= 0.0) {
@@ -172,11 +133,6 @@ half4 main(float2 coord) {
 }
 """
 
-/**
- * The seven-tap spectral variant. `dispersionIntensity` is `x*y / (halfW*halfH)`, which is
- * antisymmetric across the diagonals, so the split runs one way on two opposite edges and the
- * other way on the remaining two — a prism, rather than a uniform colour fringe.
- */
 private const val ROUNDED_RECT_REFRACTION_WITH_DISPERSION_SHADER = """
 uniform shader content;
 

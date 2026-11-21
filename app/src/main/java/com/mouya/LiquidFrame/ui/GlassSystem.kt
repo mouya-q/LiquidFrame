@@ -43,35 +43,18 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.tanh
 
-// =====================================================================================
-// Backdrop provider
-// =====================================================================================
-
-/** The screen backdrop sampled by all LiquidFrame glass controls. */
 val LocalLiquidBackdrop = staticCompositionLocalOf<Backdrop?> { null }
 
-/**
- * Wraps content with a full-screen backdrop layer so every glass component
- * inside can sample the background behind it.
- *
- * Provides a full-screen backdrop layer so every glass component
- * inside can sample the background behind it.
- */
 @Composable
 fun LiquidBackdropProvider(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    // rememberLayerBackdrop() is the entry point that creates a fresh recording layer.
-    // rememberBackdrop(backdrop, onDraw) *wraps an existing* Backdrop, so calling it with no
-    // arguments does not compile.
+
     val backdrop = rememberLayerBackdrop()
     val dark = isSystemInDarkTheme()
     Box(modifier.fillMaxSize()) {
-        // Pure flat background: white in light mode, near-black in dark.
-        // Glass controls sample this uniform field — blur and lens still work
-        // because the controls themselves draw varied content (text, icons)
-        // into the recording layer.
+
         val base = if (dark) Color(0xFF0B0B0D) else Color(0xFFFFFFFF)
         Canvas(Modifier.layerBackdrop(backdrop).fillMaxSize()) {
             drawRect(base)
@@ -82,56 +65,24 @@ fun LiquidBackdropProvider(
     }
 }
 
-// =====================================================================================
-// Safety gate
-// =====================================================================================
-
-/**
- * Whether liquid glass can be drawn this frame: the window has hardware
- * acceleration and a backdrop is available.
- */
 @Composable
 fun liquidGlassAvailable(): Boolean {
-    // Kyant's AGSL backdrop effects depend on RuntimeShader (API 33+). A hardware-
-    // accelerated view alone is not enough on Android 8–12; fail closed to the
-    // stable, readable Compose fallback instead of invoking unsupported shaders.
+
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
     if (!LocalView.current.isHardwareAccelerated) return false
     return LocalLiquidBackdrop.current != null
 }
 
-/**
- * Returns the current backdrop if glass is available; null otherwise.
- * Every component that draws glass must go through this gate.
- */
 @Composable
 fun liquidGlassBackdrop(): Backdrop? {
     if (!liquidGlassAvailable()) return null
     return LocalLiquidBackdrop.current
 }
 
-/**
- * Clamps a progress value to [0, 1], treating NaN/Inf as 0.
- *
- * Springs can overshoot — pressProgress from spring(0.5f, 300f) reaches
- * approximately [-0.16, 1.16]. This washes it back so lens() never receives
- * a value that would produce NaN inside its AGSL shader.
- */
 internal fun safeProgress(value: Float): Float =
     if (value.isNaN() || value.isInfinite()) 0f else value.coerceIn(0f, 1f)
 
-/**
- * Returns this Float if finite, else 0.
- *
- * Anything that goes into a GraphicsLayerScope (= HWUI RenderNode transform
- * matrix) must pass through this. NaN in a matrix makes it non-invertible and
- * the drawing result is undefined.
- */
 internal fun Float.finiteOrZero(): Float = if (isNaN() || isInfinite()) 0f else this
-
-// =====================================================================================
-// Glass spec
-// =====================================================================================
 
 enum class LiquidGlassMaterial { Clear, Regular }
 
@@ -149,20 +100,6 @@ data class LiquidGlassSpec(
     }
 }
 
-// =====================================================================================
-// Frosted card material (matches the settings dashboard of the companion
-// haptic engine app: sampled backdrop + vibrancy + 18dp blur + gentle lens
-// + 0.72 glass fill)
-// =====================================================================================
-
-/**
- * Frosted-glass card container that samples the real backdrop behind it.
- *
- * Effect chain: vibrancy -> 18dp blur -> lens(8f, 18f, depth on, no
- * chromatic aberration) -> default highlight -> 22dp/0.42 shadow, topped
- * with a 0.72-alpha glass fill. Falls back to a bordered translucent
- * surface when no backdrop is available.
- */
 @Composable
 fun Modifier.liquidGlassCard(
     shape: Shape,
@@ -192,10 +129,6 @@ fun Modifier.liquidGlassCard(
     }
 }
 
-/**
- * Standard glass fill for card containers: 0.72-alpha white in light mode
- * and 0.72-alpha #1C1C1E in dark mode, following the dashboard palette.
- */
 @Composable
 fun glassContainer(alpha: Float? = null): Color {
     val resolvedAlpha = (alpha ?: 0.72f).coerceIn(0.08f, 1f)
@@ -203,18 +136,6 @@ fun glassContainer(alpha: Float? = null): Color {
     else Color.White.copy(alpha = resolvedAlpha)
 }
 
-// =====================================================================================
-// Core glass surface modifier
-// =====================================================================================
-
-/**
- * The shared material entry point for all liquid-glass surfaces.
- *
- * When a backdrop is available, this draws real backdrop-sampled glass with
- * blur, lens refraction, highlight, shadow, and inner shadow. When no
- * backdrop is available (no hardware acceleration), it falls back to a
- * translucent solid surface so the UI remains readable.
- */
 @Composable
 fun Modifier.liquidGlassSurface(
     shape: Shape,
@@ -305,10 +226,6 @@ fun Modifier.liquidGlassSurface(
     )
 }
 
-/**
- * Plain backdrop blur without lens or refraction. Used for content cards
- * and settings sections where lens distortion is undesirable.
- */
 @Composable
 fun Modifier.liquidBackdropBlur(
     shape: Shape,

@@ -16,50 +16,30 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
-/**
- * Pixel and layout helpers for the replacement capture capsule.
- *
- * On the supported Xiaomi Camera 6.4.000250.2 still-photo path, WatermarkHooks intercepts
- * the real source-photo Bitmap before Xiaomi's stock watermark renderer runs. This class
- * formats only the typed metadata supplied by that hook, measures the replacement capsule,
- * and rasterizes its text layer. It does not discover metadata by reflecting over arbitrary
- * camera objects and does not erase an already-composited watermark.
- *
- * Design rules:
- *  - missing capture fields remain absent; no current-time or numeric-guess fallback;
- *  - layout/raster helpers return null or false when inputs cannot be trusted;
- *  - per-capture inputs are immutable snapshots, avoiding shared mutable metadata state.
- */
 object CapsuleRenderer {
 
-    // ------------------------------------------------------------------
-    // Inputs
-    // ------------------------------------------------------------------
-
-    /** Normalized per-shot configuration, assembled by the hook layer. */
     class Options(
         val modelOverride: String,
-        /** Anchor of the capsule: "left" (reference default), "center" or "right". */
+
         val position: String = "left",
         val showDateTime: Boolean,
         val showExif: Boolean,
         val showGps: Boolean,
         val scale: Float,
-        /** When true, a logo bitmap is drawn in the centre column. */
+
         val showLogo: Boolean = false,
-        /** Pre-decoded logo bitmap, or null when unavailable. */
+
         val logo: Bitmap? = null,
-        /** Logo preset name, for aspect compensation. */
+
         val logoPreset: String = "LeicaWhite",
-        /** Logo position: "FRONT", "MIDDLE", or "BACK". */
+
         val logoPosition: String = "MIDDLE",
-        /** Metadata line spacing multiplier. */
+
         val metaLineSpacing: Float = -0.18f,
-        /** Logo size scale (0.01–2.0). */
+
         val logoSizeScale: Float = 1.0f,
     )
 
-    /** Values read from the camera's typed capture context. Zero/null means unavailable. */
     class CaptureMeta(
         val captureMillis: Long,
         val location: Location?,
@@ -73,24 +53,20 @@ object CapsuleRenderer {
         val iso: Int?,
     )
 
-    /** One text line; [sizeRef] is in 1080-short-side units, scaled during layout.
-     *  [column] 0 = left block (model + time), 1 = right block (exif + gps). */
     class Line(val text: String, val bold: Boolean, val sizeRef: Float, val column: Int = 0)
 
-    /** A line with final pixel geometry, positioned inside capsule-local space. */
     class PlacedLine(
         val text: String,
         val bold: Boolean,
         val sizePx: Float,
         val centerX: Float,
         val baselineY: Float,
-        /** Left edge x for this line's text (for left/right-aligned drawing). */
+
         val leftX: Float = 0f,
-        /** 0 = left-aligned at leftX, 1 = right-aligned at leftX (which is the right edge), 2 = centred at centerX. */
+
         val align: Int = 2,
     )
 
-    /** Logo placement in capsule-local coordinates, or null when no logo. */
     class LogoPlacement(
         val left: Float,
         val top: Float,
@@ -98,7 +74,6 @@ object CapsuleRenderer {
         val height: Float,
     )
 
-    /** Thin separator geometry, also expressed in capsule-local coordinates. */
     class DividerPlacement(
         val x: Float,
         val top: Float,
@@ -110,28 +85,18 @@ object CapsuleRenderer {
         val placed: List<PlacedLine>,
         val capsuleWidth: Float,
         val capsuleHeight: Float,
-        /** One 1080-short-side design unit in this photo's pixels, scale applied. */
+
         val unitPx: Float,
-        /** Logo placement if a logo column exists, null otherwise. */
+
         val logo: LogoPlacement? = null,
-        /** The logo bitmap reference, for drawing in the text layer. */
+
         val logoBitmap: Bitmap? = null,
-        /** The reference's fine vertical separator, if the right metadata column is visible. */
+
         val divider: DividerPlacement? = null,
     )
 
-    // ------------------------------------------------------------------
-    // Design constants (1080-short-side reference units)
-    // ------------------------------------------------------------------
-
     private const val REFERENCE_SHORT_SIDE = 1080f
 
-    // Layout parameters aligned to the reference watermark engine's d.n() algorithm:
-    // width = (photoW - 0.045*photoW*2) * lengthFactor = 0.91*photoW (lengthFactor=1.0)
-    // height = watermarkHeightDp clamped to [1, photoH*0.5]
-    // horizontal inset = 0.045 * photoW on each side (the 4.5% margin baked into width)
-    // bottom inset = min(photoW, photoH) * 0.016 (offsetY=1.0 → bottom-aligned)
-    // corner radius = height * 0.5 (full pill capsule)
     private const val TARGET_WIDTH_FRACTION = 0.91f
     private const val TARGET_HEIGHT_REF = 128f
     const val CORNER_RADIUS_REF = 64f
@@ -143,34 +108,20 @@ object CapsuleRenderer {
     private const val BODY_SIZE_REF = 24f
     private const val LINE_GAP_REF = 6f
 
-    // The reference is deliberately asymmetrical, not a three-equal-column layout:
-    // the Leica mark sits around 63.5%, the divider around 68.5%, and the specs hug right.
     private const val LOGO_CENTER_X_FRACTION = 0.635f
     private const val LOGO_HEIGHT_FRACTION = 0.42f
     private const val DIVIDER_X_FRACTION = 0.685f
     private const val DIVIDER_HEIGHT_FRACTION = 0.42f
     private const val DIVIDER_GAP_REF = 16f
 
-    /** Bottom inset: min(photoW,photoH)*0.016 ≈ 1.6% of the short side.
-     *  This matches the reference engine's offsetY=1.0 bottom-aligned placement. */
     const val BOX_INSET_REF = 18f
 
-    /** White iOS-style lettering, with a restrained shadow added at raster time for contrast. */
     const val TEXT_COLOR_WHITE = 0xF2FFFFFF.toInt()
     const val TEXT_COLOR_LIGHT = 0xF21F1F26.toInt()
     const val TEXT_COLOR_DARK = TEXT_COLOR_WHITE
     private const val DIVIDER_COLOR = 0xB8FFFFFF.toInt()
 
-    /** Immutable and thread-safe, so one shared instance serves every capture thread. */
     private val TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss", Locale.US)
-
-    // Capture metadata is intentionally not inferred from arbitrary objects. The hook layer
-    // supplies a snapshot built from Camera2 CaptureResult and Xiaomi's typed EXIF adapter.
-    // Missing values remain null/zero and are omitted from the rendered capsule.
-
-    // ------------------------------------------------------------------
-    // Text content
-    // ------------------------------------------------------------------
 
     fun buildLines(opts: Options, meta: CaptureMeta, shortSide: Int): List<Line> {
         if (shortSide < 64) return emptyList()
@@ -222,8 +173,7 @@ object CapsuleRenderer {
         e.aperture?.let { parts.add("f/" + String.format(Locale.US, "%.2f", it)) }
         e.exposureSeconds?.let { parts.add(exposureText(it)) }
         e.iso?.let { parts.add("ISO$it") }
-        // Show whichever typed capture fields are actually present; do not fabricate
-        // missing values to make the line look complete.
+
         if (parts.isEmpty()) return null
         return parts.joinToString(" ")
     }
@@ -249,25 +199,12 @@ object CapsuleRenderer {
         var mFull = (v - d) * 60.0
         var m = mFull.toInt()
         var s = ((mFull - m) * 60.0).roundToInt()
-        // Round-up cascades: 59.99" -> 60" would read as an invalid coordinate
-        // component, so the overflow carries into minutes and degrees.
+
         if (s == 60) { s = 0; m += 1 }
         if (m == 60) { m = 0; d += 1 }
         return String.format(Locale.US, "%d°%d'%d\"%s", d, m, s, hemisphere)
     }
 
-    // ------------------------------------------------------------------
-    // Layout
-    // ------------------------------------------------------------------
-
-    /**
-     * Fixed-dimension capsule layout matching the iOS liquid-glass reference.
-     *
-     * Uses the reference's fixed, asymmetric composition: a ~90%-width, ~12%-of-short-side
-     * capsule, left-aligned to the photo edge; a broad left text area; a wordmark near 63.5%;
-     * a hairline separator near 68.5%; and a compact right-aligned metadata block. The footprint
-     * stays stable across shots while each text block independently fits its own reserved area.
-     */
     fun measureCapsule(
         photoW: Int,
         shortSide: Int,
@@ -291,13 +228,12 @@ object CapsuleRenderer {
         val logoBmp = opts.logo?.takeIf { opts.showLogo && !it.isRecycled && it.width > 0 && it.height > 0 }
         val hasLogo = logoBmp != null
         val colGap = DIVIDER_GAP_REF * unit
-        // Resolve the logo preset for aspect compensation and vertical alignment.
+
         val preset = LogoPreset.fromName(opts.logoPreset)
         val logoSizeFactor = opts.logoSizeScale.coerceIn(0.01f, 2.0f)
         val logoH = if (hasLogo) LOGO_HEIGHT_FRACTION * interiorH * logoSizeFactor else 0f
         val logoW = if (logoH > 0f && logoBmp != null) {
-            // Apply the preset's aspect compensation: height = logoWidth / aspect.
-            // So effective height scaling uses aspectCompensation to correct non-square logos.
+
             (logoH * logoBmp.width.toFloat() / logoBmp.height.toFloat() * preset.aspectCompensation)
                 .coerceAtMost(capsuleW * 0.15f)
         } else 0f
@@ -305,9 +241,6 @@ object CapsuleRenderer {
         val logoLeft = logoCenterX - logoW * 0.5f
         val dividerX = DIVIDER_X_FRACTION * capsuleW
 
-        // Reserve real, fixed zones instead of splitting the capsule into equal columns.
-        // This is the defining geometry in the photo: broad breathing room before the mark,
-        // then a compact separator-to-specs region on the right.
         val leftAvailableW = if (hasLogo) {
             (logoLeft - colGap - padX).coerceAtLeast(1f)
         } else if (rightLines.isNotEmpty()) {
@@ -350,8 +283,6 @@ object CapsuleRenderer {
             return widthFit * (interiorH / height).coerceIn(0.35f, 1f)
         }
 
-        // Fit the two text blocks independently so a long GPS/spec line never makes the
-        // device name look visibly smaller. Each block retains its own consistent line scale.
         val leftScale = fitHeight(leftLines, fitWidth(leftLines, leftAvailableW))
         val rightScale = fitHeight(rightLines, fitWidth(rightLines, rightAvailableW))
         val placed = ArrayList<PlacedLine>(lines.size)
@@ -406,15 +337,6 @@ object CapsuleRenderer {
         if (bold) Typeface.create("sans-serif-medium", Typeface.NORMAL)
         else Typeface.create("sans-serif", Typeface.NORMAL)
 
-    // ------------------------------------------------------------------
-    // Text raster and compositing
-    // ------------------------------------------------------------------
-
-    /**
-     * Draws the laid-out lines into a fresh ARGB layer the size of the optics
-     * crop, positioned at [capsule]'s crop-local rectangle. Returns raw pixels,
-     * or null when the layer could not be created.
-     */
     fun drawTextLayer(
         cw: Int,
         ch: Int,
@@ -430,7 +352,6 @@ object CapsuleRenderer {
             bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
 
-            // Keep the divider and mark optically attached to the material, not to the scene.
             val divider = metrics.divider
             if (divider != null) {
                 val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -453,9 +374,7 @@ object CapsuleRenderer {
             val logoPlacement = metrics.logo
             val logoBitmap = metrics.logoBitmap
             if (logoPlacement != null && logoBitmap != null && !logoBitmap.isRecycled) {
-                // The logo is isolated in its own guard: a bad logo bitmap (bad decode,
-                // recycled mid-flight, pathological size) must drop the logo, not the
-                // whole text layer — a null text layer costs the entire watermark.
+
                 try {
                     val dst = RectF(
                         capsule.left + logoPlacement.left,
@@ -498,8 +417,7 @@ object CapsuleRenderer {
             bmp.getPixels(out, 0, cw, 0, 0, cw, ch)
             out
         } catch (t: Throwable) {
-            // A null text layer costs the whole watermark, so the reason must be
-            // visible in the log rather than silent.
+
             android.util.Log.w(
                 "LiquidFrame",
                 "capsule text layer failed: ${t.javaClass.simpleName}: ${t.message}",
@@ -535,21 +453,11 @@ object CapsuleRenderer {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Colour repair of the erased plate
-    // ------------------------------------------------------------------
-
     private fun rOf(c: Int) = (c shr 16) and 0xFF
     private fun gOf(c: Int) = (c shr 8) and 0xFF
     private fun bOf(c: Int) = c and 0xFF
     private fun pack(r: Int, g: Int, b: Int) = 0xFF000000.toInt() or (r shl 16) or (g shl 8) or b
 
-    /**
-     * Fills [region] inside the buffer with a single averaged colour sampled from
-     * just outside its horizontal span. The samples must be near-uniform — a
-     * spread above [MAX_SPREAD] per channel means the "strip" is actually varied
-     * scene content, and filling would destroy detail, so the routine refuses.
-     */
     internal fun eraseFlatRegion(pixels: IntArray, cw: Int, ch: Int, region: CropRect): Boolean {
         val left = region.left.coerceIn(0, cw - 1)
         val top = region.top.coerceIn(0, ch - 1)
@@ -612,17 +520,6 @@ object CapsuleRenderer {
 
     private const val MAX_SPREAD = 40
 
-    /**
-     * Samples the strip crop's top rows on its centre columns for the band's own
-     * fill colour. The rows just below the photograph's bottom are untouched
-     * band rows (the plate and its glow live lower), so when they are
-     * near-uniform the colour is by definition the fill the camera itself uses —
-     * repainting the band with it cannot introduce a foreign tone.
-     *
-     * Returns null when the samples vary too much: the band then holds
-     * non-fill content (e.g. stretched photo material) and a flat repaint
-     * would destroy it, so the caller falls back to narrower repairs.
-     */
     fun fillColorFromStripTop(strip: IntArray, cw: Int): Int? {
         if (cw < 8 || strip.size < cw * 2) return null
         val xm = cw / 2
@@ -633,10 +530,7 @@ object CapsuleRenderer {
         var bMin = 255; var bMax = 0
         var n = 0
         var y = 5
-        // Sample rows 5/8/11/14: the crop starts at the photo's bottom edge, so
-        // the first rows can still carry photograph content and the ones right
-        // after sit closest to the joint's edge gradient. The three-row skip
-        // keeps a thin ripple from hiding behind two adjacent rows.
+
         while (y <= 16 && (y + 1) * cw + xm < strip.size + cw) {
             for (x in columns) {
                 val idx = y * cw + x
@@ -660,7 +554,6 @@ object CapsuleRenderer {
         return pack((rSum / n).toInt(), (gSum / n).toInt(), (bSum / n).toInt())
     }
 
-    /** Paints the whole strip flat [fill] after the caller verified the band really is fill. */
     fun fillStrip(strip: IntArray, cw: Int, ch: Int, fill: Int): Boolean {
         if (cw <= 0 || ch <= 0 || strip.size < cw * ch) return false
         var i = 0
@@ -672,23 +565,6 @@ object CapsuleRenderer {
         return true
     }
 
-    /**
-     * Repairs an in-photo erase region by copying the true photograph over it.
-     *
-     * The composite scales the photo uniformly into the canvas — both axes the
-     * same factor `s = outW / srcW` — and paints it top-aligned, so source
-     * coordinates map as `sx = gx / s`, `sy = gy / s`, valid for canvas rows
-     * `[0, srcH * s)`. Below that row the canvas holds the fill strip, which the
-     * source does not mirror; those rows are left untouched instead of being
-     * filled with stretched content (that stretch was exactly the defect of the
-     * proportional mapping this replaces).
-     *
-     * The needed source band is read with one bulk `getPixels` — never a
-     * per-pixel JNI hop on the capture thread.
-     *
-     * @return true when at least one row was rebuilt; rows the source cannot
-     *         serve are left exactly as they were.
-     */
     fun patchCropFromSource(
         target: IntArray,
         cw: Int,
@@ -734,11 +610,6 @@ object CapsuleRenderer {
         }
     }
 
-    /**
-     * Rebuilds [region] by bilinear blending of the rows above/below and the
-     * columns left/right of it. Used only where the source photo is unavailable;
-     * the region is small and most of it ends up covered by the capsule anyway.
-     */
     internal fun inpaintRegion(pixels: IntArray, cw: Int, ch: Int, region: CropRect): Boolean {
         val left = (region.left + 1).coerceIn(1, max(1, cw - 2))
         val top = (region.top + 1).coerceIn(1, max(1, ch - 2))
@@ -783,14 +654,13 @@ object CapsuleRenderer {
         return true
     }
 
-    /** Mean colour of rows from y0 through y1 at column x, each row index clamped. */
     private fun meanOfColumn(pixels: IntArray, cw: Int, ch: Int, x: Int, y0: Int, y1: Int): Int {
         var rSum = 0L; var gSum = 0L; var bSum = 0L
         var n = 0
         var last = Int.MIN_VALUE
         for (y in y0..y1) {
             val yy = y.coerceIn(0, ch - 1)
-            if (yy == last) continue // row clamped to the edge: sample it once
+            if (yy == last) continue
             val c = pixels[yy * cw + x]
             rSum += rOf(c); gSum += gOf(c); bSum += bOf(c)
             n++
@@ -800,7 +670,6 @@ object CapsuleRenderer {
         return pack((rSum / n).toInt(), (gSum / n).toInt(), (bSum / n).toInt())
     }
 
-    /** Mean colour of columns from x0 through x1 at row y, each column index clamped. */
     private fun meanOfRow(pixels: IntArray, cw: Int, ch: Int, x0: Int, x1: Int, y: Int): Int {
         var rSum = 0L; var gSum = 0L; var bSum = 0L
         var n = 0
@@ -809,7 +678,7 @@ object CapsuleRenderer {
         var last = Int.MIN_VALUE
         for (x in x0..x1) {
             val xx = x.coerceIn(0, cw - 1)
-            if (xx == last) continue // column clamped to the edge: sample it once
+            if (xx == last) continue
             val c = pixels[base + xx]
             rSum += rOf(c); gSum += gOf(c); bSum += bOf(c)
             n++

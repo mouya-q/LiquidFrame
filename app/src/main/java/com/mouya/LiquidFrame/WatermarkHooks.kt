@@ -30,162 +30,76 @@ object WatermarkHooks {
 
     private const val TAG = "LiquidFrame"
 
-    /** Smallest believable panel, in output pixels (legacy pixel-scan path). */
     private const val MIN_PANEL_WIDTH = 32
 
-    /**
-     * Largest share of the frame one watermark element may cover, as a fraction of its width.
-     *
-     * The Leica-style watermarks stack several elements — a logo block, a line of text, a
-     * capsule — instead of the single full-width strip Xiaomi draws. Those pieces are narrow,
-     * and the old width test (`>= MIN_PANEL_WIDTH` only) happily accepted any of them. Picking
-     * whichever came first then meant the module could attach itself to the logo box, or to a
-     * scene highlight that happened to be wide enough, and re-render it as glass. That is the
-     * "到处乱飘 / 渲染异常" the user reported on Leica: the glass was on a moving target because
-     * the chosen element was not the watermark panel.
-     *
-     * An element must therefore be both a plausible size and, when several candidates exist,
-     * the one that best explains the strip. See [pickPanel].
-     */
     private const val MAX_PANEL_WIDTH_FRACTION = 0.92f
 
-    /**
-     * Minimum share of the frame a *watermark* element spans, as a fraction of the frame width.
-     *
-     * Deliberately low. A Leica watermark's capsule is roughly a third of the frame; a plain
-     * Xiaomi strip is nearly all of it. Anything narrower than this is a logo, a date stamp or
-     * a piece of scene, never the plate the glass belongs on.
-     */
     private const val MIN_PANEL_WIDTH_FRACTION = 0.12f
 
-    /**
-     * Largest share of the frame the *merged* panel may span, as a fraction of the frame
-     * height.
-     *
-     * The union of a watermark group is wide and short; a union that reaches most of the
-     * way down the frame is scene content that survived the element filter, and merging
-     * it would paint glass over the photograph.
-     */
     private const val MAX_PANEL_HEIGHT_FRACTION = 0.45f
 
-    /** Bounded work: keep at most this many bitmap locations per composite. */
     private const val MAX_PANELS = 8
 
-    /** Working width for the pixel fallback, in pixels. Structure survives this comfortably. */
     private const val SCAN_WORK_WIDTH = 192
 
-    /**
-     * Preflight budget before allocating/reading the pixel crop. This is not a hard
-     * cancellation deadline for the CPU renderer; it is a fail-safe against entering expensive
-     * work after an earlier stage has already consumed too much time.
-     */
     private const val RENDER_TIME_BUDGET_MS = 1200L
 
-    /** Backdrop padding around the panel when reading the crop, as a fraction of the panel. */
     private const val PANEL_CROP_PAD_FRACTION = 0.55f
 
-    /**
-     * Minimum clear air between the photograph's bottom edge and the plate's top
-     * for the plate to count as floating in an appended fill strip. A plate at or
-     * above the boundary was drawn on the photograph itself and needs source-photo
-     * reconstruction, not strip repaint.
-     */
     private const val STRIP_PLATE_GAP_MIN = 12
 
-    /** Per-composite panel observations. No strong reference to the destination bitmap is kept. */
     private class Frame {
         val panels = ArrayList<PanelRect>(MAX_PANELS)
     }
 
-    /** Keyed by the `Lpe/o` canvas wrapper, which is created once per composite. */
     private val frames = java.util.Collections.synchronizedMap(
         java.util.WeakHashMap<Any, Frame>()
     )
 
-    /** Secondary lookup by destination Bitmap, so the composite callback can find its frame. */
     private val framesByBitmap = java.util.Collections.synchronizedMap(
         java.util.WeakHashMap<Bitmap, Frame>()
     )
 
-    /** Classes already hooked, so the late discovery pass cannot double-hook a fallback target. */
     private val hookedClasses = java.util.Collections.synchronizedSet(HashSet<String>())
 
-    /** Composite methods already hooked, keyed by `class#method`. */
     private val hookedComposites = java.util.Collections.synchronizedSet(HashSet<String>())
 
-    /**
-     * The camera builds this typed record immediately before its watermark encoder. The
-     * enclosing E5/b.h call and the watermark renderer are synchronous on the same capture
-     * thread, so a thread-local snapshot associates metadata with the correct frame even when
-     * several captures are processed concurrently.
-     */
     private data class CaptureState(
         val meta: CapsuleRenderer.CaptureMeta,
         var capsuleRendered: Boolean = false,
-        /** Width of the frame the factory produced, so the encoder guard can sanity-check size. */
+
         var renderedWidth: Int = 0,
-        /** Height of the frame the factory produced. */
+
         var renderedHeight: Int = 0,
-        /**
-         * Bitmaps that already received the glass capsule at the encoder boundary, tracked by
-         * identity. A single capture can reach `bitmapToJpeg` twice with two different bitmaps
-         * (the factory output and a scaled variant), so a plain boolean would let the second
-         * one through untouched.
-         */
+
         val guardedBitmaps: MutableSet<Bitmap> =
             java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Bitmap, Boolean>()),
     )
+
+    // Keep metadata scoped to the current capture thread.
     private val activeCapture = ThreadLocal<CaptureState?>()
     private val captureStack = ThreadLocal.withInitial { ArrayList<CaptureState?>() }
     private val hookedCaptureMethods = java.util.Collections.synchronizedSet(HashSet<String>())
 
-    // ---------------------------------------------------------------------------------------
-    // Deep-adaptation state (6.6+/6.7+ native post-capture pipeline)
-    //
-    // On these builds the *final* file is not written by the Java watermark factory path alone:
-    // after the parallel tasks finish, the MIVI/CV engine's ~2 s post-processing result is
-    // re-landed onto the same task data (`di.s.a(gi.e, I)` = fillJpegData), replacing the
-    // glass jpeg the factory produced, and its pixels carry the stock watermark drawn
-    // natively from the CloudWmAttribute config handed over at capture start. The three
-    // registries below let the landing verifier tell "our glass output" (skip) from the
-    // engine's re-landed jpeg (patch).
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * Content hashes of jpeg payloads that already contain the glass capsule, so the landing
-     * verifier never renders a second capsule over the first one. Keyed by FNV-1a hash;
-     * bounded so a long session cannot grow it without limit.
-     */
     private val glassEncodedOutputs = LinkedHashSet<Long>(32)
 
-    /** Bitmaps the capsule was burned into, by identity, so encoder hooks can skip them. */
     private val glassBitmaps = java.util.Collections.synchronizedMap(
         java.util.IdentityHashMap<Bitmap, Long>()
     )
 
-    /** Latest capture metadata and when it was seen, for hooks that run off the capture thread. */
     @Volatile
     private var lastCapture: MetaStamp? = null
 
     private class MetaStamp(val meta: CapsuleRenderer.CaptureMeta, val at: Long)
 
-    /** How fresh a [lastCapture] may be for an off-thread hook to trust its metadata. */
     private const val META_FRESH_MS = 30_000L
 
-    /** Encode quality for the landing verifier's re-encode, matching the camera's own high tier. */
     private const val VERIFIER_JPEG_QUALITY = 95
 
-    /** Smallest jpeg the landing verifier is willing to decode and patch. */
     private const val VERIFIER_MIN_JPEG_BYTES = 48 * 1024
 
-    /** How long the late pass is willing to wait for the background dex scan, in ms. */
     private const val DISCOVERY_WAIT_MS = 45_000L
 
-    /**
-     * Cached logo bitmap loaded from the module's assets, or null when the asset
-     * is missing or decoding failed. Volatile: the first capture thread that
-     * finds it null performs the load; subsequent threads see the result.
-     */
     @Volatile
     private var cachedLogo: Bitmap? = null
     @Volatile
@@ -193,15 +107,13 @@ object WatermarkHooks {
     private val logoLock = Any()
 
     private fun loadLogo(): Bitmap? {
-        // Resolve the user's logo preset from config.
+
         val presetName = ConfigStore.capsuleLogoPreset()
-        // If the preset changed since last load, invalidate the cache.
+
         if (cachedLogoPreset != presetName) {
             synchronized(logoLock) {
                 if (cachedLogoPreset != presetName) {
-                    // A camera frame may still be drawing the previous cached bitmap.
-                    // Drop the cache reference, but let GC reclaim it after in-flight users
-                    // release it; recycling here can race Canvas / pixel reads on that frame.
+
                     cachedLogo = null
                     cachedLogoPreset = presetName
                 }
@@ -213,14 +125,13 @@ object WatermarkHooks {
             val existing2 = cachedLogo
             if (existing2 != null) return existing2
             try {
-                // Resolve the user's logo preset from config.
+
                 val preset = LogoPreset.fromName(presetName)
                 if (preset == LogoPreset.None) {
                     log("loadLogo: preset is None, skipping")
                     return null
                 }
-                // For presets with a drawable resource, try decoding from the APK's
-                // resources/drawable path first (vector drawables are stored as XML).
+
                 val apkPath = resolveModuleApkPath()
                 if (apkPath == null) {
                     log("loadLogo: module APK path not found")
@@ -239,13 +150,7 @@ object WatermarkHooks {
                         }
                     }
                     fun decodeDrawable(name: String): Bitmap? {
-                        // Inflate the module resource with the module APK's own Resources.
-                        // Resources.getSystem() cannot resolve app/vector attributes reliably.
-                        // Two paths to the module Resources, most robust first:
-                        //   1. createPackageContext of the installed module (LSPosed keeps the
-                        //      module package installed, so this resolves like any normal app).
-                        //   2. Hidden-API AssetManager+addAssetPath reflection (works even when
-                        //      the module package cannot be seen from the camera process).
+
                         fun moduleResources(): android.content.res.Resources? {
                             val pkgContext = try {
                                 Class.forName("android.app.ActivityThread")
@@ -284,13 +189,13 @@ object WatermarkHooks {
                             null
                         }
                     }
-                    // Try asset-based logos (Leica wordmark and badge) first.
+
                     when (preset) {
                         LogoPreset.Leica -> decodeAsset("leica_logo.png")
                         LogoPreset.LeicaWhite -> decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
                         LogoPreset.Apple -> decodeDrawable("drawable/logo_apple.xml")
                         else -> {
-                            // For presets without bundled assets, fall back to Leica assets.
+
                             decodeAsset("leica_wordmark_white.png") ?: decodeAsset("leica_logo.png")
                         }
                     }
@@ -306,35 +211,22 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * Resolves the module's own APK path via multiple strategies, because
-     * XposedBridge.getModulePath() may return null in some LSPosed configurations.
-     *
-     * Strategy order:
-     *  1. XposedBridge.getModulePath() reflection (works on classic Xposed)
-     *  2. Stack-trace class loader resource (works in-process, LSPosed)
-     *  3. Thread context class loader resource
-     *  4. AndroidAppHelper.currentApplicationInfo().sourceDir (LSPosed injected)
-     */
     private fun resolveModuleApkPath(): String? {
-        // Strategy 1: XposedBridge reflection.
+
         try {
             val m = XposedBridge::class.java.getMethod("getModulePath")
             val p = m.invoke(null) as? String
             if (p != null && java.io.File(p).isFile) return p
-        } catch (e: Throwable) { /* expected on LSPosed */ }
+        } catch (e: Throwable) {                           }
 
-        // Strategy 2: This class was loaded from the module APK — its class loader
-        // can provide the resource URL, from which we extract the file path.
         try {
             val res = javaClass.classLoader?.getResource("assets/leica_logo.png")
             if (res != null) {
                 val path = extractApkFromUrl(res.toString())
                 if (path != null) return path
             }
-        } catch (e: Throwable) { /* try next */ }
+        } catch (e: Throwable) {                }
 
-        // Strategy 2b: Also try the protection domain code source.
         try {
             val pd = javaClass.protectionDomain?.codeSource
             if (pd != null) {
@@ -344,9 +236,8 @@ object WatermarkHooks {
                     if (p != null && java.io.File(p).isFile) return p
                 }
             }
-        } catch (e: Throwable) { /* try next */ }
+        } catch (e: Throwable) {                }
 
-        // Strategy 3: Thread context class loader.
         try {
             val tcl = Thread.currentThread().contextClassLoader
             val res = tcl?.getResource("assets/leica_logo.png")
@@ -354,18 +245,15 @@ object WatermarkHooks {
                 val path = extractApkFromUrl(res.toString())
                 if (path != null) return path
             }
-        } catch (e: Throwable) { /* try next */ }
+        } catch (e: Throwable) {                }
 
-        // Strategy 4: AndroidAppHelper.currentApplicationInfo().sourceDir.
-        // This gives the *host* app's APK path, not the module's, so it is not
-        // useful here. Instead, scan /data/adb/modules for our package.
         try {
             val pkg = "com.mouya.LiquidFrame"
             val modDir = java.io.File("/data/adb/modules")
             if (modDir.isDirectory) {
                 val propFile = java.io.File(modDir, "liquidframe/module.prop")
                 if (!propFile.isFile) {
-                    // Try LSPosed module directory layout
+
                     modDir.listFiles()?.forEach { subdir ->
                         if (subdir.isDirectory) {
                             val prop = java.io.File(subdir, "module.prop")
@@ -382,22 +270,20 @@ object WatermarkHooks {
                     }
                 }
             }
-        } catch (e: Throwable) { /* last resort failed */ }
+        } catch (e: Throwable) {                          }
 
         return null
     }
 
-    /** Extracts the on-disk APK path from a jar:file:...!/entry URL string. */
     private fun extractApkFromUrl(url: String): String? {
-        // URL format: jar:file:/data/.../module.apk!/assets/leica_logo.png
-        // or        : file:/data/.../module.apk
+
         val prefix = "file:"
         val idx = url.indexOf(prefix)
         if (idx < 0) return null
         val rest = url.substring(idx + prefix.length)
         val bang = rest.indexOf("!/")
         val path = if (bang >= 0) rest.substring(0, bang) else rest
-        // Strip leading slash on absolute paths — File handles both, but keep clean.
+
         return try { java.io.File(path).absolutePath } catch (t: Throwable) { null }
     }
 
@@ -406,8 +292,7 @@ object WatermarkHooks {
         DexKitHelper.setClassLoader(param.classLoader)
         DexKitHelper.initDeferred()
         installCapturePipeline(param.classLoader)
-        // Activate late discovery so the DexScan fallback can resolve obfuscated names
-        // if the typed hooks below do not match (e.g. on newer camera versions).
+
         startLateDiscovery(param.classLoader)
         log("install: complete")
     }
@@ -416,27 +301,11 @@ object WatermarkHooks {
         installTypedPipelineHooks(loader)
     }
 
-    /**
-     * Installs the capture-metadata hook.
-     *
-     * Two routes, tried in order, and the first that matches wins — a build never gets both,
-     * so there is no double bookkeeping of the ThreadLocal:
-     *
-     *  1. **structural** — the record class and its consumer were found by scanning the APK's
-     *     DEX files ([DexScan.recordPlan]). This is the route that works on 6.7, where the
-     *     names moved to `Ki/a` + `W8/d.f`.
-     *  2. **verified 6.4 literal** — `E5.b.h(la.a, Z, I) -> la.f`. Kept verbatim so an
-     *     installation that already works on 6.4 is not re-routed through newer machinery.
-     */
     private fun hookCaptureContext(loader: ClassLoader) {
         if (hookCaptureContextStructural(loader)) return
         hookCaptureContext64(loader)
     }
 
-    /**
-     * Route 1: the names came from the DEX scan, so all this needs to do is resolve them and
-     * verify the shape again through reflection before hooking.
-     */
     private fun hookCaptureContextStructural(loader: ClassLoader): Boolean {
         val record = DexKitHelper.findCaptureRecord() ?: run {
             log("capture context: no structural record discovered (scan pending or absent)")
@@ -453,7 +322,6 @@ object WatermarkHooks {
         return true
     }
 
-    /** Route 2: the literal 6.4 signature, unchanged. */
     private fun hookCaptureContext64(loader: ClassLoader) {
         val owner = findClass("E5.b", loader) ?: run {
             log("capture context: E5.b absent (expected on 6.7+; structural route is the fallback)")
@@ -476,13 +344,6 @@ object WatermarkHooks {
         installCaptureHook(target, null, "literal E5.b.h")
     }
 
-    /**
-     * Shared body: snapshot the record into a ThreadLocal on entry and restore the previous
-     * value on exit.
-     *
-     * The stack discipline matters because the camera can nest a capture inside another
-     * capture's watermark pass; a single-value ThreadLocal would restore the wrong parent.
-     */
     private fun installCaptureHook(
         target: Method,
         plan: DexScan.RecordPlan?,
@@ -507,21 +368,8 @@ object WatermarkHooks {
                 "params=${target.parameterTypes.size} plan=${if (plan != null) "indexed" else "names"}")
     }
 
-    /**
-     * Reads the capture metadata off a record instance, addressing the fields **by index**
-     * rather than by letter.
-     *
-     * Why not by name: 6.4 stored the capture time in `j` and the Location in `k`, while 6.7
-     * stores them in `l` and `m`. The obfuscator renames declared fields per build but keeps
-     * their order and types, so the only stable access path is "the J after the S,F,J,I run"
-     * and "the Location after it". [plan] carries those indices, resolved by [DexScan.recordPlan].
-     *
-     * Every value is range-checked; an implausible number becomes `null` instead of printing a
-     * confident-looking wrong EXIF line.
-     */
     private fun readCaptureMeta(context: Any, plan: DexScan.RecordPlan?): CapsuleRenderer.CaptureMeta {
-        // Fall back to the historical letters when the structural plan is unavailable, so an
-        // already-working 6.4 install keeps behaving exactly as before.
+
         fun byIndex(idx: Int?): Any? {
             if (idx == null) return null
             return try {
@@ -571,24 +419,6 @@ object WatermarkHooks {
         return CapsuleRenderer.CaptureMeta(captureMillis, location, exif)
     }
 
-    /**
-     * Hook the actual watermark bitmap factory, com.xiaomi.cam.watermark.b.c(...): Bitmap.
-     *
-     * The class name `com.xiaomi.cam.watermark.b` is stable across MIUI/HyperOS camera versions
-     * because it lives in a non-obfuscated package. However, the method signature of `c()` has
-     * changed between versions:
-     *
-     * - **6.4.x**: `static c(b, Context, Bitmap, Dc.b, int, String, int) -> Bitmap` — 7 params, static
-     * - **6.7.x**: `c(Context, Bitmap, As/b, int, zs/a, String, String, Rg/Z, int) -> Bitmap` — 9 params, instance
-     *
-     * Instead of hardcoding an exact signature, this hook uses **structural feature matching**:
-     * it looks for a method named `c` that returns `Bitmap` and has a `Bitmap` parameter. The
-     * index of the Bitmap parameter is discovered at match time, so the hook adapts to any
-     * parameter ordering.
-     *
-     * This approach is forward-compatible: if a future camera version changes the param count
-     * or types again (but keeps the method name and Bitmap return), the hook still matches.
-     */
     private fun hookWatermarkBitmapFactory(loader: ClassLoader) {
         val owner = findClass("com.xiaomi.cam.watermark.b", loader) ?: run {
             log("watermark factory: com.xiaomi.cam.watermark.b absent — scanning the package for a factory")
@@ -607,18 +437,6 @@ object WatermarkHooks {
         installFactoryHook(target)
     }
 
-    /**
-     * Picks the watermark factory out of a class's methods.
-     *
-     * Accepts every build shape that has been observed, then narrows by preference:
-     *
-     *  6.4: `static b.c(b, Context, Bitmap, Dc.b, I, String, I) -> Bitmap`   (7 params)
-     *  6.7: `b.c(Context, Bitmap, As/b, I, zs/a, String, String, Rg/Z, I) -> Bitmap`  (9 params)
-     *
-     * Both take a Context and a Bitmap and return a Bitmap, so those three traits — not the
-     * arity, not the static flag, not the config type — are the contract. A named `c` wins when
-     * several methods qualify, because that is the observed name on both builds.
-     */
     private fun selectFactoryMethod(methods: Array<Method>): Method? {
         val qualifying = methods.filter { m ->
             m.returnType == Bitmap::class.java &&
@@ -629,13 +447,6 @@ object WatermarkHooks {
         return qualifying.firstOrNull { it.name == "c" } ?: qualifying.first()
     }
 
-    /**
-     * Fallback when the package-private `b` class is missing or unrecognisable in a new build:
-     * scan every `com.xiaomi.cam.watermark.*` class the DEX reader knows about for a factory.
-     *
-     * This is what makes an unseen camera version diagnosable instead of silently inert — the
-     * log names the class and method that were chosen, so a bug report contains the hook target.
-     */
     private fun hookWatermarkFactoryInPackage(loader: ClassLoader): Unit {
         val packages = listOf(
             "com.xiaomi.cam.watermark.b",
@@ -652,7 +463,6 @@ object WatermarkHooks {
         log("watermark factory: FAILED — no factory resolved in com.xiaomi.cam.watermark.*")
     }
 
-    /** Installs the replacement hook on a resolved factory method. */
     private fun installFactoryHook(target: Method) {
         val bitmapParamIndex = target.parameterTypes.indexOfFirst { it == Bitmap::class.java }
         if (bitmapParamIndex < 0) {
@@ -673,9 +483,7 @@ object WatermarkHooks {
                 val state = activeCapture.get()
                 GlassConfig.refresh()
                 if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
-                // When there is no capture context (a build whose receiver hook did not match),
-                // use an empty CaptureMeta so the capsule still renders with the device name and
-                // the capture clock, just without EXIF/GPS.
+
                 val meta = state?.meta ?: CapsuleRenderer.CaptureMeta(0L, null, null)
                 val source = p.args?.getOrNull(bitmapParamIndex) as? Bitmap ?: return
                 if (source.isRecycled || source.width < 64 || source.height < 64) return
@@ -714,34 +522,12 @@ object WatermarkHooks {
         source.copy(Bitmap.Config.ARGB_8888, true)
     } catch (_: Throwable) { null }
 
-    /**
-     * Final guard: burn the glass capsule into every bitmap on its way into the JPEG encoder.
-     *
-     * Why this exists
-     * ---------------
-     * On Xiaomi builds the stock photo path is
-     *     S8/d.f(captureRecord, Z, I) -> xi/e
-     * which decodes the YUV plane with `YuvUtils.I420ToBitmap`, runs the watermark factory, and
-     * finally calls `com.xiaomi.gl.texture.Jpeg.bitmapToJpeg(Bitmap, int)`. Replacing the
-     * factory's return value is not sufficient: the record also carries `[B` watermark data that
-     * `WatermarkRemover` consumes, and a second branch encodes a bitmap the factory never saw.
-     * Hooking the *encoder* is the only point guaranteed to run after all of that, so it is the
-     * one that decides what actually lands in the file.
-     *
-     * The bitmap is drawn in place: `bitmapToJpeg` reads it synchronously right after this hook,
-     * so mutating it is safe and avoids an extra full-frame copy on 50 MP shots.
-     */
     private fun hookFinalJpegEncoder(loader: ClassLoader) {
         val cls = findClass("com.xiaomi.gl.texture.Jpeg", loader) ?: run {
             log("final jpeg guard: com.xiaomi.gl.texture.Jpeg absent on this build")
             return
         }
-        // Two variants exist since 6.6: `bitmapToJpeg(Bitmap, int)` returning byte[] and
-        // `bitmapToJpegBuffer(Bitmap, int)` returning ByteBuffer. Mi.b.c prefers the ByteBuffer
-        // variant whenever the runtime's direct-buffer flag is on, which is the case on every
-        // modern device — guarding only the byte[] variant (the 2.2.1 mistake) means the guard
-        // never fires there. Both are hooked so the last bitmap read before encoding is
-        // guaranteed to carry the capsule on either variant.
+
         val targets = cls.declaredMethods.filter { m ->
             (m.name == "bitmapToJpeg" || m.name == "bitmapToJpegBuffer") &&
                     Modifier.isStatic(m.modifiers) &&
@@ -762,15 +548,14 @@ object WatermarkHooks {
                     if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
                     val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
                     if (bitmap.isRecycled || bitmap.width < 256 || bitmap.height < 256) return
-                    // Already glass? The factory hook or an earlier encoder pass burned it.
+
                     val alreadyGlass = synchronized(glassBitmaps) { bitmap in glassBitmaps } ||
                             state?.guardedBitmaps?.let { set ->
                                 synchronized(set) { bitmap in set }
                             } == true
                     if (alreadyGlass) return
                     val meta = state?.meta ?: run {
-                        // Off the capture thread (e.g. the MIVI3 re-encode): use the fresh
-                        // factory snapshot if there is one, else leave the bitmap alone.
+
                         val stamp = lastCapture ?: return
                         if (SystemClock.elapsedRealtime() - stamp.at > META_FRESH_MS) return
                         stamp.meta
@@ -794,8 +579,7 @@ object WatermarkHooks {
                 }
 
                 override fun afterHookedMethod(p: MethodHookParam) {
-                    // Register the produced payload so the landing verifier can tell this
-                    // glass jpeg apart from the engine's re-landed one and skip it.
+
                     try {
                         val bitmap = p.args?.getOrNull(0) as? Bitmap
                         val glass = bitmap != null && synchronized(glassBitmaps) { glassBitmaps.containsKey(bitmap) }
@@ -813,45 +597,6 @@ object WatermarkHooks {
         }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Deep adaptation (6.6+/6.7+): the native MIVI engine finishes the final file.
-    //
-    // Symptom this fixes: during the ~2 s after-capture processing the glass capsule shows (the
-    // Java "early image" through the hooked factory), and when processing completes the final
-    // file carries the *stock* watermark again. What happens on these builds:
-    //
-    //   1. At capture start the app hands the engine a `CloudWmAttribute` (watermark id +
-    //      user-config bytes) alongside the parallel task data.
-    //   2. The Java watermark tasks run the hooked factory and land a glass jpeg.
-    //   3. ~2 s later the engine's own result lands on the same task data via
-    //      `di.s.a(gi.e, int)` (fillJpegData), overwriting the glass jpeg. Its pixels
-    //      carry the stock watermark the engine drew natively from that config — and
-    //      never touched any Java encoder, which is why the 2.2.1 encoder guard could
-    //      not fix 6.6: `Mi.b.c` prefers `bitmapToJpegBuffer` (ByteBuffer) and the guard
-    //      only hooked the byte[] variant that modern devices never take.
-    //
-    // The fix is layered so every landing path is covered:
-    //   - [hookCloudWatermarkAttribute]: hand the engine an empty config, so its output
-    //     arrives *clean* instead of stock-watermarked (stills and live-photo video both).
-    //   - [hookJpegLandingVerifier]: whatever jpeg lands on the task data without our
-    //     capsule gets it burned in right there — the guarantee, independent of which
-    //     engine produced the bytes.
-    //   - [hookBitmapEncodeHelpers] + the completed [hookFinalJpegEncoder]: last-chance
-    //     bitmap burns on the Java encoders, plus registration of glass outputs so the
-    //     verifier never double-renders.
-    //   - [hookLiveRecorderSnapshots]: the live-photo recorder burns its own watermark
-    //     into the recorded video frames; its watermark id is neutralised the same way.
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * Neutralises the native watermark request. The engine receives an attribute with no
-     * watermark id and no config bytes — exactly the shape the stock code itself produces
-     * when a watermark has no user config (`mUserConfigData = new byte[0]`), so an empty
-     * attribute is a state the engine already handles gracefully.
-     *
-     * `hasCloudWatermark` on the task data is left untouched, so the Java watermark task
-     * still runs and the factory hook still paints the capsule.
-     */
     private fun hookCloudWatermarkAttribute(loader: ClassLoader) {
         val cls = findClass("com.xiaomi.camera.bean.CloudWmAttribute", loader) ?: run {
             log("native watermark off: CloudWmAttribute absent on this build")
@@ -870,9 +615,7 @@ object WatermarkHooks {
                         GlassConfig.refresh()
                         if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
                         val self = p.thisObject ?: return
-                        // Both fields are private instance fields, so reflective writes must
-                        // clear the access check first — without this the write throws
-                        // IllegalAccessException and the native watermark stays on.
+
                         val configField = cls.getDeclaredField("mUserConfigData").apply {
                             isAccessible = true
                         }
@@ -891,20 +634,6 @@ object WatermarkHooks {
         if (hooked) log("native watermark off: CloudWmAttribute(String,[B) neutralised — the MIVI engine now finishes photos clean")
     }
 
-    /**
-     * The guarantee: every jpeg that lands on the parallel task data without our capsule gets
-     * one burned in, right before it is stored.
-     *
-     * Two landing methods are hooked — `setJpegData` (`r(gi.e)`) for the Java-watermarked
-     * path and `fillJpegData` (`a(gi.e, int)`) for the engine's ~2 s result. The Java path's
-     * payloads are already registered as glass outputs (by the encoder hooks), so they pass
-     * through untouched; the engine's unregistered payload is decoded, receives the capsule,
-     * and is re-encoded before it replaces the glass jpeg the Water task produced.
-     *
-     * EXIF is written *after* this landing by the camera's own Exif task, so the re-encode
-     * does not lose capture metadata. Jpegs that carry a rotation tag are skipped — landing
-     * a rotated capsule would put it on the photo's side.
-     */
     private fun hookJpegLandingVerifier(loader: ClassLoader) {
         val task = DexKitHelper.findTaskDataClass(loader) ?: run {
             log("landing verifier: task data class not discovered on this build")
@@ -949,14 +678,9 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * Decodes a landed jpeg, burns the capsule in and re-encodes it. Returns null (and lets
-     * the original bytes through) whenever anything looks unusual.
-     */
     private fun patchIncomingJpeg(bytes: ByteArray): ByteArray? {
         if (bytes.size < VERIFIER_MIN_JPEG_BYTES) return null
-        // Only whole, unrotated jpegs. A rotation tag means the pixels are stored sideways;
-        // the capsule would land on the photo's edge, so those are left to the stock path.
+
         if (bytes[0] != 0xFF.toByte() || bytes[1] != 0xD8.toByte()) return null
         if (hasRotationTag(bytes)) return null
         if (isRegisteredGlassOutput(bytes)) return null
@@ -988,7 +712,6 @@ object WatermarkHooks {
         }
     }
 
-    /** True when the jpeg carries a non-trivial EXIF orientation, i.e. its pixels are rotated. */
     private fun hasRotationTag(bytes: ByteArray): Boolean = try {
         val exif = android.media.ExifInterface(java.io.ByteArrayInputStream(bytes))
         when (
@@ -1005,7 +728,6 @@ object WatermarkHooks {
         false
     }
 
-    /** Reflective `gi.e.c()` — the zero-arg byte[]-returning method on the data holder. */
     private val dataBytesReaders =
         java.util.Collections.synchronizedMap(HashMap<Class<*>, Method?>())
 
@@ -1019,8 +741,7 @@ object WatermarkHooks {
                 null
             }
         }
-        // The zero-arg byte[]-returning method is the holder's payload getter (`gi.e.c()`),
-        // implemented the same way by the byte[] and ByteBuffer holders.
+
         val method = cls.methods.firstOrNull { m ->
             m.parameterTypes.isEmpty() && m.returnType == ByteArray::class.java
         }
@@ -1032,7 +753,6 @@ object WatermarkHooks {
         }
     }
 
-    /** Wraps patched jpeg bytes in the camera's own `gi.a(byte[])` data holder. */
     private fun wrapPatchedBytes(impl: Class<*>?, bytes: ByteArray): Any? {
         if (impl == null) return null
         return try {
@@ -1043,13 +763,6 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * `Wr.j.k(int, Bitmap)` — the last Java encode on the 6.7 "external watermark" path
-     * (`W8.e.d`), used for both the early image and the mode-4/104 final. Two jobs: a
-     * last-chance capsule burn when the bitmap somehow reached the encoder without one,
-     * and registration of glass outputs so the landing verifier recognises this path's
-     * payloads as already-glass and skips them.
-     */
     private fun hookBitmapEncodeHelpers(loader: ClassLoader) {
         val helpers = DexKitHelper.findBitmapEncodeHelpers(loader)
         if (helpers.isEmpty()) {
@@ -1092,13 +805,6 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * `Rm.b.o(...)` — the CircularMediaRecorder snapshot for live photos. The 7th parameter
-     * (index 6) is the watermark id the recorder burns into the recorded video frames; an
-     * empty id means no watermark, so the video stops re-appearing with the stock mark
-     * whenever the still is played back. (Rendering glass into every recorded frame would
-     * mean drawing on the recorder's GL pipeline; per-frame glass stays future work.)
-     */
     private fun hookLiveRecorderSnapshots(loader: ClassLoader) {
         val snapshots = DexKitHelper.findRecorderSnapshots(loader)
         if (snapshots.isEmpty()) {
@@ -1127,10 +833,6 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * Whether a source frame and the bitmap about to be encoded describe the same picture.
-     * Prevents the capsule from being stamped onto a thumbnail or a differently cropped frame.
-     */
     private fun compatibleAspect(sourceWidth: Int, sourceHeight: Int, output: Bitmap): Boolean {
         if (sourceWidth <= 0 || sourceHeight <= 0) return true
         if ((sourceWidth > sourceHeight) != (output.width > output.height)) return false
@@ -1139,13 +841,11 @@ object WatermarkHooks {
         return kotlin.math.abs(sourceRatio - outputRatio) / maxOf(sourceRatio, outputRatio) <= 0.025
     }
 
-    /** Draw on the real source photograph before the camera's stock watermark renderer runs. */
     private fun renderCaptureCapsule(out: Bitmap, meta: CapsuleRenderer.CaptureMeta): Boolean {
         val logo = if (ConfigStore.capsuleShowLogo()) loadLogo() else null
         val rendered = renderCapsuleInternal(out, meta, logo)
         if (rendered || logo == null) return rendered
-        // A logo-specific failure must never cost the whole watermark: every false return
-        // happens before any pixel is written, so a clean retry without the logo is safe.
+
         log("capsule render failed with logo '${ConfigStore.capsuleLogoPreset()}', retrying without it")
         return renderCapsuleInternal(out, meta, null)
     }
@@ -1233,12 +933,6 @@ object WatermarkHooks {
         return true
     }
 
-    /**
-     * Remembers a successful capsule render for the hooks that run *after* the factory hook:
-     * the encoder guards consult [glassBitmaps] by bitmap identity, and the landing verifier
-     * gets its metadata (EXIF/GPS) from [lastCapture] because it runs on the MIVI callback
-     * thread, not the capture thread the ThreadLocal state lives on.
-     */
     private fun recordGlassRender(bitmap: Bitmap, meta: CapsuleRenderer.CaptureMeta) {
         try {
             synchronized(glassBitmaps) {
@@ -1256,11 +950,6 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * Metadata for an off-thread render: the factory hook's snapshot when fresh, else an
-     * empty meta (device name + clock only). The landing verifier runs on the engine's
-     * callback thread, so the ThreadLocal capture state is usually empty there.
-     */
     private fun verifierMeta(): CapsuleRenderer.CaptureMeta {
         val stamp = lastCapture
         if (stamp != null && SystemClock.elapsedRealtime() - stamp.at <= META_FRESH_MS) {
@@ -1269,7 +958,6 @@ object WatermarkHooks {
         return CapsuleRenderer.CaptureMeta(0L, null, null)
     }
 
-    /** FNV-1a over the payload; used as a compact identity for produced/patched jpegs. */
     private fun jpegIdentity(bytes: ByteArray): Long {
         var h = 0xcbf29ce484222325UL
         var i = 0
@@ -1282,7 +970,6 @@ object WatermarkHooks {
         return h.toLong()
     }
 
-    /** Records a jpeg payload as containing the glass capsule. */
     private fun registerGlassOutput(bytes: ByteArray) {
         if (bytes.isEmpty()) return
         synchronized(glassEncodedOutputs) {
@@ -1298,18 +985,6 @@ object WatermarkHooks {
         synchronized(glassEncodedOutputs) { return glassEncodedOutputs.contains(jpegIdentity(bytes)) }
     }
 
-    /**
-     * Waits for the background DEX scan, then re-runs the exact hook installation.
-     *
-     * This is the path that makes an **unseen camera build** work: at `handleLoadPackage` time
-     * the scan has not finished, so the first `installTypedPipelineHooks` usually only succeeds
-     * on the stable `com.xiaomi.cam.watermark.b` literal. Once the scan resolves the capture
-     * record (and, on a build whose names moved, its consumer), this retries and the EXIF/GPS
-     * lines come alive on the very first shot instead of never.
-     *
-     * Retrying is safe: every hook is registered in [hookedCaptureMethods] under a signature key,
-     * so a second pass cannot double-hook.
-     */
     private fun startLateDiscovery(loader: ClassLoader) {
         val thread = Thread({
             val found = DexKitHelper.awaitDiscovery(DISCOVERY_WAIT_MS)
@@ -1319,8 +994,7 @@ object WatermarkHooks {
                 return@Thread
             }
             try {
-                // Re-run the exact hooks now that the structural names are known. A build that
-                // already matched literally is unaffected: the signature keys deduplicate.
+
                 hookCaptureContext(loader)
                 hookWatermarkBitmapFactory(loader)
                 hookFinalJpegEncoder(loader)
@@ -1343,16 +1017,6 @@ object WatermarkHooks {
         thread.start()
     }
 
-    /**
-     * Install all typed pipeline hooks. On 6.4.x both the capture context (E5/b.h) and the
-     * watermark factory (b.c) are expected to match. On 6.7+ the capture context will not
-     * match (E5/b is obfuscated away), but the watermark factory still matches because
-     * com.xiaomi.cam.watermark.b is a stable, non-obfuscated class name.
-     *
-     * When the capture context hook fails, the watermark factory hook still works — it just
-     * uses default/empty metadata (no EXIF, no GPS, no timestamp). This is a deliberate
-     * graceful degradation: the capsule renders with whatever data is available.
-     */
     private fun installTypedPipelineHooks(loader: ClassLoader) {
         log("=== hook install begin ===")
         log("host=${hostFingerprint()}")
@@ -1395,20 +1059,12 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * A compact description of the host, so a log from someone else's device is actionable
-     * without asking them to run adb.
-     */
     private fun hostFingerprint(): String = try {
         val cls = Class.forName("android.os.Build")
         val model = cls.getField("MODEL").get(null) as? String ?: "?"
         val sdk = cls.getField("SDK_INT").get(null) as? Int ?: -1
         "$model/api$sdk"
     } catch (_: Throwable) { "unknown" }
-
-    // ---------------------------------------------------------------------------------------
-    // DexKit-based Hooks
-    // ---------------------------------------------------------------------------------------
 
     private fun hookCanvasWrapper(cls: Class<*>) {
         if (!hookedClasses.add(cls.name + "#ctor")) return
@@ -1421,9 +1077,7 @@ object WatermarkHooks {
                 val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
                 val self = p.thisObject ?: return
                 val frame = Frame()
-                // Keyed by the wrapper *instance*, not by this hook object: the wrapper is
-                // created once per composite, so concurrent composites no longer overwrite each
-                // other's state and the drawRect hook can find its own canvas.
+
                 frames[self] = frame
                 framesByBitmap[bitmap] = frame
             }
@@ -1437,9 +1091,7 @@ object WatermarkHooks {
 
         XposedBridge.hookMethod(target, object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
-                // The receiver is the `Lpe/o` wrapper this draw is issued on. Both the frame and
-                // the canvas come from it, so a draw belonging to composite B can never be
-                // recorded against composite A's panel list.
+
                 val self = p.thisObject ?: return
                 val frame = frames[self] ?: return
                 val paint = p.args?.getOrNull(4) as? Paint ?: return
@@ -1475,17 +1127,13 @@ object WatermarkHooks {
         if (!hookedComposites.add(method.declaringClass.name + "#" + method.name)) return
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(p: MethodHookParam) {
-                // 6.4.x returns WatermarkRemover$b instead of a raw Bitmap.
-                // Unwrap it: try direct cast first, then reflect into the wrapper
-                // for a Bitmap field.
+
                 val out = unwrapBitmap(p.result) ?: run {
                     log("composite result is not a bitmap: ${p.result?.javaClass?.name}")
                     return
                 }
                 val frame = framesByBitmap.remove(out)
-                // Refresh before the fast disabled path. Otherwise a camera process that
-                // starts disabled can never observe the UI enabling the module: params()
-                // refreshes later, but this early return would prevent reaching it.
+
                 GlassConfig.refresh()
                 if (!GlassConfig.masterEnabled) return
                 if (out.isRecycled) return
@@ -1493,9 +1141,7 @@ object WatermarkHooks {
                     log("skip: composite bitmap not mutable (${out.width}x${out.height})")
                     return
                 }
-                // A Bitmap argument is not necessarily the source photo: on Camera 6.4 the
-                // old Fe/a.j hook receives a render destination for the watermark layer only.
-                // Do not infer or copy any arbitrary bitmap into the output photograph.
+
                 val src: Bitmap? = null
                 log("legacy composite ${out.width}x${out.height}: source image deliberately not inferred")
                 try {
@@ -1507,9 +1153,6 @@ object WatermarkHooks {
         })
         log("hooked composite method via DexKit")
     }
-    // ---------------------------------------------------------------------------------------
-    // Fallback Hardcoded Hooks (used until the dex scan resolves the real names)
-    // ---------------------------------------------------------------------------------------
 
     private fun hookCanvasWrapperFallback(classLoader: ClassLoader, className: String) {
         val cls = findClass(className, classLoader) ?: return
@@ -1526,8 +1169,7 @@ object WatermarkHooks {
             log("class $className not found")
             return
         }
-        // 6.4.x changed the return type from Bitmap to a wrapper (WatermarkRemover$b),
-        // so accept either a Bitmap return or any non-void return that wraps one.
+
         val target = cls.declaredMethods.firstOrNull { method ->
             method.name == methodName &&
                     method.parameterTypes.any { Bitmap::class.java.isAssignableFrom(it) } &&
@@ -1545,28 +1187,12 @@ object WatermarkHooks {
         log("hooked $className->$methodName (${target.parameterTypes.size} params)")
     }
 
-    /**
-     * Source-level white-bar interception.
-     *
-     * Fe/a.b(pe/o, String) is the blit method that draws each watermark element. Before blitting
-     * the element's bitmap, it checks Fe/b.a (an int field whose upper byte encodes a color);
-     * when that byte is non-zero, it calls Canvas.drawColor() — that is the solid white (or
-     * tinted) strip the camera paints behind the watermark.
-     *
-     * Hooking b() and clearing Fe/b.a in beforeHookedMethod prevents the drawColor call,
-     * so the element's transparent background is never filled with a solid color. The
-     * element's own bitmap (glyphs, logos) is still blitted normally; only the backing fill
-     * is suppressed.
-     *
-     * On 6.4.x the Fe/b data is stored in Fe/a.i (field "i" of type Fe/b). We reflect into
-     * the receiver (Fe/a instance) to find and zero the Fe/b.a field.
-     */
     private fun hookBlitMethod(classLoader: ClassLoader, className: String, methodName: String) {
         val cls = findClass(className, classLoader) ?: run {
             log("hookBlit: class $className not found")
             return
         }
-        // Camera 6.4 signature from the decompiled APK: b(Lpe/o;Ljava/lang/String;)V.
+
         val target = cls.declaredMethods.firstOrNull { m ->
             m.name == methodName && m.parameterTypes.size == 2 &&
                     m.parameterTypes[0].name == "pe.o" &&
@@ -1582,14 +1208,14 @@ object WatermarkHooks {
             override fun beforeHookedMethod(p: MethodHookParam) {
                 try {
                     val receiver = p.thisObject ?: return
-                    // Walk declared fields to find the Fe/b data object (field "i" on 6.4.x).
+
                     val dataField = receiver.javaClass.declaredFields.firstOrNull { f ->
                         f.name == "i" && f.type.name == "Fe.b"
                     }
                     if (dataField != null) {
                         dataField.isAccessible = true
                         val dataObj = dataField.get(receiver) ?: return
-                        // Fe/b.a is the fill color; do not mutate unrelated integer state.
+
                         val colorField = dataObj.javaClass.declaredFields.firstOrNull { f ->
                             f.name == "a" && f.type == Int::class.javaPrimitiveType
                         }
@@ -1610,15 +1236,10 @@ object WatermarkHooks {
         log("hooked blit method $className->$methodName (source-level white-bar suppression)")
     }
 
-    /**
-     * Unwraps the composite result to a Bitmap. On 6.2.x/6.7.x the result is already
-     * a Bitmap. On 6.4.x the composite returns a `WatermarkRemover$b` wrapper — scan
-     * its declared fields for the first Bitmap.
-     */
     private fun unwrapBitmap(result: Any?): Bitmap? {
         if (result == null) return null
         if (result is Bitmap) return result
-        // Wrapper object — reflectively find the Bitmap field.
+
         return try {
             result.javaClass.declaredFields.firstNotNullOfOrNull { f ->
                 if (Bitmap::class.java.isAssignableFrom(f.type)) {
@@ -1640,14 +1261,6 @@ object WatermarkHooks {
             null
         }
 
-
-    /**
-     * Maps an element-local rectangle into destination-bitmap pixels.
-     *
-     * The rectangle is in the canvas's current user space, so the canvas matrix is what carries
-     * it to absolute coordinates. Because the panel may be rotated by its own element, the
-     * mapped rectangle is taken as the axis-aligned bounding box.
-     */
     private fun absoluteRect(
         canvas: Canvas?, x0: Float, y0: Float, x1: Float, y1: Float,
     ): RectF {
@@ -1656,8 +1269,7 @@ object WatermarkHooks {
         return try {
             val out = RectF()
             val matrix = Matrix()
-            // Canvas.getMatrix is deprecated in favour of getMatrix(Matrix), but the
-            // replacement only exists from API 30 and this module supports 26.
+
             @Suppress("DEPRECATION")
             canvas.getMatrix(matrix)
             matrix.mapRect(out, local)
@@ -1668,10 +1280,6 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * `Lpe/o` is a thin wrapper: its `a` field holds a real `android.graphics.Canvas`. Reading
-     * it reflectively avoids having to resolve the obfuscated interface it implements.
-     */
     private fun canvasOf(wrapper: Any): Canvas? {
         return try {
             val field = wrapper.javaClass.getDeclaredField("a")
@@ -1683,22 +1291,11 @@ object WatermarkHooks {
         }
     }
 
-    /**
-     * A starting hint for the panel's corner radius. The real value is measured from the
-     * panel's own silhouette while rendering, because the radius is baked into the background
-     * WebP's alpha and into `rect_params.rect_radius` rather than being a constant in code.
-     */
     private fun shaderRadius(shader: Shader, width: Float, height: Float): Float {
         val shortSide = minOf(width, height)
-        // The shader's local matrix is min(elementW, elementH) / 1080, the panel WebP's own
-        // reference size, so the WebP is fitted to the rectangle. Its baked radius therefore
-        // scales with the rectangle.
+
         return (shortSide * 0.5f).coerceIn(0f, shortSide * 0.5f)
     }
-
-    // ---------------------------------------------------------------------------------------
-    // Rendering
-    // ---------------------------------------------------------------------------------------
 
     private fun process(
         out: Bitmap,
@@ -1715,9 +1312,6 @@ object WatermarkHooks {
             return
         }
 
-        // The app-reported rectangles are ranked rather than taken first-wins, so a multi-element
-        // watermark (Leica) resolves to the same plate on every frame instead of whichever
-        // element happened to be drawn first.
         val reported = frame?.panels?.takeIf { it.isNotEmpty() }
         val panel = pickPanel(reported.orEmpty(), w, h)
         if (panel == null && reported != null) {
@@ -1729,17 +1323,6 @@ object WatermarkHooks {
             return
         }
 
-        // --- Capsule rebuild: erase the stock plate and draw a fresh iOS-style
-        // capsule onto the photograph itself.
-        //
-        // The camera paints its watermark onto a strip it appends below the photo
-        // (or over the photo's bottom on some styles), then layers the plate and
-        // glyphs on top. Dressing that plate in glass refracts whatever the camera
-        // left behind it — white fill, glyph remnants, or a mirrored stand-in —
-        // which is exactly the "no real scene under the glass and no text" the user
-        // reported. Rebuilding is the honest route: repair the plate area with the
-        // original photograph, then render a compact glass capsule carrying fresh
-        // text lines at a fixed position inside the photo.
         if (ConfigStore.capsuleEnabled()) {
             try {
                 processCapsule(out, w, h, resolved, srcPhoto, System.currentTimeMillis(), thisObj, args)
@@ -1749,18 +1332,9 @@ object WatermarkHooks {
             return
         }
 
-        // --- Legacy path: dress the detected stock panel itself in glass. ---
-
-        // Position overlay: move the glass from the camera's white fill area
-        // onto the photograph itself. The camera draws the watermark strip below
-        // the photo, extending the canvas with a flat white fill. Rendering glass
-        // there samples white, not the scene — the root cause of every white-edge
-        // and mirror artifact. Instead, detect the photo/fill boundary and shift
-        // the panel's render target up into the photo so the backdrop is real.
         val photoBottom = detectPhotoBottom(out, w, h, resolved)
         val overlayPanel = if (photoBottom >= 0 && resolved.bottom > photoBottom) {
-            // Panel is (fully or partly) below the photo — shift it up so its
-            // bottom aligns with the photo's bottom edge, with a small inset.
+
             val inset = (resolved.height * 0.15f).coerceAtLeast(2f)
             val newBottom = (photoBottom - inset).toFloat()
             val newTop = newBottom - resolved.height
@@ -1781,12 +1355,6 @@ object WatermarkHooks {
             log("overlay: no shift photoBottom=$photoBottom shift=no")
         }
 
-        // Read only the crop the material touches. The panel is a few percent of the frame, so
-        // this is the difference between a ~48 MB buffer and a few hundred KB. It also keeps
-        // the full-resolution pass off the critical path of a capture.
-        // Match the outer bitmap crop to the configured maximum lens displacement and blur.
-        // A fixed fraction of the panel height clips the backdrop at high refraction settings,
-        // causing the glass to lose its full-area blur and smear against a hard crop boundary.
         val cropParams = GlassConfig.params()
         val padPx = maxOf(
             24f,
@@ -1803,7 +1371,6 @@ object WatermarkHooks {
         val pixels = IntArray(cw * ch)
         out.getPixels(pixels, 0, cw, left, top, cw, ch)
 
-        // The optics index in crop-local coordinates, so the panel is shifted with the crop.
         val localPanel = PanelRect(
             left = overlayPanel.left - left,
             top = overlayPanel.top - top,
@@ -1814,12 +1381,6 @@ object WatermarkHooks {
 
         val params = resolveParams(pixels, cw, ch, localPanel)
 
-        // Source the backdrop from the original photograph passed to the composite.
-        // The camera blits the photo into [out] first, then draws the watermark plate
-        // over it. So [out] already holds the photo everywhere except inside the plate.
-        // When the source bitmap is available and dimensionally compatible, reading the
-        // panel region directly from it gives the optics the true scene — no mirroring,
-        // no white corners, no scale change.
         var photoPixels: IntArray? = null
         var photoLeft = 0
         var photoTop = 0
@@ -1831,11 +1392,10 @@ object WatermarkHooks {
             val sw: Int
             val sh: Int
             if (srcPhoto.width == w && srcPhoto.height == h) {
-                // Exact match: same coordinate space as [out].
+
                 sx = left; sy = top; sw = cw; sh = ch
             } else {
-                // The source may be a different resolution that the camera scales to fit
-                // [out]. Map the crop rectangle proportionally.
+
                 val sxw = (cw.toLong() * srcPhoto.width / w).toInt().coerceAtLeast(1)
                 val sxh = (ch.toLong() * srcPhoto.height / h).toInt().coerceAtLeast(1)
                 sx = (left.toLong() * srcPhoto.width / w).toInt().coerceIn(0, srcPhoto.width - 1)
@@ -1845,10 +1405,7 @@ object WatermarkHooks {
             }
             if (sw > 0 && sh > 0) {
                 try {
-                    // Read the panel crop region from the original photograph.
-                    // For the exact-match case (same resolution as [out]) this is a direct
-                    // copy. For a resolution mismatch, read at source resolution and then
-                    // nearest-neighbour resample back to the output crop dimensions.
+
                     val rawW: Int
                     val rawH: Int
                     if (srcPhoto.width == w && srcPhoto.height == h) {
@@ -1871,22 +1428,18 @@ object WatermarkHooks {
                     } else {
                         photoPixels = px
                     }
-                    // renderPanel works in crop-local coordinates: the crop starts at (0,0)
-                    // in the backdrop buffer and the photo block covers the entire crop.
+
                     photoLeft = 0
                     photoTop = 0
                     photoW = cw
                     photoH = ch
                 } catch (t: Throwable) {
                     log("photo pixel read failed: ${t.javaClass.simpleName}: ${t.message}")
-                    // Falls back to the mirror path.
+
                 }
             }
         }
 
-        // Time budget: if the pre-render work (scan + crop + photo read) already
-        // consumed most of the allowance, skip the expensive renderPanel pass
-        // rather than risk an ANR on the camera's capture thread.
         val elapsed = SystemClock.elapsedRealtime() - startTime
         if (elapsed > RENDER_TIME_BUDGET_MS) {
             log("skip: time budget ${elapsed}ms > ${RENDER_TIME_BUDGET_MS}ms before render")
@@ -1919,24 +1472,6 @@ object WatermarkHooks {
                 "photo=${if (photoPixels != null) "yes" else "no"} shift=${if (shifted) "yes" else "no"} ${elapsed}ms -> $result")
     }
 
-    /**
-     * The rebuilt-capsule pipeline.
-     *
-     * 1. Find where the photograph ends inside [out] (the camera extends the canvas
-     *    with flat fill below it to make room for the stock watermark strip).
-     * 2. Eradicate the stock marks: an appended fill strip is repainted with its
-     *    own factory fill, and a plate drawn over the photograph is rebuilt
-     *    from the original photograph. Rows whose repair cannot be proven safe
-     *    are left untouched instead of being smeared.
-     * 3. Place and render a fresh glass capsule strictly inside the photo. The
-     *    capsule floats on a real-scene backdrop — the eradicate above
-     *    guarantees the crop is scene — and the optics' two opaque-plate
-     *    fallbacks (mirrored interior, content preserve-blend) are switched
-     *    off at the call boundary, so the bent backdrop is always true scene.
-     */
-    // The rebuild needs the composite call's live receiver and arguments to mine
-    // capture metadata out of the camera stack (model name, shutter parameters,
-    // GPS fix). They travel from hookComposite through process() to here.
     private fun processCapsule(
         out: Bitmap,
         w: Int,
@@ -1953,20 +1488,13 @@ object WatermarkHooks {
         if (photoBottom < 0 && srcPhoto != null && !srcPhoto.isRecycled &&
             srcPhoto.width >= 8 && srcPhoto.height >= 8
         ) {
-            // The uniformity scan could not see a photo/fill boundary — the rows
-            // above the plate happened to be flat. The composite paints the
-            // source bitmap at one uniform scale with the fill appended below,
-            // so the source's own height times that scale is the exact boundary
-            // without scanning a single pixel.
+
             val s = w.toFloat() / srcPhoto.width.toFloat()
             val candidate = (srcPhoto.height.toFloat() * s).toInt()
             if (candidate in 8 until h) photoBottom = candidate
         }
         val anchorY = if (photoBottom >= 0) photoBottom.toFloat() else h.toFloat()
 
-        // This legacy renderer may only repair a watermark when the layout is proven to sit
-        // entirely in the camera-appended fill strip. On-photo watermark pixels cannot be
-        // reconstructed from guessed Bitmap arguments, so this path now refuses those cases.
         val isStripLayout = photoBottom >= 0 && plate.top >= photoBottom + STRIP_PLATE_GAP_MIN
         var eraseMode = "none"
         if (!isStripLayout) {
@@ -1992,9 +1520,6 @@ object WatermarkHooks {
             return
         }
 
-        // ------------------------------------------------------------------
-        // Place the capsule inside the photograph.
-        // ------------------------------------------------------------------
         val showLogo = ConfigStore.capsuleShowLogo()
         val logoBmp = if (showLogo) loadLogo() else null
         val opts = CapsuleRenderer.Options(
@@ -2023,12 +1548,7 @@ object WatermarkHooks {
 
         val capsuleW = metrics.capsuleWidth
         val capsuleH = metrics.capsuleHeight
-        // The optics pad depends only on the capsule's box (shortSide × params),
-        // so it is computable before placement. The inset must clear that pad:
-        // an inset smaller than the pad puts the crop's bottom edge past the
-        // photograph's end, and the clamp backer then amputates the lens's lower
-        // sample window — the refraction band stretches and the bottom edge
-        // washes out with fill-band white.
+
         val cornerR = (CapsuleRenderer.CORNER_RADIUS_REF * metrics.unitPx)
             .coerceAtLeast(1f)
             .coerceAtMost(capsuleH * 0.5f)
@@ -2041,15 +1561,9 @@ object WatermarkHooks {
         ).coerceAtMost(capsuleH * 0.5f)
         val inset = (CapsuleRenderer.BOX_INSET_REF * metrics.unitPx)
             .coerceIn(4f, shortSide * 0.12f)
-        // Placement cap. The capsule's bottom edge sits at [placementCap - inset],
-        // so the capsule is always inside the photograph. When the stock plate
-        // survived (eraseMode still "none") the capsule must stay clear of it,
-        // but the gap is the inset itself — the capsule's bottom is already inset
-        // above the photo's bottom edge, which is at or above the plate's top.
+
         val placementCap = anchorY
-        // Bottom margin: min(photoW, photoH) * 0.016, matching the reference engine's
-        // offsetY=1.0 bottom-aligned placement. The old BOX_INSET_REF=104 gave ~9.6% which
-        // left the capsule floating too high above the bottom edge.
+
         val bottomMargin = (minOf(w, h) * 0.016f).coerceIn(4f, shortSide * 0.06f)
         val capsuleBottom = (placementCap - bottomMargin).coerceAtLeast(capsuleH + 4f)
         val capsuleTop = capsuleBottom - capsuleH
@@ -2067,18 +1581,11 @@ object WatermarkHooks {
             cornerRadiusPx = cornerR,
         )
 
-        // ------------------------------------------------------------------
-        // Render the capsule: crop, optics, text. Crop-local coords again.
-        // ------------------------------------------------------------------
         val cropL = (capsule.left - padPx).toInt().coerceIn(0, w - 1)
         val cropT = (capsule.top - padPx).toInt().coerceIn(0, h - 1)
         val cropR = (capsule.right + padPx).toInt().coerceIn(cropL + 1, w)
         val cropB0 = (capsule.bottom + padPx).toInt().coerceIn(cropT + 1, h)
-        // The optics must not sample the fill band: flat white inside the blur
-        // window is the seed of the washed-out bottom edge. Clamp the crop to
-        // the photograph whenever that keeps the capsule fully covered; when it
-        // cannot, the capsule itself overlaps the fill and the render is
-        // refused — geometry errors must fail loud, not silently bend.
+
         var cropB = cropB0
         if (photoBottom >= 0) {
             val bound = (photoBottom - 2).coerceAtLeast(cropT + 1)
@@ -2109,16 +1616,6 @@ object WatermarkHooks {
         )
         val params = resolveParams(pixels, cw2, ch2, localCapsule)
 
-        // The glass body is transparent where the stock panel was opaque, so it
-        // samples-and-bends this crop's own scene: the crop lies fully inside
-        // the photograph, so the backdrop is genuinely the scene. The camera's
-        // plate is no longer part of the backdrop at all.
-        //
-        // panelIsOpaquePlate=false tells the optics this capsule was never an
-        // opaque stock plate — its two opaque-plate fallbacks (mirrored
-        // interior, preserve-content blend) are off at the call boundary, and
-        // preserveContent=false keeps even the uniformity-gated branch from
-        // firing: the bent backdrop must always be real scene.
         val result = LiquidGlassOptics.renderPanel(
             pixels, cw2, ch2, localCapsule, params.copy(preserveContent = false),
             panelIsOpaquePlate = false,
@@ -2128,13 +1625,6 @@ object WatermarkHooks {
             return
         }
 
-        // ------------------------------------------------------------------
-        // Text layer. Rasterized into its own transparent layer and blended over
-        // the finished glass, so the glyphs never bend with the refraction the
-        // way the scene does — they sit on the surface, as stamped ink.
-        // ------------------------------------------------------------------
-        // The reference keeps its labels white even over bright water/sky; a restrained
-        // shadow maintains contrast without switching to dark text halfway through a capsule.
         val textLayer = CapsuleRenderer.drawTextLayer(
             cw2, ch2, localCapsule, metrics, CapsuleRenderer.TEXT_COLOR_WHITE,
         )
@@ -2150,23 +1640,6 @@ object WatermarkHooks {
                 "text=${if (textLayer != null) "yes" else "no"} $elapsed -> $result")
     }
 
-    /**
-     * Chooses the region the glass should be applied to.
-     *
-     * The camera's watermark is not always one rectangle. On the Leica style the plate is
-     * composed of several drawn rectangles — the capsule body, plus thin strips that extend
-     * above and below it for the outer glow the WebP carries. Taking only the widest one left
-     * the glow strips as raw white plates around the glass capsule, which is the leftover
-     * backing the user still saw in photos.
-     *
-     * So the reported rectangles are merged into their **union bounding box** before ranking.
-     * A watermark group's elements overlap or vertically stack, so the union is the honest
-     * plate; unrelated scene elements would fail [plausible] individually and are filtered
-     * first.
-     *
-     * Elements that fail [plausible], or that are too narrow to be a plate at all, are dropped
-     * before merging.
-     */
     private fun pickPanel(candidates: List<PanelRect>, w: Int, h: Int): PanelRect? {
         val eligible = candidates.filter { rect ->
             rect.width >= MIN_PANEL_WIDTH &&
@@ -2177,8 +1650,6 @@ object WatermarkHooks {
         if (eligible.isEmpty()) return null
         if (eligible.size == 1) return eligible[0]
 
-        // Union bounding box of every plausible element. The camera's plate fragments all sit
-        // in one composition; merging them removes the fragment gaps the glass used to leave.
         val left = eligible.minOf { it.left }
         val top = eligible.minOf { it.top }
         val right = eligible.maxOf { it.right }
@@ -2188,13 +1659,10 @@ object WatermarkHooks {
             top = top,
             width = right - left,
             height = bottom - top,
-            // The capsule's own radius hint is the largest the group reported; the optics
-            // re-measure from the silhouette when this is outside the valid range.
+
             cornerRadiusPx = eligible.maxOf { it.cornerRadiusPx },
         )
 
-        // A union that swallows most of the frame is not a watermark; the filter above let
-        // through a piece of scene and the merge amplified it. Decline the whole group.
         if (merged.width > w * MAX_PANEL_WIDTH_FRACTION ||
             merged.height > h * MAX_PANEL_HEIGHT_FRACTION
         ) {
@@ -2204,55 +1672,24 @@ object WatermarkHooks {
         return merged
     }
 
-    /** A reported rectangle is only trusted when it could plausibly be a watermark panel. */
     private fun plausible(rect: PanelRect, w: Int, h: Int): Boolean {
         if (rect.left < -2f || rect.top < -2f) return false
         if (rect.width > w || rect.height > h) return false
         if (rect.right > w + 2f || rect.bottom > h + 2f) return false
-        // The panel carries labels, so it cannot be a hairline or a full-frame wash.
+
         return rect.height >= 6f && rect.height <= h * 0.6f
     }
 
-    /**
-     * Picks the material variant for the scene behind the panel.
-     *
-     * The user's own settings are the base and are never discarded: `GlassConfig.params()`
-     * carries everything the settings screen writes, and this function only decides whether to
-     * additionally scale the tint/veil for the local brightness.
-     *
-     * The earlier revision returned `GlassParams.DarkScene` / `.BrightScene` outright. Those are
-     * hardcoded presets, so every slider the user moved — refraction band, blur, interior lift,
-     * rim strength — was thrown away the moment a photo was taken. That is exactly the "I
-     * changed it and the shot looks identical" symptom, and it was invisible because the
-     * settings screen happily reported a successful write.
-     *
-     * Now: take the user's parameters verbatim, and scale only the three veil-like terms that
-     * genuinely depend on scene brightness (tint, surface veil, rim) so white labels stay
-     * legible on a bright photo. Every other knob is the user's, unmodified.
-     *
-     * Measured on the crop only, over the panel's own rectangle, because that is the backdrop
-     * the material has to cope with — averaging the whole photo would let a bright sky decide
-     * how dense a shadow strip at the bottom of the frame is rendered.
-     */
     private fun resolveParams(pixels: IntArray, w: Int, h: Int, panel: PanelRect): GlassParams =
         com.mouya.LiquidFrame.glass.GlassSceneTuner.resolveParams(pixels, w, h, panel, GlassConfig.params())
 
-    /**
-     * The pixel fallback, run on a downscaled copy.
-     *
-     * The scan needs structure, not colour accuracy, so it runs at roughly a tenth of the
-     * frame's width. That turns a 48 MB full-resolution read into a sub-megabyte one, and the
-     * returned rectangle is scaled back up to output pixels.
-     */
     private fun scanPanel(out: Bitmap, w: Int, h: Int): PanelRect? {
         val step = maxOf(1, w / SCAN_WORK_WIDTH)
         val sw = w / step
         val sh = h / step
         if (sw < 8 || sh < 8) return null
         return try {
-            // Bitmap.getPixels cannot stride, so each sampled row is fetched in one bulk
-            // read — a single JNI crossing per row instead of one per pixel — and the
-            // coarse grid is decimated from a reusable row buffer on the Java side.
+
             val grid = IntArray(sw * sh)
             val row = IntArray(w)
             for (sy in 0 until sh) {
@@ -2263,11 +1700,6 @@ object WatermarkHooks {
             }
             val rect = PanelScan.find(grid, sw, sh) ?: return null
 
-            // Scale back to output pixels, then confirm on the full-resolution buffer. The
-            // coarse grid can find a flat bar with hard edges, but it cannot tell a watermark
-            // panel from a strip of blown-out sky — only a *labelled* bar is a watermark. This
-            // reads the candidate strip alone, so it costs a few percent of the frame rather
-            // than another whole-image copy.
             val scaled = PanelRect(
                 left = rect.left * step,
                 top = rect.top * step,
@@ -2304,25 +1736,8 @@ object WatermarkHooks {
         }
     }
 
-/**
-     * Detects the bottom edge of the photograph inside [out].
-     *
-     * The camera composites the photo at the top of [out] and extends the canvas
-     * downward with a near-white fill to accommodate the watermark strip. The
-     * boundary between photo content (varied colour, texture, or dark scene)
-     * and the fill (flat near-white) is a sharp transition in row luminance.
-     *
-     * Walks upward from the panel's top edge. The rows immediately above the
-     * panel are the camera's white fill; the first row that deviates from flat
-     * near-white is the photo's bottom edge.
-     *
-     * Returns -1 when no white fill is found above the panel — the photo fills
-     * the entire canvas and the panel is already on the photograph.
-     */
     private fun detectPhotoBottom(out: Bitmap, w: Int, h: Int, panel: PanelRect): Int {
-        // One bulk getPixels per scanned row: a single JNI crossing instead of one
-        // per sampled column, with the column stride applied on the Java side over
-        // a reusable row buffer — the boxed column list is gone too.
+
         val scanStep = maxOf(1, w / 64)
         val row = IntArray(w)
         val startY = panel.top.toInt().coerceIn(1, h - 1)
@@ -2345,21 +1760,17 @@ object WatermarkHooks {
             if (n == 0) continue
             val mean = sum / n
             val variance = (sumSq / n - mean * mean)
-            // Photo content: coloured/varied or dark — anything that is not
-            // flat near-white fill.
+
             if (variance > 4.0 || mean < 240.0) {
                 return y
             }
         }
-        // No non-white row found above the panel — the entire region above
-        // is white fill, which means the photo does not extend here at all.
-        // Return -1 so the caller knows there is no photo boundary to use.
+
         return -1
     }
 
     private fun f(v: Float): String = String.format(Locale.US, "%.1f", v)
 
-    /** Delegates to the full logging system with no rate limiting. */
     private fun log(message: String) {
         LFLogger.d(message)
         XposedBridge.log("$TAG: $message")

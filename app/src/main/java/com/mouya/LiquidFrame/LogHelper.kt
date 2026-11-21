@@ -5,27 +5,16 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-/**
- * The module's log, written where both the camera and the settings screen can reach it.
- *
- * `/data/local/tmp` is `shell:shell` mode 771, so a plain application cannot create a file
- * there. The first version of this file swallowed that `IOException`, which is why the camera
- * process looked completely silent no matter what it did. Logging now escalates once through
- * `su` and keeps a bounded in-memory mirror, so the settings screen can always show *something*
- * even when the write is refused.
- */
 object LogHelper {
     private const val LOG_FILE = "/data/local/tmp/lf_log.txt"
-    private const val MAX_LOG_SIZE = 100 * 1024 // 100KB max
-    /** Immutable and thread-safe, unlike the SimpleDateFormat it replaces. */
+    private const val MAX_LOG_SIZE = 100 * 1024
+
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.getDefault())
 
-    /** In-memory mirror, so the UI has content even if the file cannot be written. */
     private val mirror = StringBuilder()
 
     private const val MAX_MIRROR = 16 * 1024
 
-    /** True once a write has succeeded, so the escalation is attempted only when needed. */
     private var directWriteWorks = false
 
     private var escalationAttempted = false
@@ -39,7 +28,7 @@ object LogHelper {
             }
             appendToFile(line)
         } catch (_: Throwable) {
-            // Logging must never take down the caller.
+
         }
     }
 
@@ -55,7 +44,6 @@ object LogHelper {
             directWriteWorks = false
         }
 
-        // First failure (or a refused directory): escalate once, then leave the file to root.
         if (escalationAttempted) return
         escalationAttempted = true
         try {
@@ -75,19 +63,18 @@ object LogHelper {
         }
     }
 
-    /** Runs a shell script as root, returning its exit status. */
     private fun runSu(script: String): Int {
         for (binary in listOf("su", "/system/bin/su", "/system/xbin/su")) {
             try {
                 val process = ProcessBuilder(binary, "-c", script).redirectErrorStream(true).start()
-                // Cap output to 4 KB to avoid OOM on runaway commands.
+
                 val output = process.inputStream.use { stream ->
                     val buf = ByteArray(4096)
                     val n = stream.read(buf)
                     if (n > 0) buf.copyOf(n) else ByteArray(0)
                 }
                 process.outputStream.close()
-                // Bounded wait: 5 s ceiling prevents indefinite hang on a dead su binary.
+
                 if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
                     process.destroyForcibly()
                     log("LogHelper", "su timed out after 5s")
@@ -97,7 +84,7 @@ object LogHelper {
                 if (code == 0) return 0
             } catch (t: Throwable) {
                 log("LogHelper", "su failed: ${t.javaClass.simpleName}: ${t.message}")
-                // Try the next binary.
+
             }
         }
         return -1
@@ -106,8 +93,7 @@ object LogHelper {
     private fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     fun readLog(): String {
-        // Prefer the file: the camera process writes there, and its lines are the interesting
-        // ones. Fall back to the mirror when the file is unreadable.
+
         val fromFile = try {
             val file = File(LOG_FILE)
             if (file.exists() && file.length() > 0) file.readText() else ""

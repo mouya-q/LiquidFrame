@@ -1,6 +1,3 @@
-// Copyright 2026, LiquidFrame contributors
-// SPDX-License-Identifier: Apache-2.0
-
 package com.mouya.LiquidFrame.gallery.screens
 
 import androidx.compose.foundation.layout.Arrangement
@@ -36,20 +33,12 @@ import com.mouya.LiquidFrame.gallery.LiquidBackdrop
 import com.mouya.LiquidFrame.gallery.glass.GlassSpec
 import com.mouya.LiquidFrame.gallery.glass.liquidGlass
 
-/**
- * The material itself, with its own backdrop so each card is judged independently.
- *
- * Two of these panels are deliberately identical apart from the lens: `FrostedOnly` is the
- * blur-and-tint material, and `Pill` adds refraction on top. Putting them next to each other is
- * the only honest way to show what the lens contributes — on its own a frosted panel already
- * looks like glass, and the difference only appears where the backdrop has structure to bend.
- */
 @Composable
 fun MaterialScreen() {
     val backdrop = rememberLayerBackdrop()
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Capture the same animated backdrop, so these panels refract the real thing.
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -126,14 +115,6 @@ private fun GlassPanel(
     }
 }
 
-/**
- * Every quantity in the material on one slider each.
- *
- * Judging glass from fixed presets is guesswork: the right values depend on the host's palette
- * and on how busy the wallpaper is. Being able to drag the refraction band and the dispersion
- * until the rim looks right is the difference between a plausible material and one that is
- * obviously a blur with a highlight drawn on it.
- */
 @Composable
 private fun LiveMaterialTuner(backdrop: LayerBackdrop) {
     var band by remember { mutableStateOf(18f) }

@@ -72,24 +72,12 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sign
 
-// =====================================================================================
-// Page enum
-// =====================================================================================
-
 enum class LiquidPage {
     Home, Glass, Log, About
 }
 
-// =====================================================================================
-// Scale local for tab press feedback
-// =====================================================================================
-
 internal val LocalLiquidBottomTabScale =
     staticCompositionLocalOf { { 1f } }
-
-// =====================================================================================
-// LiquidBottomTab — single tab button, 1:1 from kyant0
-// =====================================================================================
 
 @Composable
 fun RowScope.LiquidBottomTab(
@@ -119,10 +107,6 @@ fun RowScope.LiquidBottomTab(
         content = content
     )
 }
-
-// =====================================================================================
-// GlassBottomBar — 1:1 alignment with kyant0 LiquidBottomTabs
-// =====================================================================================
 
 @Composable
 fun GlassBottomBar(
@@ -166,10 +150,6 @@ fun GlassBottomBar(
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
 
-        // The state object must survive page switches: the drag callbacks and the
-        // selection flow capture it once. Keying it on the enum value replaced the
-        // whole state on every switch, so the flow went on watching a dead copy —
-        // the first tap after launch was the last one that ever moved the indicator.
         var currentIndex by remember {
             mutableIntStateOf(pages.indexOf(currentPage).coerceAtLeast(0))
         }
@@ -235,10 +215,6 @@ fun GlassBottomBar(
             )
         }
 
-        // Single content declaration shared by all three layers, following the
-        // original three-layer tabs: Layer1 renders it in neutral ink, Layer2
-        // records a tinted copy into tabsBackdrop, and Layer3's glass capsule
-        // reveals the tinted copy through the combined backdrop.
         val tabContent: @Composable RowScope.() -> Unit = {
             pages.forEach { page ->
                 LiquidBottomTab(
@@ -272,7 +248,6 @@ fun GlassBottomBar(
             }
         }
 
-        // --- Layer 1: Outer container glass ---
         Row(
             Modifier
                 .graphicsLayer {
@@ -308,7 +283,6 @@ fun GlassBottomBar(
             content = tabContent,
         )
 
-        // --- Layer 2: Hidden accent layer ---
         CompositionLocalProvider(
             LocalLiquidBottomTabScale provides {
                 lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
@@ -355,7 +329,6 @@ fun GlassBottomBar(
             )
         }
 
-        // --- Layer 3: Active tab indicator ---
         Box(
             Modifier
                 .padding(horizontal = 4f.dp)

@@ -66,7 +66,6 @@ import com.kyant.capsule.ContinuousRoundedRectangle
 import com.kyant.shapes.Capsule
 import java.util.Locale
 
-/** Palette, shapes and shared settings-row components for the config UI. */
 object LiquidColors {
     val blue = Color(0xFF007AFF)
     val lightBg = Color(0xFFFFFFFF)
@@ -108,11 +107,6 @@ fun separatorColor(): Color = if (isDark()) LiquidColors.darkSeparator else Liqu
 @Composable
 fun surfaceColor(): Color = if (isDark()) LiquidColors.darkSurface else LiquidColors.lightSurface
 
-/**
- * A glass card: continuous-corner surface that samples the backdrop behind
- * it for real frosted glass when hardware acceleration is available, falling
- * back to a translucent solid surface otherwise.
- */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
@@ -127,14 +121,6 @@ fun GlassCard(
     )
 }
 
-/**
- * Grouped settings section with a section header and card body.
- *
- * The collapse is animated on both axes: the body expands with a spring rather than
- * appearing instantly, and the disclosure chevron sweeps 180° on the same spring so the
- * header and the body read as one gesture. Content fades in slightly *after* the height
- * starts moving, which stops text from popping into a half-open card.
- */
 @Composable
 fun SettingSection(
     title: String,
@@ -148,8 +134,6 @@ fun SettingSection(
     var expanded by remember(title) { mutableStateOf(initiallyExpanded) }
     val visible = !collapsible || expanded
 
-    // A pressed-state scale on the header, so tapping the title has tactile feedback even
-    // though the row has no ripple (the glass surface would look wrong with one).
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val headerScale by animateFloatAsState(
@@ -201,9 +185,7 @@ fun SettingSection(
         }
         AnimatedVisibility(
             visible = visible,
-            // expandVertically/shrinkVertically default to an IntSize spring, which is exactly
-            // what a section body wants. Passing a hand-built spring here would force the
-            // IntSize type parameter to be spelled out at every call site for no gain.
+
             enter = expandVertically(expandFrom = Alignment.Top) +
                     fadeIn(animationSpec = tween(durationMillis = 170, delayMillis = 55)),
             exit = shrinkVertically(shrinkTowards = Alignment.Top) +
@@ -227,13 +209,6 @@ fun SettingSection(
     }
 }
 
-/**
- * A tappable settings row.
- *
- * A press dims and very slightly shrinks the row, which is the closest a list row can get to
- * a button without a ripple. The motion is short and fully settled before a finger lifts in
- * the common case, so it reads as "this responded" rather than as an animation.
- */
 @Composable
 fun SettingRow(
     title: String,
@@ -299,17 +274,6 @@ fun SettingDivider(modifier: Modifier = Modifier) {
     )
 }
 
-/**
- * Page transition for the dashboard.
- *
- * The four pages used to be a bare `when`, so switching tabs replaced the whole screen in one
- * frame while the bottom bar's capsule was still sliding — that mismatch is what made the UI
- * feel unbuilt. This fades and slides the incoming page by a few pixels from the side the tab
- * sits on, so the content follows the indicator rather than cutting to it.
- *
- * Only a few pixels of travel are used: this is a tab switch, not a stack push, and a large
- * slide would fight the bottom bar's own spring.
- */
 @Composable
 fun LiquidPageTransition(
     page: LiquidPage,
@@ -333,18 +297,11 @@ fun LiquidPageTransition(
         },
         label = "liquidPage",
     ) { current ->
-        // AnimatedContent hands the body an AnimatedContentScope receiver; the caller only
-        // wants the page value, so it is unwrapped here rather than in every call site.
+
         content(current)
     }
 }
 
-/**
- * Rounded status pill used in the page headers.
- * The colour and the text cross-fade instead of swapping instantly: a capture setting that
- * flips from "已启用" to "已停用" is the one place in the UI where the change is the whole
- * message, so it should be legible as a transition rather than as a flicker.
- */
 @Composable
 fun StatusPill(text: String, color: Color) {
     val animatedColor by animateColorAsState(
@@ -358,9 +315,7 @@ fun StatusPill(text: String, color: Color) {
             .background(animatedColor.copy(alpha = 0.14f))
             .padding(horizontal = 11.dp, vertical = 7.dp),
     ) {
-        // Crossfade keeps the pill's width from snapping when the two labels differ in length.
-        // The target state is typed explicitly: inference alone cannot pick the crossfade key
-        // type from a plain String target in this position.
+
         Crossfade(
             targetState = text,
             animationSpec = tween(durationMillis = 200),
@@ -370,13 +325,7 @@ fun StatusPill(text: String, color: Color) {
         }
     }
 }
-/**
- * The value pill that anchors a [LiquidMenuPanel]: a compact rounded chip showing the
- * current selection with a caret that rotates as the menu opens.
- *
- * Modelled on FlClash's prism-ui rows: the selected value itself is the button, so the
- * popup grows out of the thing it is changing.
- */
+
 @Composable
 fun ValuePill(
     text: String,
@@ -414,15 +363,6 @@ fun ValuePill(
     }
 }
 
-/**
- * The anchored selection menu itself: a compact rounded panel that opens from the value
- * pill with a scale-and-fade, lists the options with a fixed check slot so labels stay
- * aligned, and marks the active one with a check.
- *
- * The check slot reserves its width even when empty; without it the first unselected
- * row's text would sit further left than the selected one's, and the panel would appear
- * to lurch sideways as the selection moves.
- */
 @Composable
 fun LiquidMenuPanel(
     options: List<Pair<String, String>>,
@@ -496,11 +436,6 @@ fun LiquidMenuPanel(
     }
 }
 
-/**
- * A preference row whose selection menu is anchored to a value pill, in the style of
- * FlClash's prism-ui options rows: tapping anywhere on the row (or the pill) opens a
- * compact popup directly out of the pill rather than a full-width material dropdown.
- */
 @Composable
 fun SettingDropdownRow(
     title: String,
@@ -523,9 +458,7 @@ fun SettingDropdownRow(
                 onDismissRequest = { expanded = false },
                 properties = PopupProperties(focusable = true),
             ) {
-                // The popup composes fresh each time; AnimatedVisibility would skip the
-                // enter animation, so the panel drives a MutableTransitionState that
-                // starts false and flips true on the first composed frame.
+
                 val entrance = remember {
                     MutableTransitionState(false).apply { targetState = true }
                 }

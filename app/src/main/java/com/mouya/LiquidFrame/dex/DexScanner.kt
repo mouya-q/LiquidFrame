@@ -2,12 +2,6 @@ package com.mouya.LiquidFrame.dex
 
 import java.util.zip.ZipFile
 
-/**
- * A declared method as it appears in a DEX file.
- *
- * [params] and [returnType] are DEX type descriptors (`Landroid/graphics/Bitmap;`, `F`, `V`, ...),
- * so a full signature is `name(paramTypes)returnType` — the same shape `dexdump` prints.
- */
 class DexMethodRef(
     val name: String,
     val params: List<String>,
@@ -25,15 +19,6 @@ class DexMethodRef(
     override fun toString(): String = signature
 }
 
-/**
- * One `class_def_item` plus the members listed in its `class_data_item`.
- *
- * [instanceFieldTypes] keeps only non-static fields **in declared order**, which is what the
- * capture-record matcher depends on: it looks for the contiguous type run `S,F,J,I` and then
- * addresses the fields by that index. Obfuscators rename fields freely between camera builds
- * (6.4 used `f,g,h,i,j,k`; 6.7 uses `f,g,h,i,l,m`) but the field *order and types* survive,
- * so index-based reading is the portable access path.
- */
 class DexClass(
     val name: String,
     val superName: String?,
@@ -42,19 +27,6 @@ class DexClass(
     val instanceFieldTypes: List<String> = fieldTypes,
 )
 
-/**
- * A minimal DEX reader.
- *
- * DexKit was removed because its Kotlin metadata could not be resolved by AGP 9's built-in Kotlin
- * support, and with it went the ability to discover obfuscated camera classes — the module fell
- * back to names (`pe.o`, `Fe.a->j`) that only exist in one build of `com.android.camera`.
- *
- * This reader parses just enough of the format to recover structure (class name, superclass,
- * declared method signatures, declared field types), which is all the discovery heuristics need.
- * It is pure JVM code with no dependencies, so it cannot break the build again.
- *
- * Reference: https://source.android.com/docs/core/runtime/dex-format
- */
 class DexFile(private val data: ByteArray) {
 
     private val stringCache = HashMap<Int, String>(1024)
@@ -108,17 +80,7 @@ class DexFile(private val data: ByteArray) {
         return out
     }
 
-    // ---------------------------------------------------------------------------------------
-    // class_data_item
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * Parses a `class_data_item`.
-     *
-     * Field and method indices are stored as **deltas** and must be accumulated
-     * (`idx += diff`); assigning the raw delta yields plausible-looking but wrong members for
-     * every class after the first. Returns the non-static field types in declared order.
-     */
+    // DEX member indices are delta-encoded.
     private fun readClassData(
         off: Int,
         methods: MutableList<DexMethodRef>,
@@ -133,7 +95,7 @@ class DexFile(private val data: ByteArray) {
         var fieldIdx = 0
         for (i in 0 until staticFields) {
             fieldIdx += uleb(c)
-            uleb(c) // access flags
+            uleb(c)
         }
         fieldIdx = 0
         val instanceTypes = ArrayList<String>(instanceFields)
@@ -151,7 +113,7 @@ class DexFile(private val data: ByteArray) {
         for (i in 0 until directMethods) {
             methodIdx += uleb(c)
             val access = uleb(c)
-            uleb(c) // code_off
+            uleb(c)
             methodRef(methodIdx, access)?.let { methods.add(it) }
         }
         methodIdx = 0
@@ -206,10 +168,6 @@ class DexFile(private val data: ByteArray) {
         return out
     }
 
-    // ---------------------------------------------------------------------------------------
-    // primitives
-    // ---------------------------------------------------------------------------------------
-
     private fun typeName(typeIdx: Int): String {
         val p = typeIdsOff + typeIdx * 4
         if (p + 4 > data.size) return "?"
@@ -228,10 +186,9 @@ class DexFile(private val data: ByteArray) {
         return s
     }
 
-    /** `string_data_item`: uleb128 utf16 length, then modified UTF-8, then a NUL. */
     private fun readString(off: Int): String? {
         val c = Cursor(off)
-        uleb(c) // utf16 length, unused
+        uleb(c)
         val sb = StringBuilder(32)
         var p = c.p
         while (p < data.size) {
@@ -289,7 +246,6 @@ class DexFile(private val data: ByteArray) {
     }
 }
 
-/** Structural shapes the watermark pipeline is recognised by. */
 object DexScan {
 
     const val BITMAP = "Landroid/graphics/Bitmap;"
@@ -304,75 +260,32 @@ object DexScan {
     const val LONG = "J"
     const val SHORT = "S"
 
-    /** `Lpe/o;`-style wrapper: new(Bitmap), holds a Canvas, draws rects with a Paint. */
     val DRAW_RECT_PARAMS = listOf(FLOAT, FLOAT, FLOAT, FLOAT, PAINT)
 
-    /**
-     * `LFe/a;->j`-style composite (6.7.x): static, takes the photo Bitmap, returns the merged Bitmap.
-     * Full signature: (Bitmap, ColorSpace, I, I, String, I) -> Bitmap
-     */
     val COMPOSITE_PARAMS_67 = listOf(BITMAP, COLOR_SPACE, INT, INT, STRING, INT)
 
-    /**
-     * `LCd/a;->i`-style composite (6.2.x): static, takes the photo Bitmap, returns the merged Bitmap.
-     * Full signature: (Cd/a, Bitmap, ColorSpace, I) -> Bitmap
-     * The first parameter is the composite's own type (self-reference), not in the 6.7.x signature.
-     */
     val COMPOSITE_PARAMS_62 = listOf(BITMAP, COLOR_SPACE, INT)
 
     class Found {
-        /** Class names of candidate canvas wrappers, most specific first. */
+
         val canvasWrappers = LinkedHashSet<String>()
 
-        /** Class names of candidate composite holders. */
         val compositeClasses = LinkedHashSet<String>()
 
-        /**
-         * Classes whose instance fields contain the capture-metadata type run `S,F,J,I`
-         * (focal, aperture, exposure-ns, iso) followed by a `J` and a `Location`.
-         *
-         * This is the portable stand-in for the 6.4 `la/a` record: the letters change between
-         * builds, the type sequence does not.
-         */
         val captureRecords = LinkedHashSet<String>()
 
-        /** Class name → the record's own type descriptor, for receiver matching. */
         val captureRecordTypes = LinkedHashMap<String, String>()
 
-        /** Class name → field-index plan resolved while scanning, so lookups stay allocation-free. */
         val recordClassesFirstPlan = LinkedHashMap<String, RecordPlan>()
 
-        /**
-         * Methods shaped `f(<record>, Z, I)` — the call that wraps the whole watermark encode.
-         *
-         * 6.4: `E5/b.h(la/a, Z, I) -> la/f`
-         * 6.7: `W8/d.f(Ki/a, Z, I) -> Ki/f`
-         *
-         * Stored as (declaring class, method name, parameter count) so the runtime side can
-         * resolve it with one `Class.forName` instead of enumerating the class loader.
-         */
         val captureReceivers = ArrayList<CaptureReceiver>()
 
-        /**
-         * `Lgi/e;`-style data-holder interface candidates: zero-arg methods returning
-         * `Z`, `InputStream`, `[B`, `I` and `V`. The byte-array implementation has the same
-         * shape, so the final interface is resolved by the task-class cross-check in
-         * [matchDeepTargets]: only the real interface is used as both `(L<iface>;)V`
-         * (setJpegData) and `(L<iface>;I)V` (fillJpegData) by the parallel-task-data class.
-         */
         val dataInterfaceCandidates = LinkedHashSet<String>()
 
-        /** `Lgi/a;`-style byte[] implementation: `([B)V` ctor, `[B` instance field, `()InputStream`. */
         val byteDataImpls = LinkedHashSet<String>()
 
-        /**
-         * Everything the deep adaptation needs, resolved across every dex by [matchDeepTargets].
-         */
         val deepTargets = DeepTargets()
 
-        /**
-         * Adds a receiver once, keyed by owner#method, so the two-pass scan cannot duplicate.
-         */
         fun addReceiver(receiver: CaptureReceiver) {
             if (captureReceivers.none { it.owner == receiver.owner && it.method == receiver.method }) {
                 captureReceivers.add(receiver)
@@ -380,22 +293,6 @@ object DexScan {
         }
     }
 
-    /**
-     * Deep targets for the 6.6+/6.7+ post-capture pipeline, where the final file is
-     * finished by the native MIVI engine and re-landed as JPEG bytes onto the parallel
-     * task data after the Java watermark tasks already ran.
-     *
-     * All names are obfuscated per build, so every entry is resolved structurally:
-     *  - [dataInterface]  — `gi.e`: the jpeg-data holder (`c()[B` reads the bytes).
-     *  - [byteDataImpl]   — `gi.a`: `([B)V` constructor to wrap patched bytes.
-     *  - [taskDataClass]  — `di.s`: holds the jpegData field; [taskJpegSetter] is
-     *                      `r(gi.e)V` (setJpegData) and [taskJpegFiller] is `a(gi.e, I)V`
-     *                      (fillJpegData — the ~2 s native result lands here).
-     *  - [bitmapEncodeHelpers] — `Wr.j.k(I, Bitmap)gi.e`: encodes a (glass) bitmap.
-     *  - [recorderSnapshots] — `Rm.b.o(I, Rm.y, Object, I, Z, Z, String, Z, I)Z`:
-     *                      live-photo snapshot; the String at index 6 is the watermark id
-     *                      the recorder burns into the recorded video.
-     */
     class DeepTargets {
         var dataInterface: String? = null
         var byteDataImpl: String? = null
@@ -408,27 +305,13 @@ object DexScan {
         fun isResolvable(): Boolean = dataInterface != null
     }
 
-    /** A structurally-resolved method: the declaring class plus its (obfuscated) name. */
     data class MethodTarget(
         val owner: String,
         val method: String,
     )
 
-    /**
-     * The fingerprint of a capture-metadata record, in field *declaration order*.
-     *
-     * focal(S), aperture(F), exposure-nanoseconds(J), iso(I). 6.4 spelled these `f,g,h,i`;
-     * 6.7 spells them `f,g,h,i` too, but the fields that follow them moved (`j,k` → `l,m`),
-     * which is exactly why the reader addresses them by type-run index rather than by name.
-     */
     val CAPTURE_RUN = listOf("S", "F", "J", "I")
 
-    /**
-     * Scans every `classes*.dex` inside [archives] and collects structural candidates.
-     *
-     * Dexes are read one at a time and released immediately, so peak memory stays at one dex even
-     * for the camera's six-dex 200 MB APK.
-     */
     fun scan(archives: List<String>): Found {
         val found = Found()
         for (archive in archives) {
@@ -453,24 +336,12 @@ object DexScan {
                 android.util.Log.w("LiquidFrame", "DexScanner: archive $archive unreadable: ${t.javaClass.simpleName}: ${t.message}")
             }
         }
-        // The record and the method that consumes it can live in different dex files (6.7 puts
-        // the record in classes5 and the receiver in classes4), so receivers are matched in a
-        // second pass once every record is known.
+
         matchCaptureReceivers(archives, found)
         matchDeepTargets(archives, found)
         return found
     }
 
-    /**
-     * Second pass: resolve the deep 6.6+/6.7+ pipeline targets now that every dex has been
-     * scanned once and the data-interface candidates are all known.
-     *
-     * The parallel-task-data class is the pivot: it is the only class that references a
-     * data interface both as `(L<iface>;)V` (setJpegData) and `(L<iface>;I)V` (fillJpegData)
-     * *and* has a `com/xiaomi/cam/watermark/WatermarkRemover$b` parameter somewhere — that
-     * triple conjunction pins both the interface and the task class, verified unique on
-     * 6.7.000480.0 (`gi.e` + `di.s`).
-     */
     private fun matchDeepTargets(archives: List<String>, found: Found) {
         val ifaceCandidates = found.dataInterfaceCandidates
         if (ifaceCandidates.isEmpty()) return
@@ -510,14 +381,13 @@ object DexScan {
                                     }
                                 }
                             }
-                            // `k(I, Bitmap)gi.e`-style encoders, recorded for any candidate
-                            // interface and filtered down to the resolved one afterwards.
+
                             for (m in cls.methods) {
                                 if (m.returnType !in ifaceCandidates) continue
                                 if (m.params != listOf(INT, BITMAP)) continue
                                 found.deepTargets.bitmapEncodeHelpers.add(MethodTarget(cls.name, m.name))
                             }
-                            // `o(I, Rm.y, Object, I, Z, Z, String, Z, I)Z` live-photo snapshot.
+
                             for (m in cls.methods) {
                                 if (m.params.size != 9) continue
                                 if (m.params[2] != "Ljava/lang/Object;") continue
@@ -536,20 +406,11 @@ object DexScan {
                 android.util.Log.w("LiquidFrame", "DexScanner: deep pass failed on $archive: ${t.javaClass.simpleName}")
             }
         }
-        // The byte-array impl that wraps patched jpeg bytes.
+
         found.deepTargets.byteDataImpl = found.byteDataImpls.firstOrNull()
-        // Encode helpers were recorded against every interface candidate; the runtime hook
-        // re-checks each method's actual return type when it loads the class, so a helper
-        // against a sibling candidate simply fails the check and stays inert.
+
     }
 
-    /**
-     * Second pass: find `f(<record>, Z, I)` now that the record types are known.
-     *
-     * A separate pass is required rather than convenience: within one dex file the record may
-     * be defined after the class that consumes it, and the record set is only complete once all
-     * dex files have been scanned.
-     */
     private fun matchCaptureReceivers(archives: List<String>, found: Found) {
         if (found.captureRecords.isEmpty()) return
         val recordTypes = found.captureRecordTypes.values.toHashSet()
@@ -596,7 +457,7 @@ object DexScan {
             if (hasComposite(cls)) found.compositeClasses.add(cls.name)
             if (isCaptureRecord(cls)) {
                 found.captureRecords.add(cls.name)
-                // DEX type descriptor form: Lcom/...; — callers see it in proto type lists.
+
                 found.captureRecordTypes[cls.name] = cls.name
                 recordPlan(cls.instanceFieldTypes)?.let { found.recordClassesFirstPlan[cls.name] = it }
             }
@@ -605,37 +466,25 @@ object DexScan {
         }
     }
 
-    /**
-     * `Lgi/e;`-style holder: five zero-arg methods returning `Z`, `InputStream`, `[B`, `I`, `V`.
-     *
-     * The byte[] implementation has the same method shapes, so it is excluded here and
-     * recorded separately by [isByteDataImpl]; the ByteBuffer implementation stays a
-     * candidate because the task-class cross-check in [matchDeepTargets] eliminates it.
-     */
     private fun isDataInterfaceCandidate(cls: DexClass): Boolean {
         val zeroArgReturns = cls.methods.asSequence()
             .filter { it.params.isEmpty() }
             .map { it.returnType }
             .toSet()
         if (!setOf("Z", INPUT_STREAM, BYTE_ARRAY, INT, VOID).all { it in zeroArgReturns }) return false
-        // The byte[] impl is not the interface itself.
+
         if (cls.methods.any { it.isConstructor && it.params == listOf(BYTE_ARRAY) } &&
             cls.instanceFieldTypes.contains(BYTE_ARRAY)
         ) return false
         return true
     }
 
-    /** `Lgi/a;`-style impl: `([B)V` constructor, `[B` instance field, `()InputStream` method. */
     private fun isByteDataImpl(cls: DexClass): Boolean {
         val hasBCtor = cls.methods.any { it.isConstructor && it.params == listOf(BYTE_ARRAY) }
         if (!hasBCtor || !cls.instanceFieldTypes.contains(BYTE_ARRAY)) return false
         return cls.methods.any { it.params.isEmpty() && it.returnType == INPUT_STREAM }
     }
 
-    /**
-     * A canvas wrapper is recognised by the conjunction of all three traits, which is what keeps
-     * the heuristic from matching unrelated drawing helpers.
-     */
     private fun isCanvasWrapper(cls: DexClass): Boolean {
         var hasBitmapCtor = false
         var hasDrawRect = false
@@ -646,42 +495,15 @@ object DexScan {
         return hasBitmapCtor && hasDrawRect && cls.fieldTypes.contains(CANVAS)
     }
 
-    /**
-     * A composite is recognised by: takes a Bitmap parameter, and either
-     * returns a Bitmap (6.2.x/6.7.x style — both static and instance) or returns a wrapper
-     * object whose name contains "WatermarkRemover" (6.4.x style — `Fe/a->j` returns
-     * `WatermarkRemover$b` instead of the raw Bitmap). The ColorSpace parameter was dropped in
-     * 6.4.x, so requiring it would miss the new signature entirely.
-     *
-     * Note: 6.7.x changed the watermark factory from static to instance method; this matcher
-     * no longer requires `isStatic` to accommodate that change.
-     */
     private fun hasComposite(cls: DexClass): Boolean =
         cls.methods.any { m ->
             BITMAP in m.params &&
             (m.returnType == BITMAP || m.returnType.contains("WatermarkRemover"))
         }
 
-    /**
-     * A capture-metadata record: instance fields containing the contiguous run
-     * `S,F,J,I` (focal, aperture, exposure-ns, iso), a later `J` (capture time)
-     * and a later `Location` (GPS).
-     *
-     * Verified unique on both known builds:
-     *   6.4 → la/a (fields f,g,h,i + j:J + k:Location)
-     *   6.7 → Ki/a (fields f,g,h,i + l:J + m:Location)
-     */
     private fun isCaptureRecord(cls: DexClass): Boolean =
         recordPlan(cls.instanceFieldTypes) != null
 
-    /**
-     * Locates the metadata fields inside a record's instance-field type list.
-     *
-     * Returns indices into the instance field list (declaration order), or null when
-     * the class is not a record. Anchoring on the contiguous `S,F,J,I` run — rather
-     * than "first int", which 6.7 breaks by placing an unrelated `I` at index 2 —
-     * is what keeps the mapping stable across builds.
-     */
     fun recordPlan(instanceTypes: List<String>): RecordPlan? {
         if (instanceTypes.isEmpty() || instanceTypes.size > MAX_RECORD_FIELDS) return null
         for (anchor in 0..instanceTypes.size - CAPTURE_RUN.size) {
@@ -707,7 +529,6 @@ object DexScan {
         return null
     }
 
-    /** Field indices (into the instance field list in declared order) for a capture record. */
     data class RecordPlan(
         val focal: Int,
         val aperture: Int,
@@ -717,7 +538,6 @@ object DexScan {
         val location: Int,
     )
 
-    /** A method shaped `f(<record>, Z, I)`, resolved structurally from the DEX. */
     data class CaptureReceiver(
         val owner: String,
         val method: String,

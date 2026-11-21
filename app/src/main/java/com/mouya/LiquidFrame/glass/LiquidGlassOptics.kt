@@ -5,78 +5,22 @@ import kotlin.math.hypot
 import kotlin.math.pow
 import kotlin.math.sqrt
 
-/**
- * The liquid glass optics, with no Android dependency at all.
- *
- * Everything here is a faithful port of the reference renderer (Apache-2.0,
- * attributed in the `NOTICE` file), which runs as an AGSL
- * `RuntimeShader` on Android 13+. A camera watermark, however, is produced while the camera
- * app composites a JPEG: there is no hardware-accelerated canvas and no live view hierarchy
- * to reflect, so the same optics are reproduced here on integer pixel buffers.
- *
- * The port keeps the reference math unchanged where it defines the look:
- *
- *  - `sdRoundedRect` / `gradSdRoundedRect` are the reference's own SDF and gradient;
- *  - the displacement profile is `circleMap(1 - -sd / refractionHeight)` times a *negative*
- *    amount, so the backdrop is pulled inwards and the panel magnifies what is behind it;
- *  - the normal is `normalize(gradSdRoundedRect(c, halfSize, min(1.5r, minHalf))
- *    + depthEffect * normalize(c))`;
- *  - chromatic aberration is the reference's seven-tap R/O/Y/G/C/B/P spectrum with its
- *    per-channel divisors (1/3.5 dominant, 1/3.0 for pure red and blue, 1/7.0 cross-talk);
- *  - `vibrancy()` is the reference's saturation colour matrix (1.5, luma 0.213/0.715/0.072);
- *  - the effect order is the documented one: colour filter, then blur, then lens.
- *
- * Two things are modelled rather than copied, because the reference expresses them as
- * drawing operations rather than as shader code:
- *
- *  - the rim highlight is the reference's `Highlight` modifier: a white **stroke** of
- *    `0.5.dp` on the shape outline, blurred by half that width, composited with
- *    `BlendMode.Plus`. Here that is an analytic Gaussian band around the outline plus the
- *    modifier's directional weighting.
- *  - the inner shadow is the reference's recorded layer: the shape filled with the shadow
- *    colour, the *offset* shape cleared out of it, then blurred. Here that is a smoothstep
- *    band along the offset contour.
- */
 object LiquidGlassOptics {
 
-    /**
-     * Alpha at or below which a pixel is glass whatever its colour. The glass layer is a
-     * white veil the app draws at low alpha, so it cannot be told from a white label by
-     * colour alone; alpha is the reliable discriminator.
-     */
     private const val GLASS_ALPHA_MAX = 40
 
-    /** Alpha at or above which a pixel is a label, icon or other opaque detail. */
     private const val GLYPH_ALPHA_MIN = 200
 
-    /** Mid-alpha achromatic brightness above which a pixel is a white veil, not a label. */
     private const val VEIL_CHROMA_MAX = 18
 
-    /**
-     * How far a panel pixel's luminance may sit from the panel's dominant tone before it counts
-     * as the camera's own content. Wide enough to absorb the noise a baked blur in the panel
-     * background introduces, narrow enough to catch a label.
-     */
     private const val CONTENT_LUMA_DELTA = 26f
 
-    /** Chroma above which a panel pixel is content whatever its luminance. */
     private const val CONTENT_CHROMA_MAX = 34
 
-    /**
-     * Share of a panel's pixels that must sit at its dominant tone before the panel counts as a
-     * flat baked background. Below this the panel is photographic, so there is no background to
-     * separate labels from.
-     */
     private const val FLAT_PANEL_UNIFORMITY = 0.55f
 
-    /** Backdrop crop padding, as a fraction of the refraction band. */
     private const val CROP_PAD_FACTOR = 2.2f
 
-    /**
-     * Minimum pixels required around a panel for its strongest configured refraction and blur.
-     * Both the renderer's inner crop and the camera hook's outer bitmap crop use this helper;
-     * otherwise the outer crop can truncate the very pixels the lens later asks for.
-     */
     fun requiredPanelPaddingPx(panel: PanelRect, params: GlassParams = GlassParams.Default): Int {
         val shortSide = minOf(panel.width, panel.height)
         val maxBand = maxOf(1f, shortSide * 0.55f)
@@ -93,24 +37,6 @@ object LiquidGlassOptics {
         return maxOf(band * CROP_PAD_FACTOR, displacement + band, blurRadius * 3f).toInt() + 2
     }
 
-    /**
-     * Renders a rounded liquid-glass panel into a local photo-pixel buffer.
-     *
-     * The active camera path supplies a crop from the clean source photo and calls this with
-     * `panelIsOpaquePlate = false`; the capsule is a new overlay, not a stock watermark plate.
-     * The same renderer remains usable by the legacy post-composite path, where an opaque plate
-     * may be supplied and `panelIsOpaquePlate` can be true.
-     *
-     * @param pixels straight ARGB, width * height, modified in place
-     * @param panel  panel geometry in bitmap pixels
-     * @param panelIsOpaquePlate true when the pixels inside the panel are the camera's own baked
-     *        background sheet rather than the photograph. When true and the panel turns out to be
-     *        flat, the interior is re-sourced from the photo above it so the glass refracts the
-     *        scene instead of the plate. Callers that draw the glass straight onto an unmodified
-     *        photograph (the in-app preview) pass false, because there the panel's pixels already
-     *        are the scene.
-     * @return a short outcome description for the module log
-     */
     fun renderPanel(
         pixels: IntArray,
         width: Int,
@@ -128,10 +54,7 @@ object LiquidGlassOptics {
         if (pixels.size < width * height) return "skip: pixel buffer too small"
 
         val shortSide = minOf(panel.width, panel.height)
-        // The caller's radius wins. A finished camera JPEG is fully opaque, so a silhouette
-        // measurement can never see a corner in it — `measureCornerRadius` would silently fall
-        // back to 0.3 x shortSide and round the capsule off. Measurement is kept only for the
-        // case where no radius was supplied at all.
+
         val radius = if (panel.cornerRadiusPx > 0f) {
             panel.cornerRadiusPx.coerceIn(0f, shortSide * 0.5f)
         } else {
@@ -146,17 +69,10 @@ object LiquidGlassOptics {
         val amount = band * amountFraction
         val blurRadius = blurFraction * band
 
-        // The camera may bake either a flat colour or a blurred copy of the photo into the
-        // panel. A flat panel is one the labels were drawn onto, so they can be recognised and
-        // kept; a photographic panel has no flat tone to compare against, and its own texture
-        // is what makes the lens readable, so nothing is preserved and nothing needs to be.
         val tone = measurePanelTone(pixels, width, panel)
         val preserveContent =
             panelIsOpaquePlate && params.preserveContent && tone.uniformity >= FLAT_PANEL_UNIFORMITY
 
-        // The lens samples a crop large enough for both the refraction displacement and blur
-        // kernel. Previously the crop only followed band * 2.2, while the public amount slider
-        // permits up to 4x that band; samples therefore clamped at the crop edge at high values.
         val pad = requiredPanelPaddingPx(panel, params)
         val cropLeft = (panel.left.toInt() - pad).coerceAtLeast(0)
         val cropTop = (panel.top.toInt() - pad).coerceAtLeast(0)
@@ -166,9 +82,6 @@ object LiquidGlassOptics {
         val ch = cropBottom - cropTop
         if (cw <= 0 || ch <= 0) return "skip: empty crop"
 
-        // Keep the label/antialias mask crop-local. A full-resolution FloatArray costs
-        // 4 bytes per photo pixel (48 MB at 12 MP) even though only the watermark crop is
-        // processed. Local indices stay aligned with the backdrop buffer below.
         val content = if (preserveContent) FloatArray(cw * ch) else null
         var preserved = 0
         if (content != null) {
@@ -189,8 +102,7 @@ object LiquidGlassOptics {
                 }
             }
         }
-        // The crop holds the finished composite: the real scene everywhere except inside the
-        // panel rectangle, which the camera filled with its own opaque plate.
+
         val backdrop = IntArray(cw * ch)
         for (y in 0 until ch) {
             System.arraycopy(pixels, (cropTop + y) * width + cropLeft, backdrop, y * cw, cw)
@@ -199,9 +111,7 @@ object LiquidGlassOptics {
         val photo = photoBackdrop
         val hasPhoto = photo != null && photoW > 0 && photoH > 0
         if (hasPhoto) {
-            // Ground truth: the source photograph replaces the plate interior with the true
-            // scene. The block normally covers the whole crop (photoLeft/Top = 0, photoW/H =
-            // cw/ch); the intersection math below also handles a smaller block.
+
             val interLeft = maxOf(0, photoLeft)
             val interTop = maxOf(0, photoTop)
             val interRight = minOf(cw, photoLeft + photoW)
@@ -219,24 +129,12 @@ object LiquidGlassOptics {
                 }
             }
         } else if (panelIsOpaquePlate && tone.uniformity >= FLAT_PANEL_UNIFORMITY) {
-            // Last resort only: no source photograph is available and the panel is a flat
-            // baked plate. Reconstruct the interior from the rows above the panel so the
-            // lens has scene to refract. This is the single path that can produce mirrored
-            // content, so it must stay gated behind the absence of a real photograph.
+
             mirrorInteriorFromAbove(backdrop, cw, ch, cropLeft, cropTop, panel, radius)
         }
 
-
-
-        // The source watermark asset may already contain blur, so the configured radius is
-        // intentionally conservative. Apply it consistently across the glass interior rather
-        // than only outside the refraction band; an abrupt blurred/sharp ring is more visible
-        // than a slightly stronger, uniform frost.
         if (blurRadius >= 0.5f) {
-            // Blur the complete glass interior. Only the first ~1–3 px at the silhouette
-            // are feathered for antialiasing; the previous band-based mix made blur fall to
-            // zero at the inner refraction boundary and then jump back to full, leaving a
-            // visible sharp ring across the panel.
+
             val interior = backdrop.copyOf()
             val blurred = blurInPlace(interior, cw, ch, blurRadius)
             val edgeFade = maxOf(1f, minOf(3f, band * 0.12f))
@@ -252,10 +150,7 @@ object LiquidGlassOptics {
                         val blurredPx = blurred[y * cw + x]
                         backdrop[y * cw + x] = blend(orig, blurredPx, mix)
                     }
-                    // sd >= 0: outside the silhouette - the photo around the panel stays
-                    // sharp for the rim sampling. The padding zone is only ever seen
-                    // through the lens, and the lens now blends blurred content into it,
-                    // so no sharp/blurry seam can appear inside the visible capsule.
+
                 }
             }
         }
@@ -273,14 +168,11 @@ object LiquidGlassOptics {
         val surfaceAlpha = (params.surfaceAlpha * adapt).coerceIn(0f, 1f)
         val interiorLift = params.interiorLift * adapt
         val highlightGain = (params.highlightGain / adapt).coerceIn(0.4f, 2.2f)
-        // The inner shadow was removed: on a flat capsule it read as a grey slab in the lower
-        // half, and the camera's own baked plate plus the rim highlight already give the
-        // capsule its depth. Its parameters are still carried so an old config file that still
-        // sets `inner_shadow_alpha` loads without error, but they no longer affect rendering.
+
         val gradRadius = minOf(radius * 1.5f, shortSide * 0.5f)
 
         var written = 0
-        // Pixels of the camera's plate erased from the four corners outside the capsule.
+
         var erasedCorners = 0
         for (y in 0 until ch) {
             val gy = cropTop + y
@@ -290,17 +182,10 @@ object LiquidGlassOptics {
                 val px = gx + 0.5f
                 val i = y * cw + x
 
-                // Antialiased silhouette from the measured corner radius. Outside it the photo
-                // is already correct and is left alone.
                 val sd = sdRoundedRect(px, py, panel, radius)
                 val coverage = (0.5f - sd).coerceIn(0f, 1f)
                 if (coverage <= 0.001f) continue
 
-                // The camera's own labels are drawn over the material, untouched. A label's
-                // antialiased edge pixel only *partly* belongs to the label, so the glass
-                // shows through by exactly the amount the pixel is not label: a hard mask
-                // here ate the soft edge and the glyphs grew visible jaggies against the
-                // frosted interior.
                 val keep = content?.get(i) ?: 0f
                 if (keep >= 0.999f) continue
 
@@ -316,7 +201,7 @@ object LiquidGlassOptics {
                 var cb: Float
 
                 if (-sd >= band) {
-                    // Interior, past the lens: the frosted backdrop passes through.
+
                     val c = sampleRegion(backdrop, cw, ch, cropLeft, cropTop, px, py)
                     cr = ((c shr 16) and 0xFF).toFloat()
                     cg = ((c shr 8) and 0xFF).toFloat()
@@ -330,8 +215,7 @@ object LiquidGlassOptics {
                         grad[0] + params.depthEffect * nx,
                         grad[1] + params.depthEffect * ny,
                     )
-                    // The reference sends a negative amount; the panel here sits over the
-                    // photo, so pulling the backdrop inwards magnifies it the same way.
+
                     val dx = -d * normal[0]
                     val dy = -d * normal[1]
 
@@ -368,8 +252,7 @@ object LiquidGlassOptics {
                     cg = lerp(cg, 255f, surfaceAlpha)
                     cb = lerp(cb, 255f, surfaceAlpha)
                 }
-                // Apple's material keeps a faint frosted lift across the whole panel; without
-                // it a bright photo swallows white watermark labels.
+
                 if (interiorLift > 0.05f) {
                     cr += interiorLift; cg += interiorLift; cb += interiorLift
                 }
@@ -391,8 +274,7 @@ object LiquidGlassOptics {
                 val glass = pack(255, cr, cg, cb)
                 val dst = gy * width + gx
                 pixels[dst] = if (keep > 0.001f) {
-                    // The pixel is partly the camera's label: keep that share of the
-                    // camera's own pixel and let the material show through the rest.
+
                     blend(pixels[dst], glass, coverage * (1f - keep))
                 } else if (coverage >= 0.999f) {
                     glass
@@ -403,27 +285,9 @@ object LiquidGlassOptics {
             }
         }
 
-        // THE WHITE RING, second half of the fix.
-        //
-        // The loop above skips every pixel whose coverage is zero — i.e. the four corners
-        // *outside* the rounded silhouette. Those pixels are inside the panel rectangle, so they
-        // still hold whatever the camera baked there: a near-white plate. They are also inside
-        // the crop, and `mirrorInteriorFromAbove` has just replaced them with real scene content
-        // in `backdrop` — but nothing ever copied `backdrop` back into `pixels`. So the glass
-        // capsule sat on a clean scene, surrounded by four white corner wedges of the original
-        // plate. That is the ring the user reported as "液态玻璃还是叠加在原来的白色背景上的".
-        //
-        // Writing the mirrored scene back over the whole panel rectangle removes the plate
-        // completely: inside the silhouette the loop above already composited glass over exactly
-        // this content, and outside it the corners now carry scene instead of baked white. The
-        // result is that nothing of the camera's own background survives, while its labels —
-        // which are drawn into `pixels` by the camera and skipped by the `content` mask — are
-        // still exactly where the camera put them.
         if (panelIsOpaquePlate && (hasPhoto || tone.uniformity >= FLAT_PANEL_UNIFORMITY)) {
             var cleared = 0
-            // Only clear the corners inside the camera's original rectangular plate.
-            // Iterating the entire padded crop used to visit tens of thousands of pixels
-            // outside the watermark that were already identical, wasting time on every shot.
+
             val clearLeft = maxOf(panel.left.toInt(), cropLeft, 0)
             val clearTop = maxOf(panel.top.toInt(), cropTop, 0)
             val clearRight = minOf(panel.right.toInt(), cropRight, width)
@@ -434,11 +298,9 @@ object LiquidGlassOptics {
                 val localRow = y * cw
                 for (gx in clearLeft until clearRight) {
                     val sd = sdRoundedRect(gx + 0.5f, gy + 0.5f, panel, radius)
-                    if (sd <= 0.5f) continue  // inside the capsule: already glass
+                    if (sd <= 0.5f) continue
                     val index = row + gx
-                    // Never touch the camera's own labels, wherever they are. A soft
-                    // mask value means an antialiased edge: clear the plate out from
-                    // under it proportionally, keeping the label's own share.
+
                     val keep = content?.get(localRow + gx - cropLeft) ?: 0f
                     if (keep >= 0.999f) continue
                     val scene = backdrop[localRow + gx - cropLeft]
@@ -456,14 +318,6 @@ object LiquidGlassOptics {
                 "u=${fmt(tone.uniformity)} tone=${tone.tone.toInt()} adapt=${fmt(adapt)}"
     }
 
-    /**
-     * The panel's dominant tone, as luminance.
-     *
-     * The camera bakes the panel background as an almost flat colour (it is a pre-rendered
-     * WebP, optionally with a blur baked in), so the histogram of the panel region is dominated
-     * by that one tone. Taking the median therefore recovers the background, and the labels are
-     * whatever stands away from it.
-     */
     private fun measurePanelTone(pixels: IntArray, width: Int, panel: PanelRect): PanelTone {
         val imageHeight = pixels.size / width
         val left = panel.left.toInt().coerceAtLeast(0)
@@ -494,7 +348,6 @@ object LiquidGlassOptics {
         var best = 0
         for (i in bins.indices) if (bins[i] > bins[best]) best = i
 
-        // Centroid over the winning bin and its neighbours, for sub-bin accuracy.
         var weighted = 0
         var weight = 0
         for (i in maxOf(0, best - 1)..minOf(63, best + 1)) {
@@ -503,8 +356,6 @@ object LiquidGlassOptics {
         }
         val tone = if (weight == 0) 128f else (weighted.toFloat() / weight) * 4f + 2f
 
-        // Share of the panel that actually sits at that tone. A flat baked background scores
-        // high; a photographic one is spread across the histogram and scores low.
         val near = ((tone - CONTENT_LUMA_DELTA).toInt() shr 2).coerceIn(0, 63)
         val far = ((tone + CONTENT_LUMA_DELTA).toInt() shr 2).coerceIn(0, 63)
         var nearCount = 0
@@ -513,19 +364,8 @@ object LiquidGlassOptics {
         return PanelTone(tone, nearCount.toFloat() / total)
     }
 
-    /** The panel's dominant luminance and how much of the panel actually sits at it. */
     private data class PanelTone(val tone: Float, val uniformity: Float)
 
-    /**
-     * How much of a panel pixel belongs to the camera's own content rather than to the flat
-     * background the material is replacing.
-     *
-     * Antialiased glyph edges sit *between* the label colour and the background: a hard
-     * threshold marks them fully background, the material then covers them, and the glyphs
-     * grow visible jaggies. The luma distance is therefore mapped through a feathered band -
-     * fully content beyond [CONTENT_LUMA_DELTA], fully background within
-     * [CONTENT_LUMA_DELTA]/2, and a linear mix between the two.
-     */
     private fun contentSoftness(pixel: Int, tone: Float): Float {
         val r = (pixel shr 16) and 0xFF
         val g = (pixel shr 8) and 0xFF
@@ -538,27 +378,15 @@ object LiquidGlassOptics {
             0f
         } else {
             val t = ((delta - CONTENT_LUMA_DELTA * 0.5f) / (CONTENT_LUMA_DELTA * 0.5f)).coerceIn(0f, 1f)
-            // Smoothstep keeps the grayscale antialias fringe gradual instead of making
-            // the recovered watermark contour look like a hard threshold.
+
             t * t * (3f - 2f * t)
         }
         if (soft >= 1f) return 1f
-        // A saturated pixel is content even at the background's brightness: coloured icons
-        // and accents sit on these panels. Chroma keeps its hard edge - icons have no
-        // intermediate pixels to protect, and a feathered chroma test let mid-alpha veil
-        // pixels through.
+
         val chroma = maxOf(r, g, b) - minOf(r, g, b)
         return if (chroma > CONTENT_CHROMA_MAX) 1f else soft
     }
 
-    /**
-     * Measures the panel's corner radius from its own silhouette, so the glass copies the
-     * shape the camera drew rather than guessing at it.
-     *
-     * The panel is opaque against a transparent surround, so the radius shows up as the
-     * horizontal run of transparent pixels at each end of the panel's top and bottom rows,
-     * and the vertical run at each end of its side columns. The smallest agreement wins.
-     */
     fun measureCornerRadius(
         pixels: IntArray, width: Int, height: Int, panel: PanelRect,
     ): Float {
@@ -604,7 +432,6 @@ object LiquidGlassOptics {
         return candidates.min().toFloat().coerceIn(0f, maxRadius)
     }
 
-    /** Samples a crop-local pixel buffer at a global bitmap coordinate. */
     private fun sampleRegion(
         region: IntArray, cw: Int, ch: Int, cropLeft: Int, cropTop: Int, x: Float, y: Float,
     ): Int {
@@ -613,33 +440,6 @@ object LiquidGlassOptics {
         return region[iy * cw + ix]
     }
 
-    /**
-     * Erases the camera's baked plate, replacing it with real photograph content.
-     *
-     * The camera draws its watermark background as an opaque **rectangular** pre-rendered
-     * sheet — the corner radius lives in the WebP's alpha and in `rect_radius`, but the draw
-     * call itself is `drawRect`. When the module ran the lens over that sheet two things went
-     * wrong, and the user saw both:
-     *
-     *  1. The lens magnified the plate, not the world, so the capsule read as a pale wash.
-     *  2. The glass is composited through a rounded-rect mask, so the four corners *outside*
-     *     that mask were never touched — the white sheet stayed visible there as a ring around
-     *     the capsule, and the rim highlight was computed against that white instead of against
-     *     the scene. This is the "白色背景 / 后面还有一圈白的" the user reported.
-     *
-     * Both are fixed by clearing the **entire panel rectangle**, corners included, before the
-     * lens runs. The scene behind the panel is not recoverable (the camera already overwrote
-     * it), so the nearest real photograph content is used: the rows immediately above the
-     * panel's top edge, mirrored downwards as a triangle wave. The mirror is continuous across
-     * the top edge, so there is no seam where the capsule meets the photo, and one row of
-     * source per row of output means the scene is never stretched.
-     *
-     * Called only when no source photograph is available and the panel is a flat baked
-     * background; a panel the camera filled with a blurred copy of the scene is already
-     * photographic and is left alone.
-     *
-     * @param backdrop crop-local buffer, width [cw], height [ch], modified in place
-     */
     private fun mirrorInteriorFromAbove(
         backdrop: IntArray,
         cw: Int,
@@ -652,7 +452,7 @@ object LiquidGlassOptics {
         if (cw <= 0 || ch <= 0) return
 
         val topInCrop = panel.top.toInt() - cropTop
-        // Nothing above the panel inside this crop means there is no photograph to borrow from.
+
         if (topInCrop <= 0) return
 
         val left = (panel.left.toInt() - cropLeft).coerceIn(0, cw)
@@ -660,29 +460,19 @@ object LiquidGlassOptics {
         val bottom = (panel.bottom.toInt() - cropTop).coerceIn(topInCrop, ch)
         if (right <= left || bottom <= topInCrop) return
 
-        // One row of source pixels per row needed, so the mirror does not stretch the scene.
-        // The reflection is a triangle wave over the rows available above the panel: clamping
-        // instead would smear the single row nearest the edge down the whole capsule, and the
-        // crop's padding is usually much shorter than the panel itself.
         val period = topInCrop * 2
         for (y in topInCrop until bottom) {
             val m = (y - topInCrop) % period
             val sourceY = if (m < topInCrop) topInCrop - 1 - m else m - topInCrop
             val src = sourceY.coerceIn(0, topInCrop - 1) * cw
             val dst = y * cw
-            // NOTE: deliberately no `sdRoundedRect` test here. An earlier revision skipped every
-            // pixel outside the rounded silhouette "so the capsule stays honest" — but those are
-            // exactly the pixels holding the camera's white plate, so skipping them is what left
-            // the white ring around the capsule. Clearing the full rectangle is the fix; the
-            // corners then carry scene content instead of baked white, and the glass silhouette
-            // is still produced by the coverage mask further down.
+
             for (x in left until right) {
                 backdrop[dst + x] = backdrop[src + x]
             }
         }
     }
 
-    /** Reference dispersion, sampled from a crop-local buffer. */
     private fun sampleSpectrumRegion(
         region: IntArray, cw: Int, ch: Int, panel: PanelRect, radius: Float,
         cropLeft: Int, cropTop: Int,
@@ -694,12 +484,6 @@ object LiquidGlassOptics {
 
         var r = 0f; var g = 0f; var b = 0f
 
-        // The seven taps fan out along the displacement vector. Without a guard the
-        // outer taps cross the silhouette into the crop padding, which still holds the
-        // camera's baked plate in the source photo - the plate is white, so the
-        // outermost taps read as a white fringe: the rainbow edge. Each tap that would
-        // land outside the silhouette is pulled back along the fan toward the base
-        // point (always inside), so no tap ever samples the plate.
         fun tap(ox: Float, oy: Float, block: (Int) -> Unit) {
             val tx = x + ox
             val ty = y + oy
@@ -768,7 +552,6 @@ object LiquidGlassOptics {
         return (1.25 - 0.75 * mean).coerceIn(0.45, 1.55).toFloat()
     }
 
-    /** Blurs a crop-local buffer, returning a new one. */
     private fun blurInPlace(region: IntArray, cw: Int, ch: Int, radius: Float): IntArray {
         var a = region.copyOf()
         var b = IntArray(region.size)
@@ -779,7 +562,6 @@ object LiquidGlassOptics {
         return a
     }
 
-    /** Source-over of [top] onto [bottom] at [alpha]. */
     private fun blend(bottom: Int, top: Int, alpha: Float): Int {
         val a = alpha.coerceIn(0f, 1f)
         fun ch(shift: Int): Int {
@@ -790,20 +572,6 @@ object LiquidGlassOptics {
         return pack(255, ch(16), ch(8), ch(0))
     }
 
-    /**
-     * Renders the material over the panel region of [src] (width x height, straight ARGB).
-     *
-     * @param src        watermark pixels, modified in place
-     * @param backdrop   captured photo pixels, straight ARGB; may be any size
-     * @param backdropW  backdrop width
-     * @param backdropH  backdrop height
-     * @param panel      panel placement inside the backdrop, in backdrop pixels
-     * @param params     material parameters
-     * @param refractBackdrop whether [backdrop] really is the photo behind the panel. When
-     *                        false the watermark's own layer is used as the backdrop, which
-     *                        keeps the optics correct while revealing nothing.
-     * @return a short outcome description for the module log
-     */
     fun render(
         src: IntArray,
         width: Int,
@@ -828,7 +596,6 @@ object LiquidGlassOptics {
         val band = (heightFraction * shortSide).coerceIn(minBand, maxBand)
         val amount = band * amountFraction
 
-        // ---- pass 1: classify glass body vs glyph ------------------------------------------
         val mask = ByteArray(width * height)
         var glassPixels = 0
         var glyphPixels = 0
@@ -848,7 +615,6 @@ object LiquidGlassOptics {
             return "skip: no translucent glass layer ($glyphPixels opaque px)"
         }
 
-        // ---- resolve and blur the backdrop (documented order: colour filter, blur, lens) ----
         val source: IntArray
         val srcW: Int
         val srcH: Int
@@ -880,7 +646,6 @@ object LiquidGlassOptics {
         val blurRadius = blurFraction * band
         val blurred = if (blurRadius >= 0.5f) boxBlur(source, srcW, srcH, blurRadius) else source
 
-        // ---- pass 2: refraction ------------------------------------------------------------
         val pad = requiredPanelPaddingPx(panel, params)
         val cropLeft = (-pad).coerceAtLeast(0)
         val cropTop = (-pad).coerceAtLeast(0)
@@ -894,23 +659,14 @@ object LiquidGlassOptics {
         val highlightDirX = cosDeg(params.highlightAngleDeg)
         val highlightDirY = sinDeg(params.highlightAngleDeg)
 
-        // Adaptive exposure sampled from the real backdrop behind the panel.
         val adapt = if (params.adaptive) {
             adaptiveScale(blurred, srcW, srcH, srcLeft, srcTop, srcPanelW, srcPanelH, panel)
         } else 1f
 
-        // The inner shadow was removed here as well: `render()` is the path the Leica-style
-        // multi-element watermarks take, and it had a second, independent copy of the inner
-        // shadow. Removing only the `renderPanel()` one would have left the grey slab alive for
-        // exactly the watermarks the user reported as broken. The parameters are still read by
-        // `ConfigStore` so an older config file still loads, but nothing renders them.
-
-        // Rim highlight: the reference's blurred 0.5.dp white stroke with BlendMode.Plus.
         val rimWidth = (params.rimWidthFraction * band).coerceIn(0.5f, band)
         val rimBlur = (params.rimBlurFraction * band).coerceIn(0.35f, band)
         val rimStrength = params.rimAlpha * 255f
 
-        // Surface stack constants.
         val tintAlpha = (params.tintAlpha * adapt).coerceIn(0f, 1f)
         val surfaceAlpha = (params.surfaceAlpha * adapt).coerceIn(0f, 1f)
         val highlightGain = (params.highlightGain / adapt).coerceIn(0.4f, 2.2f)
@@ -921,19 +677,15 @@ object LiquidGlassOptics {
                 val gx = cropLeft + x
                 val i = y * cw + x
 
-                // Panel-space position, normalised to -1..1 for the depth lean.
                 val px = gx + 0.5f
                 val py = gy + 0.5f
-                // NB: px/py are global bitmap coordinates, so the centre has to include the
-                // panel's own origin. Using `panel.width * 0.5` here (as an earlier revision did)
-                // put the "centre" at the bitmap's middle-left, which on a full-size frame made
-                // the depth normal collapse to a near-constant and silently disabled the lens.
+
                 val nx = (px - (panel.left + panel.width * 0.5f)) / (panel.width * 0.5f)
                 val ny = (py - (panel.top + panel.height * 0.5f)) / (panel.height * 0.5f)
 
                 val sd = sdRoundedRect(px, py, panel, radius)
                 if (-sd >= band) {
-                    // Beyond the lens: the backdrop passes through untouched.
+
                     rendered[i] = samplePhoto(
                         blurred, srcW, srcH, srcLeft, srcTop, srcPanelW, srcPanelH, px, py
                     )
@@ -976,13 +728,11 @@ object LiquidGlassOptics {
                     cb = (c and 0xFF).toFloat()
                 }
 
-                // vibrancy()
                 if (params.vibrancy != 1f || params.vibrancyBrightness != 0f) {
                     val vib = vibrancy(cr, cg, cb, params.vibrancy, params.vibrancyBrightness)
                     cr = vib[0]; cg = vib[1]; cb = vib[2]
                 }
 
-                // onDrawSurface: hue tint, then the tint again, then the flat surface veil.
                 if (params.tintColor != 0xFFFFFFFF.toInt() && params.tintHueWeight > 0f) {
                     val tinted = hueBlend(cr, cg, cb, params.tintColor)
                     cr = lerp(cr, tinted[0], params.tintHueWeight)
@@ -998,8 +748,6 @@ object LiquidGlassOptics {
                     cb = lerp(cb, 255f, surfaceAlpha)
                 }
 
-                // Rim highlight: blurred stroke band, weighted by the light direction like
-                // the reference's Default highlight shader (pow(abs(dot), falloff)).
                 if (rimStrength > 0f) {
                     val bandBand = gaussianBand(-sd, rimWidth, rimBlur)
                     if (bandBand > 0.001f) {
@@ -1014,22 +762,16 @@ object LiquidGlassOptics {
                     }
                 }
 
-                // Inner shadow removed. The camera's baked plate plus the rim highlight already give the
-                // capsule its depth, and on a flat capsule the shadow read as a grey slab.
-
                 rendered[i] = pack(255, cr, cg, cb)
             }
         }
 
-        // ---- pass 3: composite the material back through the watermark's own alpha --------
         for (y in 0 until ch) {
             val gy = cropTop + y
             for (x in 0 until cw) {
                 val gx = cropLeft + x
                 val i = gy * width + gx
-                // The mask spans the whole bitmap while this loop only covers the crop, so the
-                // index has to be re-checked here; `cropTop + y` is already >= 0 but the
-                // product can still leave the buffer when the panel sits against an edge.
+
                 if (gx < 0 || gy < 0 || gx >= width || gy >= height) continue
                 if (i < 0 || i >= src.size) continue
                 val m = mask[i]
@@ -1040,16 +782,12 @@ object LiquidGlassOptics {
                 val glass = rendered[y * cw + x]
 
                 src[i] = if (m == GLASS) {
-                    // How much of the material shows through is a *look* decision, not a fixed
-                    // curve: the app's own translucency sets the base, and the adaptive exposure
-                    // measured from the real backdrop thins it over bright scenes and densifies it
-                    // over dark ones. An earlier revision hard-clamped this to 0.18..0.72, which
-                    // capped the lens no matter how the scene was lit.
+
                     val alpha = (layerAlpha * 0.85f + 0.30f + (1f - adapt) * 0.26f)
                         .coerceIn(0.26f, 0.94f)
                     withAlpha(glass, (alpha * 255f).toInt())
                 } else {
-                    // Glyph or opaque detail: keep it, over the glass underneath.
+
                     if (layerAlpha >= 0.99f) original else srcOver(withAlpha(glass, 255), original)
                 }
             }
@@ -1059,13 +797,6 @@ object LiquidGlassOptics {
                 "band=${band.toInt()} r=${radius.toInt()} adapt=${fmt(adapt)}"
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Optics
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * Reference `sdRoundedRect`: negative inside, zero on the outline, positive outside.
-     */
     fun sdRoundedRect(px: Float, py: Float, panel: PanelRect, radius: Float): Float {
         val cx = px - (panel.left + panel.width * 0.5f)
         val cy = py - (panel.top + panel.height * 0.5f)
@@ -1078,12 +809,6 @@ object LiquidGlassOptics {
         return outside + inside
     }
 
-    /**
-     * Reference `gradSdRoundedRect`. Callers must pass the reference's own `gradRadius`,
-     * which is deliberately 1.5x the corner radius: the upstream commit that introduced it
-     * ("Update shader to match Apple's effect") says that factor exists purely to match
-     * Apple's render.
-     */
     fun gradSdRoundedRect(px: Float, py: Float, panel: PanelRect, radius: Float): FloatArray {
         val cx = px - (panel.left + panel.width * 0.5f)
         val cy = py - (panel.top + panel.height * 0.5f)
@@ -1103,7 +828,6 @@ object LiquidGlassOptics {
         return floatArrayOf(sign(cx) * gradX, sign(cy) * (1f - gradX))
     }
 
-    /** Reference `circleMap`: 0 at the outline, 1 at the inner boundary of the band. */
     fun circleMap(x: Float): Float {
         val c = x.coerceIn(-1f, 1f)
         return 1f - sqrt(1f - c * c)
@@ -1117,21 +841,12 @@ object LiquidGlassOptics {
 
     private fun sign(v: Float): Float = if (v >= 0f) 1f else -1f
 
-    /**
-     * The reference's rim highlight is a stroke of `width` centred on the outline, blurred
-     * by `width / 2`, so a Gaussian of that sigma around the outline reproduces it.
-     */
     private fun gaussianBand(outwardDistance: Float, width: Float, sigma: Float): Float {
         val centre = -width * 0.5f
         val d = (outwardDistance - centre) / sigma
         return kotlin.math.exp(-0.5f * d * d)
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Colour
-    // ---------------------------------------------------------------------------------------
-
-    /** Reference `vibrancy()`: saturation colour matrix, 1.5, luma 0.213/0.715/0.072. */
     private fun vibrancy(r: Float, g: Float, b: Float, saturation: Float, brightness: Float): FloatArray {
         val invSat = 1f - saturation
         val cr = 0.213f * invSat
@@ -1145,10 +860,6 @@ object LiquidGlassOptics {
         )
     }
 
-    /**
-     * Android `BlendMode.HUE`, which the reference's docs recommend for tint: keep the
-     * backdrop's luminosity, take the tint's hue. Weights are the Skia/Compose HSL ones.
-     */
     private fun hueBlend(r: Float, g: Float, b: Float, tint: Int): FloatArray {
         val tr = ((tint shr 16) and 0xFF) / 255f
         val tg = ((tint shr 8) and 0xFF) / 255f
@@ -1173,11 +884,6 @@ object LiquidGlassOptics {
         return t * t * (3f - 2f * t)
     }
 
-    /**
-     * Mean luminance of the backdrop behind the panel. Apple's material thins out over a
-     * bright backdrop and densifies over a dark one; the returned scale drives tint, veil
-     * and rim strength together so the panel always reads as one material.
-     */
     private fun adaptiveScale(
         px: IntArray, w: Int, h: Int,
         left: Float, top: Float, panelW: Float, panelH: Float,
@@ -1205,17 +911,6 @@ object LiquidGlassOptics {
         return (1.25 - 0.75 * mean).coerceIn(0.45, 1.55).toFloat()
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Sampling
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * Maps a panel-space point into the backdrop and samples it.
-     *
-     * The panel is the watermark, which the camera composites at its own scale, so its
-     * coordinates are rescaled onto the backdrop's grid: the glass therefore refracts the
-     * photo at the photo's real resolution rather than at the watermark's.
-     */
     private fun samplePhoto(
         px: IntArray, w: Int, h: Int,
         left: Float, top: Float, panelW: Float, panelH: Float,
@@ -1228,12 +923,6 @@ object LiquidGlassOptics {
         return px[iy * w + ix]
     }
 
-    /**
-     * Reference dispersion: the same displacement sampled at seven wavelengths, each with
-     * its own divisors. `dispersionIntensity = x*y / (halfW*halfH)` is antisymmetric across
-     * the diagonals, so the spectrum splits one way on two opposite edges and the other way
-     * on the remaining two, like a prism.
-     */
     private fun sampleSpectrum(
         px: IntArray, w: Int, h: Int,
         left: Float, top: Float, panelW: Float, panelH: Float,
@@ -1242,7 +931,7 @@ object LiquidGlassOptics {
         nx: Float, ny: Float,
         params: GlassParams,
     ): FloatArray {
-        // Displacement follows the panel grid, so the spectrum offsets must be scaled too.
+
         val sdx = dx * w / panelW
         val sdy = dy * h / panelH
         val disp = params.dispersionIntensity * nx * ny
@@ -1282,14 +971,6 @@ object LiquidGlassOptics {
         return floatArrayOf(r, g, b)
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Blur
-    // ---------------------------------------------------------------------------------------
-
-    /**
-     * Three box passes approximate a Gaussian, which is what the reference's `BlurEffect`
-     * does. Radius is in backdrop pixels.
-     */
     private fun boxBlur(src: IntArray, w: Int, h: Int, radius: Float): IntArray {
         var a = src
         var b = IntArray(src.size)
@@ -1306,7 +987,6 @@ object LiquidGlassOptics {
         val window = ri * 2 + 1
         val tmp = IntArray(src.size)
 
-        // Horizontal.
         for (y in 0 until h) {
             val row = y * w
             var ar = 0; var ag = 0; var ab = 0; var aa = 0
@@ -1326,7 +1006,6 @@ object LiquidGlassOptics {
             }
         }
 
-        // Vertical.
         for (x in 0 until w) {
             var ar = 0; var ag = 0; var ab = 0; var aa = 0
             for (i in -ri..ri) {
@@ -1346,22 +1025,9 @@ object LiquidGlassOptics {
         }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Small helpers
-    // ---------------------------------------------------------------------------------------
-
     private const val GLASS: Byte = 2
     private const val GLYPH: Byte = 1
 
-    /**
-     * Decides whether a watermark pixel belongs to the glass backdrop or is content that
-     * must stay on top of it.
-     *
-     * A Xiaomi watermark is two layers: a white veil drawn at low alpha, and opaque white
-     * labels over it. Alpha alone separates the extremes; for the antialiased pixels in
-     * between, an achromatic bright pixel is treated as more veil while anything with
-     * colour is content.
-     */
     private fun isGlass(alpha: Int, r: Int, g: Int, b: Int): Boolean {
         if (alpha <= GLASS_ALPHA_MAX) return true
         if (alpha >= GLYPH_ALPHA_MIN) return false
@@ -1383,7 +1049,6 @@ object LiquidGlassOptics {
     private fun withAlpha(color: Int, a: Int): Int =
         (a.coerceIn(0, 255) shl 24) or (color and 0x00FFFFFF)
 
-    /** Standard source-over of [top] onto [bottom]; both straight (non-premultiplied). */
     fun srcOver(bottom: Int, top: Int): Int {
         val ta = ((top ushr 24) and 0xFF) / 255f
         if (ta >= 1f) return top

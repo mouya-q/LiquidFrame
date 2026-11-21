@@ -1,20 +1,12 @@
 package com.mouya.LiquidFrame.glass
 
-/**
- * Logo presets for the watermark capsule.
- *
- * Each preset carries an aspect-ratio compensation factor and a vertical
- * alignment hint so the logo scales correctly inside a fixed-height capsule.
- * The actual bitmap / vector decoding happens in [com.mouya.LiquidFrame.WatermarkHooks.loadLogo],
- * which reads from the module APK's assets/ or res/ paths at runtime.
- */
 enum class LogoPreset(
     val displayName: String,
-    /** Width-to-height ratio compensation. Applied as height = logoWidth / aspect. */
+
     val aspectCompensation: Float,
-    /** Vertical alignment factor within the capsule. */
+
     val verticalAlignment: Float,
-    /** Whether the logo is monochrome white (true) or colour (false). */
+
     val isWhite: Boolean,
 ) {
     Leica(
@@ -61,9 +53,7 @@ enum class LogoPreset(
     );
 
     companion object {
-        /**
-         * Resolve a logo by name string, with fallback to LeicaWhite.
-         */
+
         fun fromName(name: String?): LogoPreset {
             if (name == null) return LeicaWhite
             return entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: LeicaWhite
@@ -71,9 +61,6 @@ enum class LogoPreset(
     }
 }
 
-/**
- * Where the logo sits relative to the text columns.
- */
 enum class LogoPosition(val displayName: String) {
     FRONT("前"),
     MIDDLE("中"),

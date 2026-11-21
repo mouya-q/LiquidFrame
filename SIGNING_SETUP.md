@@ -1,14 +1,14 @@
 # Release signing
 
-Release signing is intentionally opt-in. Do not commit a private keystore or passwords.
+Gradle reads these values from project properties or environment variables:
 
-Set these environment variables in a trusted local shell or CI secret store:
-
-- `LIQUIDFRAME_KEYSTORE`: absolute path to a PKCS#12 keystore
+- `LIQUIDFRAME_KEYSTORE`: PKCS#12 keystore path
 - `LIQUIDFRAME_KEYSTORE_PASSWORD`
 - `LIQUIDFRAME_KEY_ALIAS`
 - `LIQUIDFRAME_KEY_PASSWORD`
 
-If all values are present and the keystore exists, Gradle signs release and debug builds with it. Without them, release artifacts are unsigned and cannot update an already-installed APK signed by another key. Keep the keystore and its passwords backed up securely and outside the repository.
+The default keystore path is `app/keystore/liquidframe-release.p12`. A signing config is added only when the file and credentials are available. Without it, APKs are unsigned.
 
-For GitHub Actions, the workflow expects `LIQUIDFRAME_KEYSTORE_BASE64`, `LIQUIDFRAME_KEYSTORE_PASSWORD`, `LIQUIDFRAME_KEY_ALIAS`, and `LIQUIDFRAME_KEY_PASSWORD` repository or environment secrets. The Base64 secret is decoded into the runner's temporary directory and is not uploaded as an artifact.
+The GitHub Actions workflow also checks the release certificate fingerprint. Use the project release key for that workflow; a locally generated key will fail the check.
+
+Do not commit private keystores or passwords.

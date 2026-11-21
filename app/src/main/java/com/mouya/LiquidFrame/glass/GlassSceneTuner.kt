@@ -2,7 +2,6 @@ package com.mouya.LiquidFrame.glass
 
 import kotlin.math.max
 
-/** Shared scene adaptation used by both the live editor preview and the camera capture path. */
 object GlassSceneTuner {
     fun resolveParams(pixels: IntArray, width: Int, height: Int, panel: PanelRect, user: GlassParams): GlassParams {
         if (!user.adaptive || pixels.isEmpty() || width <= 0 || height <= 0) return user
@@ -25,7 +24,7 @@ object GlassSceneTuner {
         }
         if (count == 0) return user
         val mean = total / count / 255.0
-        // Preserve transparency: exposure adaptation is deliberately restrained, never a broad white veil.
+
         val veilGain = if (mean < 0.42) 0.82f else 1.12f
         val rimGain = if (mean < 0.42) 0.92f else 1.08f
         return user.copy(

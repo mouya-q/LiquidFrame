@@ -1,6 +1,3 @@
-// Copyright 2026, LiquidFrame contributors
-// SPDX-License-Identifier: Apache-2.0
-
 package com.mouya.LiquidFrame.gallery
 
 import androidx.compose.animation.animateColorAsState

@@ -1,17 +1,3 @@
-// Copyright 2026, LiquidFrame contributors
-// SPDX-License-Identifier: Apache-2.0
-//
-// Off-device render harness for the material documented in the README.
-//
-// Builds a synthetic photo, renders the module's own capsule watermark over
-// the finished bitmap in capsule mode (the same call WatermarkHooks
-// processCapsule() makes -- params.copy(preserveContent = false), panelIsOpaque
-// Plate = false), and writes the README's comparison renders. Text is drawn
-// with a real JVM font, mirroring CapsuleRenderer's Typeface-based layout.
-//
-// Runs on a plain JVM with the standalone Kotlin compiler:
-//   java -jar kotlin-compiler.jar docs/RenderSamples.kt <glass sources> \
-//     -include-runtime -d renders.jar && java -cp renders.jar README_Renders docs
 @file:JvmName("README_Renders")
 
 import com.mouya.LiquidFrame.glass.GlassParams
@@ -27,7 +13,6 @@ import java.io.File
 import javax.imageio.ImageIO
 import kotlin.math.sin
 
-// ---- render frame and capsule design constants ----
 private const val PHOTO_W = 900
 private const val PHOTO_H = 400
 private const val UNIT = PHOTO_H / 1080f
@@ -46,18 +31,12 @@ private const val TEXT_COLOR = 0xF2FFFFFF.toInt()
 private fun argb(a: Int, r: Int, g: Int, b: Int) =
     (a shl 24) or (r.coerceIn(0, 255) shl 16) or (g.coerceIn(0, 255) shl 8) or b.coerceIn(0, 255)
 
-/**
- * A backdrop chosen to make the lens legible: fine grid, coloured rules,
- * mid-grey exposure. A flat or near-white scene would make any material look
- * identical.
- */
 private fun backdrop(kind: String): IntArray {
     val px = IntArray(PHOTO_W * PHOTO_H)
     for (y in 0 until PHOTO_H) for (x in 0 until PHOTO_W) {
         val c: Int
         if (kind == "grid") {
-            // Fine but not extreme: enough structure for the lens to bend,
-            // coarse enough that point sampling does not alias into moire.
+
             val grid = if (x % 26 == 0 || y % 26 == 0) 46 else 0
             val diag = if ((x + y) % 41 < 3) 52 else 0
             val hue = ((x / 26) * 41 + (y / 26) * 67) % 255
@@ -69,7 +48,7 @@ private fun backdrop(kind: String): IntArray {
                 (base * 0.85f + (255 - hue) * 0.4f).toInt(),
             )
         } else {
-            // Colour blocks with hard edges, like a wallpaper with tiles.
+
             val v = (70 + 90 * sin((x * 0.9f + y * 0.4f) / 55f)).toInt().coerceIn(0, 255)
             val w = (70 + 90 * sin((x * 0.3f - y * 1.1f) / 41f)).toInt().coerceIn(0, 255)
             val tile = ((x / 74) * 7 + (y / 74) * 5) % 3 != 0
@@ -84,7 +63,6 @@ private fun backdrop(kind: String): IntArray {
     return px
 }
 
-/** Draws the same asymmetric text/logo/divider composition used by the capture renderer. */
 private fun drawCapsuleTexts(img: BufferedImage, left: Int, top: Int, capsuleW: Int, capsuleH: Int) {
     val g = img.createGraphics()
     g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
@@ -121,7 +99,6 @@ private fun drawCapsuleTexts(img: BufferedImage, left: Int, top: Int, capsuleW: 
     baseline += g.fontMetrics.ascent
     drawLabel(time, left + padX, baseline, bodyFont)
 
-    // The logo asset is the same transparent white wordmark shipped in the Android module.
     val logoFile = File("app/src/main/assets/leica_wordmark_white.png")
     val logo = if (logoFile.isFile) runCatching { ImageIO.read(logoFile) }.getOrNull() else null
     if (logo != null) {
@@ -165,8 +142,6 @@ private fun writePng(path: String, px: IntArray, w: Int, h: Int) {
     ImageIO.write(img, "png", File(path))
 }
 
-// ANCHOR-B2
-
 private class Case(val name: String, val scene: String, val params: GlassParams)
 
 private fun cases() = listOf(
@@ -195,7 +170,6 @@ fun main(args: Array<String>) {
     val outDir = File(if (args.isNotEmpty()) args[0] else "docs")
     outDir.mkdirs()
 
-    // Fixed geometry, matching the asymmetric capsule in WatermarkHooks.
     val capsuleW = (PHOTO_W * CAPSULE_WIDTH_FRACTION).toInt()
     val capsuleH = (PHOTO_H * CAPSULE_HEIGHT_REF / 1080f).toInt()
     val capsuleLeft = (PHOTO_W * 0.01f).toInt()
@@ -215,8 +189,6 @@ fun main(args: Array<String>) {
     for (c in cases()) {
         val photo = backdrop(c.scene)
 
-        // Capsule mode, exactly as processCapsule calls it: the glass bends the
-        // scene, then the text layer goes on top of the finished surface.
         val px = photo.copyOf()
         val result = LiquidGlassOptics.renderPanel(
             px, PHOTO_W, PHOTO_H, panel,
@@ -230,7 +202,6 @@ fun main(args: Array<String>) {
         val outPx = img.getRGB(0, 0, PHOTO_W, PHOTO_H, IntArray(PHOTO_W * PHOTO_H), 0, PHOTO_W)
         writePng("${outDir.absolutePath}/${c.name}.png", outPx, PHOTO_W, PHOTO_H)
 
-        // Tight crop for the README's close-ups.
         val zoom = 2
         val m = 26
         val zw = (capsuleW + m * 2) * zoom

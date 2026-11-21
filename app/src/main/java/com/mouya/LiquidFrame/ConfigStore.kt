@@ -5,56 +5,27 @@ import com.mouya.LiquidFrame.glass.GlassParams
 import java.io.File
 import java.util.Locale
 
-/**
- * Settings store.
- *
- * The config UI lives in this module's own process; the material is applied inside the camera
- * process. The two never share memory, so settings travel through a plain text file in a
- * directory both can reach.
- *
- * Values are stored one `key=value` per line so a partial or hand-edited file still loads, and
- * a version tag lets the format change later without breaking an upgrade.
- *
- * ## Why this file has to escalate
- *
- * `/data/local/tmp` is `shell:shell` with mode 771. The camera can *read* it, but a normal
- * application cannot even create a file there — so the first version of this class silently
- * dropped every setting on the floor: `save()` caught the `IOException` and the camera went on
- * reading a file that never existed. That is exactly the "I toggled it and nothing happened"
- * symptom, and it stayed invisible because the write path reported nothing either.
- *
- * So the writer no longer assumes it can write there. It tries the plain write first and falls
- * back to `su` only when needed. Every path reports what it actually did through
- * [lastWriteStatus], which the settings screen surfaces instead of pretending.
- */
 object ConfigStore {
 
-    /** Primary location: the module's own data directory. Always writable without root. */
     private var primaryDir: String = "/data/user/0/com.mouya.LiquidFrame/files"
 
-    /** Legacy shared location for camera process reads. */
     private const val LEGACY_DIR = "/data/local/tmp"
 
     private const val FILE_NAME = "lf_config.txt"
     private const val PRESET_FILE_NAME = "lf_presets.txt"
 
-    /** Allow runtime override of the primary directory (e.g. from Context.getFilesDir()). */
     fun init(context: android.content.Context) {
         primaryDir = context.filesDir.absolutePath
     }
 
     private const val VERSION = 2
 
-    /** How long the camera process may cache settings before re-reading them. */
     private const val RELOAD_INTERVAL_MS = 2_000L
 
-    /** One successful escalation is enough; do not re-probe `su` on every write. */
     private const val ESCALATION_RETRY_MS = 30_000L
 
-    /** Primary config file in the app's own writable directory. */
     private val file: File get() = File(primaryDir, FILE_NAME)
 
-    /** Legacy file for camera process reads. */
     private val legacyFile: File get() = File(LEGACY_DIR, FILE_NAME)
     private val presetFile: File get() = File(primaryDir, PRESET_FILE_NAME)
     private val legacyPresetFile: File get() = File(LEGACY_DIR, PRESET_FILE_NAME)
@@ -74,31 +45,16 @@ object ConfigStore {
     @Volatile
     private var lastWriteMs: Long = 0L
 
-    /** What the most recent [save] actually managed to do, for the settings screen to show. */
     fun lastWriteStatus(): String = lastWriteStatus
 
-    /** Wall-clock of the most recent successful [save]. */
     fun lastWriteMs(): Long = lastWriteMs
 
-    // ---------------------------------------------------------------------------------------
-    // Load / save
-    // ---------------------------------------------------------------------------------------
-
-    /** Reads settings from disk, rate limited so the camera can call it on every capture. */
     fun loadIfStale() {
         val now = SystemClock.uptimeMillis()
         if (now - lastLoadedMs < RELOAD_INTERVAL_MS) return
         load()
     }
 
-    /**
-     * Reads settings from disk.
-     *
-     * Checks both the primary (app-private) and legacy (/data/local/tmp) paths. The primary
-     * path is preferred because it is always writable; the legacy path is the fallback for
-     * when the camera process has cached an older version or the primary write has not yet
-     * propagated. The camera process reads the legacy path, so both must be kept in sync.
-     */
     fun load() {
         lastLoadedMs = SystemClock.uptimeMillis()
         cached = try {
@@ -128,19 +84,9 @@ object ConfigStore {
         return map
     }
 
-    /**
-     * Saves settings to disk.
-     *
-     * Writes to both the primary (app-private) and legacy (/data/local/tmp) paths. The primary
-     * path is always writable; the legacy path requires either a relaxed directory permission
-     * or `su` escalation. The camera process reads the legacy path, so both must be kept in
-     * sync for settings to take effect.
-     */
     @Synchronized
     fun save(values: Map<String, String>) {
-        // Keep the format version in memory as well as on disk. Preview rendering and
-        // typed accessors consult this cache; without it the just-saved v2 controls were
-        // silently interpreted as v1 defaults until the next process restart.
+
         val normalized = LinkedHashMap(values).apply { remove("version") }
         cached = LinkedHashMap(normalized).apply { this["version"] = VERSION.toString() }
         val text = buildString {
@@ -167,9 +113,7 @@ object ConfigStore {
                 "相机配置已同步，但应用缓存写入失败"
             else -> "写入失败：本地与相机配置均未确认"
         }
-        // `lastWriteMs` is the shared camera-config success timestamp, not merely
-        // proof that the app-private copy exists. The camera cannot read that copy
-        // across its process boundary on a normal non-root app sandbox.
+
         if (legacyMode == WRITE_OK || legacyMode == WRITE_ROOT) {
             lastWriteMs = System.currentTimeMillis()
         }
@@ -177,14 +121,6 @@ object ConfigStore {
         lastLoadedMs = SystemClock.uptimeMillis()
     }
 
-    /**
-     * Writes the file, escalating only when the plain path is refused.
-     *
-     * The order matters: a plain write costs nothing, and on a device where the directory has
-     * already been relaxed it stays that way. Only when it fails does the module ask for root,
-     * and having got it, it relaxes the directory once so a slider drag does not fork `su`
-     * per frame.
-     */
     private fun writeText(target: File, text: String, verifyKey: String? = KEY_ENABLED): Int {
         val plain = try {
             val parent = target.parentFile
@@ -201,7 +137,6 @@ object ConfigStore {
         }
         if (plain) return WRITE_OK
 
-        // Escalate, but not on every single write: a drag can produce dozens per second.
         val now = SystemClock.uptimeMillis()
         val alreadyTried = now - escalationCheckedMs < ESCALATION_RETRY_MS
         escalationCheckedMs = now
@@ -223,7 +158,6 @@ object ConfigStore {
         }
         if (!ok) return WRITE_FAIL
 
-        // Verify by reading the file back so the status we report is measured, not assumed.
         val readBack = try {
             target.exists() && (verifyKey == null || parse(target.readText()).containsKey(verifyKey))
         } catch (t: Throwable) {
@@ -233,21 +167,19 @@ object ConfigStore {
         return if (readBack) WRITE_ROOT else WRITE_FAIL
     }
 
-    /** Runs a shell script as root, returning its exit status. */
     private fun runSu(script: String): Int {
         val candidates = listOf("su", "/system/bin/su", "/system/xbin/su")
         for (binary in candidates) {
             try {
                 val process = ProcessBuilder(binary, "-c", script).redirectErrorStream(true).start()
-                // Drain stdout/stderr before waiting, otherwise a full pipe can deadlock the process.
-                // Cap output to 4 KB to avoid OOM on runaway commands.
+
                 val output = process.inputStream.use { stream ->
                     val buf = ByteArray(4096)
                     val n = stream.read(buf)
                     if (n > 0) buf.copyOf(n) else ByteArray(0)
                 }
                 process.outputStream.close()
-                // Bounded wait: 5 s ceiling prevents indefinite hang on a dead su binary.
+
                 if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
                     process.destroyForcibly()
                     LogHelper.log(TAG, "su timed out after 5s")
@@ -255,12 +187,12 @@ object ConfigStore {
                 }
                 val code = process.exitValue()
                 if (code == 0) return 0
-                // Non-zero exit: try next binary.
+
                 val preview = String(output, Charsets.UTF_8).take(200)
                 LogHelper.log(TAG, "su exit=$code: $preview")
             } catch (t: Throwable) {
                 LogHelper.log(TAG, "su failed: ${t.javaClass.simpleName}: ${t.message}")
-                // Try the next binary.
+
             }
         }
         return -1
@@ -270,8 +202,6 @@ object ConfigStore {
 
     private fun sizeOf(text: String): Int = text.toByteArray(Charsets.UTF_8).size
 
-
-    /** Persist a named material preset independently from the active camera config. */
     fun savePreset(name: String, values: Map<String, String>): Boolean {
         val clean = name.trim().take(32)
         if (clean.isBlank() || clean.any { it == '\n' || it == '\r' || it == '=' }) return false
@@ -295,7 +225,6 @@ object ConfigStore {
 
     fun presetNames(): List<String> = readPresetMap().keys.sorted()
 
-    /** Explicitly remove both app-private and root-shared state (including custom presets). */
     fun clearPersistentData(): Boolean {
         val localOk = runCatching {
             file.delete(); presetFile.delete()
@@ -310,7 +239,6 @@ object ConfigStore {
         lastWriteStatus = if (localOk && sharedOk) "已清除本地与共享配置" else "部分配置清除失败，请检查 Root 权限"
         return localOk && sharedOk
     }
-
 
     fun loadPreset(name: String): Map<String, String>? {
         val encoded = readPresetMap()[name] ?: return null
@@ -336,10 +264,6 @@ object ConfigStore {
         } catch (_: Throwable) { emptyMap() }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Typed accessors
-    // ---------------------------------------------------------------------------------------
-
     private fun bool(key: String, def: Boolean): Boolean =
         when (cached[key]?.lowercase(Locale.US)) {
             "true", "1", "yes" -> true
@@ -350,16 +274,11 @@ object ConfigStore {
     private fun float(key: String, def: Float): Float =
         cached[key]?.toFloatOrNull()?.takeIf { it.isFinite() } ?: def
 
-    // ---------------------------------------------------------------------------------------
-    // The settings themselves, with their defaults
-    // ---------------------------------------------------------------------------------------
-
     fun isEnabled(): Boolean = bool(KEY_ENABLED, true)
 
     fun glassParams(): GlassParams {
         val d = GlassParams.Default
-        // Version 2 changes the material model from a broad frosted veil to edge-focused optics.
-        // Old persisted values would otherwise keep the washed-out appearance after upgrade.
+
         val legacyMaterial = (cached["version"]?.toIntOrNull() ?: 1) < 2
         fun materialFloat(key: String, default: Float) = if (legacyMaterial) default else float(key, default)
         fun materialBool(key: String, default: Boolean) = if (legacyMaterial) default else bool(key, default)
@@ -408,15 +327,6 @@ object ConfigStore {
     const val KEY_ADAPTIVE = "adaptive"
     const val KEY_PRESERVE = "preserve_content"
 
-    /**
-     * Settings for the rebuilt iOS-style capsule watermark.
-     *
-     * When enabled the module stops dressing the camera's own panel in glass and instead
-     * *replaces* it: the original watermark is erased, and a compact capsule is drawn on the
-     * photograph itself, refracting the real scene, with up to four lines of text inside
-     * (device name, capture time, exposure, coordinates) — the composition of the reference
-     * photographs the user supplied.
-     */
     const val KEY_CAPSULE_ENABLED = "capsule_enabled"
     const val KEY_CAPSULE_POS = "capsule_pos"
     const val KEY_CAPSULE_MODEL = "capsule_model"
@@ -465,7 +375,6 @@ object ConfigStore {
     fun capsuleLogoPosition(): String = cached[KEY_CAPSULE_LOGO_POSITION]?.trim()
         ?.takeIf { it.isNotBlank() } ?: "MIDDLE"
 
-    /** Current values, ready to edit in the UI. */
     fun snapshot(): MutableMap<String, String> {
         val p = glassParams()
         return linkedMapOf(

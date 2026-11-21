@@ -1,6 +1,3 @@
-// Copyright 2026, LiquidFrame contributors
-// SPDX-License-Identifier: Apache-2.0
-
 package com.mouya.LiquidFrame.gallery.screens
 
 import androidx.compose.foundation.layout.Arrangement
@@ -29,15 +26,6 @@ import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/**
- * miuix's overlay surfaces.
- *
- * These are the components where glass matters most in real HyperOS UI, and also where it is
- * hardest: a dimmed window and a large opaque sheet both hide the backdrop, so the material has
- * nothing left to refract underneath. Showing the stock behaviour next to the note is more useful
- * than pretending the platform dialogs are glassy — the honest statement is *which* surfaces can
- * carry the material and which cannot.
- */
 @Composable
 fun OverlaysScreen() {
     var showDialog by remember { mutableStateOf(false) }

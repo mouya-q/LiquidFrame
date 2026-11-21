@@ -18,7 +18,7 @@ class LiquidFrameHook : IXposedHookLoadPackage {
 
         XposedBridge.log("LiquidFrame: Camera loaded (${param.packageName})")
         LFLogger.i("Camera package loaded: ${param.packageName}")
-        // Log the camera APK path so we can identify the exact version at runtime.
+
         try {
             val ctx = XposedHelpers.callStaticMethod(
                 XposedHelpers.findClass("android.app.ActivityThread", param.classLoader),
@@ -36,11 +36,6 @@ class LiquidFrameHook : IXposedHookLoadPackage {
         GlassConfig.init(param.classLoader)
         WatermarkHooks.install(param)
 
-        // The settings app cannot force-stop the camera (no privileged permission in its
-        // manifest), so the camera registers a kill switch instead: the restart button in
-        // the settings sends an explicit broadcast and the camera kills itself on receipt.
-        // Registration is async because handleLoadPackage usually runs before the host
-        // Application exists. ActivityThread is @hide, so it is resolved by name.
         val app = try {
             XposedHelpers.callStaticMethod(
                 XposedHelpers.findClass("android.app.ActivityThread", param.classLoader),
@@ -55,8 +50,7 @@ class LiquidFrameHook : IXposedHookLoadPackage {
                 ctx.registerReceiver(
                     object : BroadcastReceiver() {
                         override fun onReceive(context: Context, intent: Intent) {
-                            // Only honour the kill switch from the module's own settings app.
-                            // getSendingUid is @hide, so it is reached by reflection.
+
                             val uid = try {
                                 BroadcastReceiver::class.java
                                     .getMethod("getSendingUid")

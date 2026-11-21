@@ -1,19 +1,5 @@
 package com.mouya.LiquidFrame.ui
 
-/*
- * About page: animated gradient field, a gradient wordmark, and softly blurring
- * information cards that gain opacity as they move up the page.
- *
- * The gradient field is the hero's own animated backdrop: a linear gradient base
- * plus four moving radial centers on a 12-second palette interpolation cycle.
- * The field's colors are saturation-strengthened before drawing so the palette
- * survives the translucent composite. The whole field fades to transparent
- * through a vertical gradient mask and scrolls at 0.12x to create depth.
- *
- * Cards use a page-local backdrop so their blur samples the animated page field,
- * rather than the flat dashboard backdrop behind this screen.
- */
-
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
@@ -43,7 +29,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -63,35 +51,28 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
 
-/** Hero region height, as a fraction of the screen height. */
 private const val HERO_HEIGHT_FRACTION = 0.60f
 
-/** Extra height below the hero the background keeps painting into. */
 private val HERO_BACKGROUND_EXTEND = 180.dp
 
-/** Scroll distance over which the background fades out completely. */
 private val BACKGROUND_FADE_DISTANCE = 389.dp
 
-/** Parallax factor: the background scrolls at this fraction of the content. */
 private const val BACKGROUND_PARALLAX = 0.12f
 
-/** Wordmark fade window, as fractions of the hero height. */
 private const val WORDMARK_FADE_START_FRACTION = 0.25f
 private const val WORDMARK_FADE_DISTANCE_FRACTION = 0.35f
 private const val WORDMARK_FADE_SHRINK = 0.1f
 
-/** Palette interpolation period, seconds. */
 private const val COLOR_INTERPOLATION_SECONDS = 12f
 
-/** Motion speed of the radial centers. */
 private const val BACKGROUND_SPEED = 0.12f
 
-/** Radial gradient radius, as a fraction of the field's max dimension. */
 private const val GRADIENT_RADIUS_FRACTION = 0.62f
 
-/** Saturation multiplier and brightness lift applied to every palette color. */
 private const val GRADIENT_SATURATION = 1.18f
 private const val GRADIENT_BRIGHTNESS_OFFSET = 0.015f
+/** Throttle for the shared animation clock, ~30 fps. */
+private const val ANIMATION_FRAME_NANOS = 33_333_333L
 
 @Composable
 fun AboutPage(
@@ -124,8 +105,7 @@ fun AboutPage(
     val pageBackdrop = rememberLayerBackdrop()
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Animation state lives in its own layer: changing the gradient at 30 Hz does
-        // not recompose the settings cards or their rows.
+
         AboutBackground(
             dark = dark,
             backdrop = pageBackdrop,
@@ -172,17 +152,6 @@ fun AboutPage(
                             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q/LiquidFrame")))
                         },
                     )
-                    SettingDivider()
-                    SettingRow(
-                        title = "更新日志",
-                        subtitle = "查看完整版本历史",
-                        trailing = {
-                            Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null, tint = LiquidColors.blue, modifier = Modifier.size(20.dp))
-                        },
-                        onClick = {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mouya-q/LiquidFrame/blob/main/CHANGELOG.md")))
-                        },
-                    )
                 }
 
                 SettingSection("关于", surfaceAlpha = cardAlpha, softBlur = true) {
@@ -213,32 +182,16 @@ fun AboutPage(
     }
 }
 
-
 @Composable
 private fun AboutBackground(
     dark: Boolean,
-    // `Modifier.layerBackdrop(...)` records into a LayerBackdrop specifically, and the
-    // caller passes `rememberLayerBackdrop()`, so the wider `Backdrop` supertype is not
-    // accepted here.
+
     backdrop: com.kyant.backdrop.backdrops.LayerBackdrop,
     heroHeight: androidx.compose.ui.unit.Dp,
     scrollOffset: Float,
     backgroundAlpha: Float,
 ) {
-    var animationTime by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) {
-        var lastPublish = 0L
-        while (true) {
-            withFrameNanos { now ->
-                if (lastPublish == 0L) {
-                    lastPublish = now
-                } else if (now - lastPublish >= 33_333_333L) {
-                    animationTime += (now - lastPublish) / 1_000_000_000f
-                    lastPublish = now
-                }
-            }
-        }
-    }
+    val animationTime = rememberAboutAnimationTime()
 
     val colors = animatedGradientColors(animationTime, dark)
     val backdropColors = remember(colors, dark) {
@@ -290,23 +243,7 @@ private fun AboutHero(
                 },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // The app name is the hero: a clean animated gradient wordmark, with no icon.
-            Text(
-                "LiquidFrame",
-                style = TextStyle(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xFF54B7FF),
-                            Color(0xFF7D8BFF),
-                            Color(0xFFC47BF0),
-                            Color(0xFFEE86BD),
-                        ),
-                    ),
-                    fontSize = 31.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = (-0.8).sp,
-                ),
-            )
+            AnimatedGradientWordmark(dark)
 
             Spacer(Modifier.height(10.dp))
             Text(
@@ -319,6 +256,63 @@ private fun AboutHero(
 }
 
 @Composable
+private fun rememberAboutAnimationTime(): Float {
+    var animationTime by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        var lastPublish = 0L
+        while (true) {
+            withFrameNanos { now ->
+                if (lastPublish == 0L) {
+                    lastPublish = now
+                } else if (now - lastPublish >= ANIMATION_FRAME_NANOS) {
+                    animationTime += (now - lastPublish) / 1_000_000_000f
+                    lastPublish = now
+                }
+            }
+        }
+    }
+    return animationTime
+}
+
+// Animated gradient wordmark: the shared palette interpolates over a 12 s cycle
+// and the gradient axis slowly rotates, so the fill flows through the letters.
+// SrcIn paints the gradient through the glyph coverage, keeping it inside the
+// glyphs, and the palette is closed (first colour appended) so the loop is
+// seamless.
+@Composable
+private fun AnimatedGradientWordmark(dark: Boolean) {
+    val animationTime = rememberAboutAnimationTime()
+    val colors = animatedGradientColors(animationTime, dark)
+    Text(
+        "LiquidFrame",
+        style = TextStyle(
+            fontSize = 31.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = (-0.8).sp,
+        ),
+        modifier = Modifier
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithCache {
+                onDrawWithContent {
+                    drawContent()
+                    val opaque = colors.map { it.copy(alpha = 1f) }
+                    val vector = Offset(
+                        x = cos(animationTime * BACKGROUND_SPEED) * size.width,
+                        y = sin(animationTime * BACKGROUND_SPEED) * size.height,
+                    )
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            colors = opaque + opaque.first(),
+                            start = center - vector,
+                            end = center + vector,
+                        ),
+                        blendMode = BlendMode.SrcIn,
+                    )
+                }
+            },
+    )
+}
+@Composable
 private fun AnimatedAboutBackground(
     animationTime: Float,
     colors: List<Color>,
@@ -326,8 +320,7 @@ private fun AnimatedAboutBackground(
 ) {
     Canvas(modifier = modifier) {
         drawGradientField(animationTime, colors, size, Offset.Zero)
-        // Vertical white fade: fully opaque through 68% of the field height, then
-        // dissolving to transparent. BlendMode.DstIn turns the gradient into a mask.
+
         drawRect(
             brush = Brush.verticalGradient(
                 colorStops = arrayOf(
@@ -347,8 +340,7 @@ private fun DrawScope.drawGradientField(
     fieldSize: androidx.compose.ui.geometry.Size,
     sampleOrigin: Offset,
 ) {
-    // Strengthen the palette first: the translucent composite washes colors out,
-    // so pre-saturating keeps the field vivid.
+
     val strengthened = colors.map(::strengthenGradientColor)
     val translucentPalette = strengthened.any { it.alpha < 0.8f }
     val radius = fieldSize.maxDimension * GRADIENT_RADIUS_FRACTION

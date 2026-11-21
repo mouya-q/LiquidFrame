@@ -4,10 +4,6 @@
     android:viewportWidth="24"
     android:viewportHeight="24">
 
-    <!-- The window mark: a rounded frame that folds at the top-left, one diagonal
-         strut, one dot at the upper right. Strokes only; scales by stroke width. -->
-
-    <!-- Frame outline. -->
     <path
         android:pathData="M7,21 L17,21 C19.2,21 21,19.2 21,17 L21,7 C21,4.8 19.2,3 17,3 L11,3 C10,3 9.5,4 8,4 C6,4 5,4 4,5 C3,6 3,6.5 3,7 L3,17 C3,19.2 4.8,21 7,21 Z"
         android:strokeColor="#FF35383D"
@@ -16,7 +12,6 @@
         android:strokeLineJoin="round"
         android:fillColor="#00000000" />
 
-    <!-- Diagonal strut. -->
     <path
         android:pathData="M8.5,16.5 L15.5,9.5"
         android:strokeColor="#FF35383D"
@@ -24,7 +19,6 @@
         android:strokeLineCap="round"
         android:fillColor="#00000000" />
 
-    <!-- Dot, upper right. -->
     <path
         android:pathData="M17.5,7.5 m-1.5,0 a1.5,1.5 0 1 0 3,0 a1.5,1.5 0 1 0 -3,0"
         android:fillColor="#FF35383D" />

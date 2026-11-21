@@ -1,6 +1,3 @@
-// Copyright 2026, LiquidFrame contributors
-// SPDX-License-Identifier: Apache-2.0
-
 package com.mouya.LiquidFrame.gallery
 
 import androidx.compose.animation.core.LinearEasing
@@ -26,16 +23,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/**
- * The backdrop everything in the gallery is judged against.
- *
- * A deliberately hard test for the material: strong saturated colour fields, hard edges where
- * two blobs meet, and fine grain. Glass is easy to make look plausible over a soft gradient and
- * very hard over content like this — the lens has to bend visible structure, the dispersion has
- * to split real edges, and the rim has to catch on something.
- *
- * The blobs drift slowly so the refraction can be watched living rather than in a still.
- */
 @Composable
 fun LiquidBackdrop(modifier: Modifier = Modifier) {
     val scheme = MiuixTheme.colorScheme
