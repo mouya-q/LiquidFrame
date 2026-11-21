@@ -4,6 +4,10 @@
 
 <h1 align="center">LiquidFrame</h1>
 
+<p align="left">
+  <a href="https://t.me/+4OPxhYOr3RgwMzUx">Telegram</a> 
+</p>
+
 [简体中文](README_CN.md)
 
 LiquidFrame is an LSPosed module that replaces the watermark on supported Xiaomi Camera output paths with a liquid-glass capsule. The repository also includes a standalone app for previewing the material.
