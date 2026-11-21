@@ -274,19 +274,21 @@ private fun rememberAboutAnimationTime(): Float {
     return animationTime
 }
 
-// Animated gradient wordmark: the shared palette interpolates over a 12 s cycle
-// and the gradient axis slowly sweeps, so the fill flows through the letters.
-// The sweep is anisotropic — wide across, narrow vertically, like the reference —
-// and it stays at least as long as the text box, so the gradient never collapses
-// to a flat wash. SrcIn paints the gradient through the glyph coverage and the
-// closed colour list makes the loop seamless.
-private const val WORDMARK_SWEEP_X = 1.15f
-private const val WORDMARK_SWEEP_Y = 0.45f
+// Animated gradient wordmark in the style of HyperOS / Skyward about screens:
+// the glyph stays near-black (or near-white in dark mode); colour flows across
+// it only as a narrow band. The band sweeps left→right over WORDMARK_BAND_PERIOD
+// seconds, covering the text width plus its own width. SrcIn paints the gradient
+// through the glyph coverage only.
+private const val WORDMARK_BAND_FRACTION = 0.42f
+private const val WORDMARK_BAND_PERIOD = 8f
+private val WordmarkNeutralLight = Color(0xFF1D1F24)
+private val WordmarkNeutralDark = Color(0xFFF5F5F7)
+private val WordmarkSheenColors = listOf(Color(0xFF2997FF), Color(0xFF64D2FF), Color(0xFFB08CFF))
 
 @Composable
 private fun AnimatedGradientWordmark(dark: Boolean) {
     val animationTime = rememberAboutAnimationTime()
-    val colors = wordmarkGradientColors(animationTime, dark)
+    val base = if (dark) WordmarkNeutralDark else WordmarkNeutralLight
     Text(
         "LiquidFrame",
         style = TextStyle(
@@ -297,18 +299,26 @@ private fun AnimatedGradientWordmark(dark: Boolean) {
         modifier = Modifier
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .drawWithCache {
+                val bandWidth = size.width * WORDMARK_BAND_FRACTION
+                val sheen = WordmarkSheenColors
                 onDrawWithContent {
                     drawContent()
-                    val opaque = colors.map { it.copy(alpha = 1f) }
-                    val vector = Offset(
-                        x = cos(animationTime * BACKGROUND_SPEED) * size.width * WORDMARK_SWEEP_X,
-                        y = sin(animationTime * BACKGROUND_SPEED) * size.height * WORDMARK_SWEEP_Y,
-                    )
+                    val cycle = (animationTime / WORDMARK_BAND_PERIOD) % 1f
+                    val sweep = cycle * (size.width + 2f * bandWidth) - bandWidth
                     drawRect(
                         brush = Brush.linearGradient(
-                            colors = opaque + opaque.first(),
-                            start = center - vector,
-                            end = center + vector,
+                            // Both ends must stay neutral: TileMode.Clamp extends
+                            // the endpoint colours across the rest of the glyph.
+                            colorStops = arrayOf(
+                                0f to base,
+                                0.3f to base,
+                                0.5f to sheen[0],
+                                0.7f to sheen[1],
+                                0.9f to sheen[2],
+                                1f to base,
+                            ),
+                            start = Offset(sweep, 0f),
+                            end = Offset(sweep + bandWidth, size.height),
                         ),
                         blendMode = BlendMode.SrcIn,
                     )
@@ -435,23 +445,6 @@ private fun interpolatePalettes(palettes: List<List<Color>>, animationTime: Floa
     return start.indices.map { index ->
         lerp(start[index], end[index], progress)
     }
-}
-
-// Saturated brand palettes for the wordmark itself. The page field uses pastel
-// washes tuned for a translucent backdrop; the wordmark needs full-strength
-// colours or the gradient reads as washed-out white text in light mode.
-private val LightWordmarkPalettes = listOf(
-    listOf(Color(0xFF54B7FF), Color(0xFF7D8BFF), Color(0xFFC47BF0), Color(0xFFEE86BD)),
-    listOf(Color(0xFF7D8BFF), Color(0xFFC47BF0), Color(0xFFEE86BD), Color(0xFF54B7FF)),
-    listOf(Color(0xFFC47BF0), Color(0xFFEE86BD), Color(0xFF54B7FF), Color(0xFF7D8BFF)),
-)
-private val DarkWordmarkPalettes = listOf(
-    listOf(Color(0xFF6EC6FF), Color(0xFF9DA9FF), Color(0xFFD79BFF), Color(0xFFFF9ECF)),
-    listOf(Color(0xFF9DA9FF), Color(0xFFD79BFF), Color(0xFFFF9ECF), Color(0xFF6EC6FF)),
-    listOf(Color(0xFFD79BFF), Color(0xFFFF9ECF), Color(0xFF6EC6FF), Color(0xFF9DA9FF)),
-)
-private fun wordmarkGradientColors(animationTime: Float, dark: Boolean): List<Color> {
-    return interpolatePalettes(if (dark) DarkWordmarkPalettes else LightWordmarkPalettes, animationTime)
 }
 
 private val LightPalettes = listOf(
