@@ -29,10 +29,13 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -63,7 +66,9 @@ private const val WORDMARK_FADE_SHRINK = 0.1f
 
 private const val COLOR_INTERPOLATION_SECONDS = 12f
 
-private const val BACKGROUND_SPEED = 0.12f
+private const val BACKGROUND_SPEED = 0.16f
+
+private const val WORDMARK_FLOW_PERIOD_SECONDS = 9f
 
 private const val GRADIENT_RADIUS_FRACTION = 0.62f
 
@@ -101,11 +106,13 @@ fun AboutPage(
         ((if (dark) 0.88f else 0.84f) - (if (dark) 0.48f else 0.38f)) * cardProgress
 
     val pageBackdrop = rememberLayerBackdrop()
+    val animationClock = rememberAboutAnimationClock()
 
     Box(modifier = modifier.fillMaxSize()) {
 
         AboutBackground(
             dark = dark,
+            animationClock = animationClock,
             backdrop = pageBackdrop,
             heroHeight = heroHeight,
             scrollOffset = scrollOffset,
@@ -167,6 +174,7 @@ fun AboutPage(
 
             AboutHero(
                 dark = dark,
+                animationClock = animationClock,
                 logoAlpha = wordmarkAlpha,
                 logoScale = wordmarkScale,
                 versionName = versionName,
@@ -183,14 +191,13 @@ fun AboutPage(
 @Composable
 private fun AboutBackground(
     dark: Boolean,
-
+    animationClock: AboutAnimationClock,
     backdrop: com.kyant.backdrop.backdrops.LayerBackdrop,
     heroHeight: androidx.compose.ui.unit.Dp,
     scrollOffset: Float,
     backgroundAlpha: Float,
 ) {
-    val animationTime = rememberAboutAnimationTime()
-
+    val animationTime = animationClock.time
     val colors = animatedGradientColors(animationTime, dark)
     val backdropColors = remember(colors, dark) {
         colors.map { it.copy(alpha = if (dark) 0.26f else 0.30f) }
@@ -225,12 +232,15 @@ private fun AboutBackground(
 @Composable
 private fun AboutHero(
     dark: Boolean,
+    animationClock: AboutAnimationClock,
     logoAlpha: Float,
     logoScale: Float,
     versionName: String,
     versionCode: Int,
     modifier: Modifier = Modifier,
 ) {
+    val animationTime = animationClock.time
+
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
@@ -241,7 +251,7 @@ private fun AboutHero(
                 },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            GradientWordmark(dark)
+            GradientWordmark(dark, animationTime)
 
             Spacer(Modifier.height(10.dp))
             Text(
@@ -253,52 +263,80 @@ private fun AboutHero(
     }
 }
 
+private class AboutAnimationClock {
+    var time by mutableFloatStateOf(0f)
+}
+
 @Composable
-private fun rememberAboutAnimationTime(): Float {
-    var animationTime by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) {
-        var lastPublish = 0L
+private fun rememberAboutAnimationClock(): AboutAnimationClock {
+    val clock = remember { AboutAnimationClock() }
+    LaunchedEffect(clock) {
+        var lastFrame = 0L
         while (true) {
             withFrameNanos { now ->
-                if (lastPublish == 0L) {
-                    lastPublish = now
-                } else if (now - lastPublish >= ANIMATION_FRAME_NANOS) {
-                    animationTime += (now - lastPublish) / 1_000_000_000f
-                    lastPublish = now
+                if (lastFrame == 0L) {
+                    lastFrame = now
+                } else if (now - lastFrame >= ANIMATION_FRAME_NANOS) {
+                    clock.time += (now - lastFrame) / 1_000_000_000f
+                    lastFrame = now
                 }
             }
         }
     }
-    return animationTime
+    return clock
 }
 
-private val LightWordmarkGradient = listOf(
-    Color(0xFF3022C5),
-    Color(0xFF4D1AA8),
-    Color(0xFF812B91),
-    Color(0xFFB45A83),
+private val LightWordmarkGradient = arrayOf(
+    0f to Color(0xFF2438C7),
+    0.18f to Color(0xFF4854DF),
+    0.36f to Color(0xFF8060E8),
+    0.54f to Color(0xFFC06ABF),
+    0.72f to Color(0xFFDF7E9E),
+    0.88f to Color(0xFF777BEA),
+    1f to Color(0xFF2438C7),
 )
 
-private val DarkWordmarkGradient = listOf(
-    Color(0xFF8990FF),
-    Color(0xFFAD78F0),
-    Color(0xFFD883C0),
-    Color(0xFFF0A0B8),
+private val DarkWordmarkGradient = arrayOf(
+    0f to Color(0xFF7898FF),
+    0.18f to Color(0xFF8A8BFF),
+    0.36f to Color(0xFFB18BFF),
+    0.54f to Color(0xFFE39BDE),
+    0.72f to Color(0xFFF0A9C7),
+    0.88f to Color(0xFF9AA8FF),
+    1f to Color(0xFF7898FF),
 )
 
 @Composable
-private fun GradientWordmark(dark: Boolean) {
+private fun GradientWordmark(dark: Boolean, animationTime: Float) {
+    val base = if (dark) Color.White else Color(0xFF24305C)
+    val colors = if (dark) DarkWordmarkGradient else LightWordmarkGradient
+    val phase = (animationTime / WORDMARK_FLOW_PERIOD_SECONDS) % 1f
+
     Text(
         text = "LiquidFrame",
         style = TextStyle(
-            brush = Brush.horizontalGradient(
-                colors = if (dark) DarkWordmarkGradient else LightWordmarkGradient,
-            ),
+            color = base,
             fontSize = 38.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = (-1.1).sp,
         ),
         maxLines = 1,
+        modifier = Modifier
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithCache {
+                val gradientWidth = size.width * 1.35f
+                val startX = -phase * gradientWidth
+                val flow = Brush.linearGradient(
+                    colorStops = colors,
+                    start = Offset(startX, 0f),
+                    end = Offset(startX + gradientWidth, 0f),
+                    tileMode = TileMode.Repeated,
+                )
+                onDrawWithContent {
+                    drawContent()
+                    drawRect(brush = flow, blendMode = BlendMode.SrcIn)
+                }
+            },
     )
 }
 
