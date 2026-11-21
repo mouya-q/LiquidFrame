@@ -217,7 +217,10 @@ fun AboutPage(
 @Composable
 private fun AboutBackground(
     dark: Boolean,
-    backdrop: com.kyant.backdrop.Backdrop,
+    // `Modifier.layerBackdrop(...)` records into a LayerBackdrop specifically, and the
+    // caller passes `rememberLayerBackdrop()`, so the wider `Backdrop` supertype is not
+    // accepted here.
+    backdrop: com.kyant.backdrop.backdrops.LayerBackdrop,
     heroHeight: androidx.compose.ui.unit.Dp,
     scrollOffset: Float,
     backgroundAlpha: Float,
