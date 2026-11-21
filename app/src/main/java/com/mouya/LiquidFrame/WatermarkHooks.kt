@@ -2,6 +2,7 @@ package com.mouya.LiquidFrame
 
 import android.os.SystemClock
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -20,8 +21,10 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.io.ByteArrayOutputStream
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.nio.ByteBuffer
 import java.util.Locale
 object WatermarkHooks {
 
@@ -135,6 +138,45 @@ object WatermarkHooks {
     private val activeCapture = ThreadLocal<CaptureState?>()
     private val captureStack = ThreadLocal.withInitial { ArrayList<CaptureState?>() }
     private val hookedCaptureMethods = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    // ---------------------------------------------------------------------------------------
+    // Deep-adaptation state (6.6+/6.7+ native post-capture pipeline)
+    //
+    // On these builds the *final* file is not written by the Java watermark factory path alone:
+    // after the parallel tasks finish, the MIVI/CV engine's ~2 s post-processing result is
+    // re-landed onto the same task data (`di.s.a(gi.e, I)` = fillJpegData), replacing the
+    // glass jpeg the factory produced, and its pixels carry the stock watermark drawn
+    // natively from the CloudWmAttribute config handed over at capture start. The three
+    // registries below let the landing verifier tell "our glass output" (skip) from the
+    // engine's re-landed jpeg (patch).
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Content hashes of jpeg payloads that already contain the glass capsule, so the landing
+     * verifier never renders a second capsule over the first one. Keyed by FNV-1a hash;
+     * bounded so a long session cannot grow it without limit.
+     */
+    private val glassEncodedOutputs = LinkedHashSet<Long>(32)
+
+    /** Bitmaps the capsule was burned into, by identity, so encoder hooks can skip them. */
+    private val glassBitmaps = java.util.Collections.synchronizedMap(
+        java.util.IdentityHashMap<Bitmap, Long>()
+    )
+
+    /** Latest capture metadata and when it was seen, for hooks that run off the capture thread. */
+    @Volatile
+    private var lastCapture: MetaStamp? = null
+
+    private class MetaStamp(val meta: CapsuleRenderer.CaptureMeta, val at: Long)
+
+    /** How fresh a [lastCapture] may be for an off-thread hook to trust its metadata. */
+    private const val META_FRESH_MS = 30_000L
+
+    /** Encode quality for the landing verifier's re-encode, matching the camera's own high tier. */
+    private const val VERIFIER_JPEG_QUALITY = 95
+
+    /** Smallest jpeg the landing verifier is willing to decode and patch. */
+    private const val VERIFIER_MIN_JPEG_BYTES = 48 * 1024
 
     /** How long the late pass is willing to wait for the background dex scan, in ms. */
     private const val DISCOVERY_WAIT_MS = 45_000L
@@ -692,13 +734,20 @@ object WatermarkHooks {
             log("final jpeg guard: com.xiaomi.gl.texture.Jpeg absent on this build")
             return
         }
+        // Two variants exist since 6.6: `bitmapToJpeg(Bitmap, int)` returning byte[] and
+        // `bitmapToJpegBuffer(Bitmap, int)` returning ByteBuffer. Mi.b.c prefers the ByteBuffer
+        // variant whenever the runtime's direct-buffer flag is on, which is the case on every
+        // modern device — guarding only the byte[] variant (the 2.2.1 mistake) means the guard
+        // never fires there. Both are hooked so the last bitmap read before encoding is
+        // guaranteed to carry the capsule on either variant.
         val targets = cls.declaredMethods.filter { m ->
-            m.name == "bitmapToJpeg" && Modifier.isStatic(m.modifiers) &&
+            (m.name == "bitmapToJpeg" || m.name == "bitmapToJpegBuffer") &&
+                    Modifier.isStatic(m.modifiers) &&
                     m.parameterTypes.firstOrNull() == Bitmap::class.java &&
-                    m.returnType == ByteArray::class.java
+                    (m.returnType == ByteArray::class.java || m.returnType == ByteBuffer::class.java)
         }
         if (targets.isEmpty()) {
-            log("final jpeg guard: no static bitmapToJpeg(Bitmap, ...) returning byte[] on ${cls.name}")
+            log("final jpeg guard: no static bitmapToJpeg/bitmapToJpegBuffer(Bitmap, ...) on ${cls.name}")
             return
         }
         for (target in targets) {
@@ -706,22 +755,34 @@ object WatermarkHooks {
             if (!hookedCaptureMethods.add(key)) continue
             XposedBridge.hookMethod(target, object : XC_MethodHook() {
                 override fun beforeHookedMethod(p: MethodHookParam) {
-                    val state = activeCapture.get() ?: return
+                    val state = activeCapture.get()
                     GlassConfig.refresh()
                     if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
                     val bitmap = p.args?.getOrNull(0) as? Bitmap ?: return
-                    synchronized(state.guardedBitmaps) {
-                        if (bitmap in state.guardedBitmaps) return
-                    }
                     if (bitmap.isRecycled || bitmap.width < 256 || bitmap.height < 256) return
+                    // Already glass? The factory hook or an earlier encoder pass burned it.
+                    val alreadyGlass = synchronized(glassBitmaps) { bitmap in glassBitmaps } ||
+                            state?.guardedBitmaps?.let { set ->
+                                synchronized(set) { bitmap in set }
+                            } == true
+                    if (alreadyGlass) return
+                    val meta = state?.meta ?: run {
+                        // Off the capture thread (e.g. the MIVI3 re-encode): use the fresh
+                        // factory snapshot if there is one, else leave the bitmap alone.
+                        val stamp = lastCapture ?: return
+                        if (SystemClock.elapsedRealtime() - stamp.at > META_FRESH_MS) return
+                        stamp.meta
+                    }
                     if (!bitmap.isMutable || bitmap.config == Bitmap.Config.HARDWARE) {
                         log("final jpeg guard: bitmap is immutable/hardware; cannot burn in place")
                         return
                     }
-                    if (!compatibleAspect(state.renderedWidth, state.renderedHeight, bitmap)) return
+                    if (state != null && !compatibleAspect(state.renderedWidth, state.renderedHeight, bitmap)) return
                     try {
-                        if (renderCaptureCapsule(bitmap, state.meta)) {
-                            synchronized(state.guardedBitmaps) { state.guardedBitmaps.add(bitmap) }
+                        if (renderCaptureCapsule(bitmap, meta)) {
+                            state?.let { s ->
+                                synchronized(s.guardedBitmaps) { s.guardedBitmaps.add(bitmap) }
+                            }
                             log("final jpeg guard: glass burned into ${bitmap.width}x${bitmap.height} " +
                                     "immediately before encoding")
                         }
@@ -729,8 +790,329 @@ object WatermarkHooks {
                         log("final jpeg guard failed: ${t.javaClass.simpleName}: ${t.message}")
                     }
                 }
+
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    // Register the produced payload so the landing verifier can tell this
+                    // glass jpeg apart from the engine's re-landed one and skip it.
+                    try {
+                        val bitmap = p.args?.getOrNull(0) as? Bitmap
+                        val glass = bitmap != null && synchronized(glassBitmaps) { glassBitmaps.containsKey(bitmap) }
+                        if (!glass) return
+                        when (val out = p.result) {
+                            is ByteArray -> registerGlassOutput(out)
+                            is ByteBuffer -> if (out.hasArray()) registerGlassOutput(out.array())
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
             })
-            log("final jpeg guard: hooked ${target.name}${target.parameterTypes.map { it.simpleName }}")
+            log("final jpeg guard: hooked ${target.name}${target.parameterTypes.map { it.simpleName }}" +
+                    " -> ${target.returnType.simpleName}")
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Deep adaptation (6.6+/6.7+): the native MIVI engine finishes the final file.
+    //
+    // Symptom this fixes: during the ~2 s after-capture processing the glass capsule shows (the
+    // Java "early image" through the hooked factory), and when processing completes the final
+    // file carries the *stock* watermark again. What happens on these builds:
+    //
+    //   1. At capture start the app hands the engine a `CloudWmAttribute` (watermark id +
+    //      user-config bytes) alongside the parallel task data.
+    //   2. The Java watermark tasks run the hooked factory and land a glass jpeg.
+    //   3. ~2 s later the engine's own result lands on the same task data via
+    //      `di.s.a(gi.e, int)` (fillJpegData), overwriting the glass jpeg. Its pixels
+    //      carry the stock watermark the engine drew natively from that config — and
+    //      never touched any Java encoder, which is why the 2.2.1 encoder guard could
+    //      not fix 6.6: `Mi.b.c` prefers `bitmapToJpegBuffer` (ByteBuffer) and the guard
+    //      only hooked the byte[] variant that modern devices never take.
+    //
+    // The fix is layered so every landing path is covered:
+    //   - [hookCloudWatermarkAttribute]: hand the engine an empty config, so its output
+    //     arrives *clean* instead of stock-watermarked (stills and live-photo video both).
+    //   - [hookJpegLandingVerifier]: whatever jpeg lands on the task data without our
+    //     capsule gets it burned in right there — the guarantee, independent of which
+    //     engine produced the bytes.
+    //   - [hookBitmapEncodeHelpers] + the completed [hookFinalJpegEncoder]: last-chance
+    //     bitmap burns on the Java encoders, plus registration of glass outputs so the
+    //     verifier never double-renders.
+    //   - [hookLiveRecorderSnapshots]: the live-photo recorder burns its own watermark
+    //     into the recorded video frames; its watermark id is neutralised the same way.
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Neutralises the native watermark request. The engine receives an attribute with no
+     * watermark id and no config bytes — exactly the shape the stock code itself produces
+     * when a watermark has no user config (`mUserConfigData = new byte[0]`), so an empty
+     * attribute is a state the engine already handles gracefully.
+     *
+     * `hasCloudWatermark` on the task data is left untouched, so the Java watermark task
+     * still runs and the factory hook still paints the capsule.
+     */
+    private fun hookCloudWatermarkAttribute(loader: ClassLoader) {
+        val cls = findClass("com.xiaomi.camera.bean.CloudWmAttribute", loader) ?: run {
+            log("native watermark off: CloudWmAttribute absent on this build")
+            return
+        }
+        val key = cls.name + "#<init>(native-wm-off)"
+        if (!hookedCaptureMethods.add(key)) return
+        var hooked = false
+        for (ctor in cls.declaredConstructors) {
+            if (ctor.parameterTypes.size != 2) continue
+            if (ctor.parameterTypes[0] != String::class.java) continue
+            if (ctor.parameterTypes[1] != ByteArray::class.java) continue
+            XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    try {
+                        GlassConfig.refresh()
+                        if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
+                        val self = p.thisObject ?: return
+                        cls.getDeclaredField("mUserConfigData").set(self, ByteArray(0))
+                        cls.getDeclaredField("mWatermarkId").set(self, "")
+                    } catch (t: Throwable) {
+                        log("native watermark off failed: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+            })
+            hooked = true
+        }
+        if (hooked) log("native watermark off: CloudWmAttribute(String,[B) neutralised — the MIVI engine now finishes photos clean")
+    }
+
+    /**
+     * The guarantee: every jpeg that lands on the parallel task data without our capsule gets
+     * one burned in, right before it is stored.
+     *
+     * Two landing methods are hooked — `setJpegData` (`r(gi.e)`) for the Java-watermarked
+     * path and `fillJpegData` (`a(gi.e, int)`) for the engine's ~2 s result. The Java path's
+     * payloads are already registered as glass outputs (by the encoder hooks), so they pass
+     * through untouched; the engine's unregistered payload is decoded, receives the capsule,
+     * and is re-encoded before it replaces the glass jpeg the Water task produced.
+     *
+     * EXIF is written *after* this landing by the camera's own Exif task, so the re-encode
+     * does not lose capture metadata. Jpegs that carry a rotation tag are skipped — landing
+     * a rotated capsule would put it on the photo's side.
+     */
+    private fun hookJpegLandingVerifier(loader: ClassLoader) {
+        val task = DexKitHelper.findTaskDataClass(loader) ?: run {
+            log("landing verifier: task data class not discovered on this build")
+            return
+        }
+        val iface = DexKitHelper.findDataInterface(loader) ?: run {
+            log("landing verifier: data interface not discovered on this build")
+            return
+        }
+        val byteImpl = DexKitHelper.findByteDataImpl(loader)
+        val setter = DexKitHelper.findTaskJpegSetter(loader)
+        val filler = DexKitHelper.findTaskJpegFiller(loader)
+        if (setter == null && filler == null) {
+            log("landing verifier: neither landing method resolved on ${task.name}")
+            return
+        }
+        for ((target, label) in listOfNotNull(
+            setter?.to("${task.name}#setter(landing-verifier)"),
+            filler?.to("${task.name}#filler(landing-verifier)"),
+        )) {
+            if (!hookedCaptureMethods.add(label)) continue
+            XposedBridge.hookMethod(target, object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    try {
+                        val data = p.args?.getOrNull(0) ?: return
+                        if (!iface.isInstance(data)) return
+                        GlassConfig.refresh()
+                        if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
+                        val bytes = readDataBytes(data) ?: return
+                        val patched = patchIncomingJpeg(bytes) ?: return
+                        val replacement = wrapPatchedBytes(byteImpl, patched)
+                        if (replacement != null) {
+                            p.args[0] = replacement
+                        }
+                    } catch (t: Throwable) {
+                        log("landing verifier failed: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+            })
+            log("landing verifier: hooked ${target.declaringClass.name}#${target.name} " +
+                    "(${target.parameterTypes.map { it.simpleName }})")
+        }
+    }
+
+    /**
+     * Decodes a landed jpeg, burns the capsule in and re-encodes it. Returns null (and lets
+     * the original bytes through) whenever anything looks unusual.
+     */
+    private fun patchIncomingJpeg(bytes: ByteArray): ByteArray? {
+        if (bytes.size < VERIFIER_MIN_JPEG_BYTES) return null
+        // Only whole, unrotated jpegs. A rotation tag means the pixels are stored sideways;
+        // the capsule would land on the photo's edge, so those are left to the stock path.
+        if (bytes[0] != 0xFF.toByte() || bytes[1] != 0xD8.toByte()) return null
+        if (hasRotationTag(bytes)) return null
+        if (isRegisteredGlassOutput(bytes)) return null
+        val opts = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inMutable = true
+        }
+        val bitmap = try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
+        } catch (t: Throwable) {
+            log("landing verifier: decode failed: ${t.javaClass.simpleName}")
+            return null
+        }
+        try {
+            if (bitmap.width < 512 || bitmap.height < 512) return null
+            if (!renderCaptureCapsule(bitmap, verifierMeta())) return null
+            val out = ByteArrayOutputStream((bytes.size * 11) / 10)
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, VERIFIER_JPEG_QUALITY, out)) return null
+            val patched = out.toByteArray()
+            registerGlassOutput(patched)
+            log("landing verifier: capsule burned into ${bitmap.width}x${bitmap.height} " +
+                    "engine jpeg (${bytes.size} -> ${patched.size} bytes)")
+            return patched
+        } catch (t: Throwable) {
+            log("landing verifier render failed: ${t.javaClass.simpleName}: ${t.message}")
+            return null
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    /** True when the jpeg carries a non-trivial EXIF orientation, i.e. its pixels are rotated. */
+    private fun hasRotationTag(bytes: ByteArray): Boolean = try {
+        val exif = android.media.ExifInterface(java.io.ByteArrayInputStream(bytes))
+        when (
+            exif.getAttributeInt(
+                android.media.ExifInterface.TAG_ORIENTATION,
+                android.media.ExifInterface.ORIENTATION_NORMAL,
+            )
+        ) {
+            android.media.ExifInterface.ORIENTATION_NORMAL,
+            android.media.ExifInterface.ORIENTATION_UNDEFINED -> false
+            else -> true
+        }
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Reflective `gi.e.c()` — the zero-arg byte[]-returning method on the data holder. */
+    private val dataBytesReaders =
+        java.util.Collections.synchronizedMap(HashMap<Class<*>, Method?>())
+
+    private fun readDataBytes(data: Any): ByteArray? {
+        val cls = data.javaClass
+        val cached = dataBytesReaders[cls]
+        if (cached != null) {
+            return try {
+                cached.invoke(data) as? ByteArray
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        // The zero-arg byte[]-returning method is the holder's payload getter (`gi.e.c()`),
+        // implemented the same way by the byte[] and ByteBuffer holders.
+        val method = cls.methods.firstOrNull { m ->
+            m.parameterTypes.isEmpty() && m.returnType == ByteArray::class.java
+        }
+        dataBytesReaders[cls] = method
+        return try {
+            method?.invoke(data) as? ByteArray
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** Wraps patched jpeg bytes in the camera's own `gi.a(byte[])` data holder. */
+    private fun wrapPatchedBytes(impl: Class<*>?, bytes: ByteArray): Any? {
+        if (impl == null) return null
+        return try {
+            impl.getDeclaredConstructor(ByteArray::class.java).newInstance(bytes)
+        } catch (t: Throwable) {
+            log("landing verifier: could not wrap patched bytes: ${t.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
+     * `Wr.j.k(int, Bitmap)` — the last Java encode on the 6.7 "external watermark" path
+     * (`W8.e.d`), used for both the early image and the mode-4/104 final. Two jobs: a
+     * last-chance capsule burn when the bitmap somehow reached the encoder without one,
+     * and registration of glass outputs so the landing verifier recognises this path's
+     * payloads as already-glass and skips them.
+     */
+    private fun hookBitmapEncodeHelpers(loader: ClassLoader) {
+        val helpers = DexKitHelper.findBitmapEncodeHelpers(loader)
+        if (helpers.isEmpty()) {
+            log("bitmap encode helpers: none discovered on this build")
+            return
+        }
+        for (target in helpers) {
+            val key = "${target.declaringClass.name}#${target.name}(encode-helper)"
+            if (!hookedCaptureMethods.add(key)) continue
+            XposedBridge.hookMethod(target, object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    try {
+                        GlassConfig.refresh()
+                        if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
+                        val bitmap = p.args?.getOrNull(1) as? Bitmap ?: return
+                        if (bitmap.isRecycled || bitmap.width < 256 || bitmap.height < 256) return
+                        if (synchronized(glassBitmaps) { glassBitmaps.containsKey(bitmap) }) return
+                        val stamp = lastCapture ?: return
+                        if (SystemClock.elapsedRealtime() - stamp.at > META_FRESH_MS) return
+                        if (!bitmap.isMutable || bitmap.config == Bitmap.Config.HARDWARE) return
+                        if (renderCaptureCapsule(bitmap, stamp.meta)) {
+                            log("encode helper: capsule burned into ${bitmap.width}x${bitmap.height} " +
+                                    "before ${target.declaringClass.simpleName}#${target.name}")
+                        }
+                    } catch (t: Throwable) {
+                        log("encode helper failed: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    try {
+                        val bitmap = p.args?.getOrNull(1) as? Bitmap ?: return
+                        if (!synchronized(glassBitmaps) { glassBitmaps.containsKey(bitmap) }) return
+                        (readDataBytes(p.result))?.let { registerGlassOutput(it) }
+                    } catch (_: Throwable) {
+                    }
+                }
+            })
+            log("encode helper: hooked ${target.declaringClass.name}#${target.name}")
+        }
+    }
+
+    /**
+     * `Rm.b.o(...)` — the CircularMediaRecorder snapshot for live photos. The 7th parameter
+     * (index 6) is the watermark id the recorder burns into the recorded video frames; an
+     * empty id means no watermark, so the video stops re-appearing with the stock mark
+     * whenever the still is played back. (Rendering glass into every recorded frame would
+     * mean drawing on the recorder's GL pipeline; per-frame glass stays future work.)
+     */
+    private fun hookLiveRecorderSnapshots(loader: ClassLoader) {
+        val snapshots = DexKitHelper.findRecorderSnapshots(loader)
+        if (snapshots.isEmpty()) {
+            log("live recorder: snapshot method not discovered on this build")
+            return
+        }
+        for (target in snapshots) {
+            val key = "${target.declaringClass.name}#${target.name}(live-recorder)"
+            if (!hookedCaptureMethods.add(key)) continue
+            XposedBridge.hookMethod(target, object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    try {
+                        GlassConfig.refresh()
+                        if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
+                        val id = p.args?.getOrNull(6) as? String ?: return
+                        if (id.isEmpty()) return
+                        p.args[6] = ""
+                        log("live recorder: neutralised watermark id '${id.take(48)}' on " +
+                                "${target.declaringClass.simpleName}#${target.name}")
+                    } catch (t: Throwable) {
+                        log("live recorder neutralise failed: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+            })
+            log("live recorder: hooked ${target.declaringClass.name}#${target.name}")
         }
     }
 
@@ -748,11 +1130,21 @@ object WatermarkHooks {
 
     /** Draw on the real source photograph before the camera's stock watermark renderer runs. */
     private fun renderCaptureCapsule(out: Bitmap, meta: CapsuleRenderer.CaptureMeta): Boolean {
+        val logo = if (ConfigStore.capsuleShowLogo()) loadLogo() else null
+        val rendered = renderCapsuleInternal(out, meta, logo)
+        if (rendered || logo == null) return rendered
+        // A logo-specific failure must never cost the whole watermark: every false return
+        // happens before any pixel is written, so a clean retry without the logo is safe.
+        log("capsule render failed with logo '${ConfigStore.capsuleLogoPreset()}', retrying without it")
+        return renderCapsuleInternal(out, meta, null)
+    }
+
+    private fun renderCapsuleInternal(out: Bitmap, meta: CapsuleRenderer.CaptureMeta, logo: Bitmap?): Boolean {
         val started = SystemClock.elapsedRealtime()
         val w = out.width
         val h = out.height
         val shortSide = minOf(w, h)
-        val showLogo = ConfigStore.capsuleShowLogo()
+        val showLogo = logo != null
         val opts = CapsuleRenderer.Options(
             modelOverride = ConfigStore.capsuleModel(),
             position = ConfigStore.capsulePos(),
@@ -761,7 +1153,7 @@ object WatermarkHooks {
             showGps = ConfigStore.capsuleShowGps(),
             scale = ConfigStore.capsuleScale(),
             showLogo = showLogo,
-            logo = if (showLogo) loadLogo() else null,
+            logo = logo,
             logoPreset = ConfigStore.capsuleLogoPreset(),
             logoPosition = ConfigStore.capsuleLogoPosition(),
         )
@@ -824,9 +1216,75 @@ object WatermarkHooks {
         }
         CapsuleRenderer.blendTextOver(pixels, textLayer)
         out.setPixels(pixels, 0, cropW, cropLeft, cropTop, cropW, cropH)
+        recordGlassRender(out, meta)
         log("direct capsule: ${f(capsuleW)}x${f(capsuleH)} at ${f(capsuleLeft)},${f(capsuleTop)} " +
                 "lines=${lines.size} ${SystemClock.elapsedRealtime() - started}ms -> $result")
         return true
+    }
+
+    /**
+     * Remembers a successful capsule render for the hooks that run *after* the factory hook:
+     * the encoder guards consult [glassBitmaps] by bitmap identity, and the landing verifier
+     * gets its metadata (EXIF/GPS) from [lastCapture] because it runs on the MIVI callback
+     * thread, not the capture thread the ThreadLocal state lives on.
+     */
+    private fun recordGlassRender(bitmap: Bitmap, meta: CapsuleRenderer.CaptureMeta) {
+        try {
+            synchronized(glassBitmaps) {
+                glassBitmaps.put(bitmap, SystemClock.elapsedRealtime())
+                if (glassBitmaps.size > 16) {
+                    val iter = glassBitmaps.entries.iterator()
+                    while (glassBitmaps.size > 16 && iter.hasNext()) {
+                        iter.next()
+                        iter.remove()
+                    }
+                }
+            }
+            lastCapture = MetaStamp(meta, SystemClock.elapsedRealtime())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Metadata for an off-thread render: the factory hook's snapshot when fresh, else an
+     * empty meta (device name + clock only). The landing verifier runs on the engine's
+     * callback thread, so the ThreadLocal capture state is usually empty there.
+     */
+    private fun verifierMeta(): CapsuleRenderer.CaptureMeta {
+        val stamp = lastCapture
+        if (stamp != null && SystemClock.elapsedRealtime() - stamp.at <= META_FRESH_MS) {
+            return stamp.meta
+        }
+        return CapsuleRenderer.CaptureMeta(0L, null, null)
+    }
+
+    /** FNV-1a over the payload; used as a compact identity for produced/patched jpegs. */
+    private fun jpegIdentity(bytes: ByteArray): Long {
+        var h = 0xcbf29ce484222325UL
+        var i = 0
+        val step = if (bytes.size > 1 shl 20) 7 else 1
+        while (i < bytes.size) {
+            h = h xor (bytes[i].toULong() and 0xFFUL)
+            h *= 0x100000001b3UL
+            i += step
+        }
+        return h.toLong()
+    }
+
+    /** Records a jpeg payload as containing the glass capsule. */
+    private fun registerGlassOutput(bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        synchronized(glassEncodedOutputs) {
+            glassEncodedOutputs.add(jpegIdentity(bytes))
+            while (glassEncodedOutputs.size > 64) {
+                glassEncodedOutputs.remove(glassEncodedOutputs.first())
+            }
+        }
+    }
+
+    private fun isRegisteredGlassOutput(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        synchronized(glassEncodedOutputs) { return glassEncodedOutputs.contains(jpegIdentity(bytes)) }
     }
 
     /**
@@ -855,6 +1313,9 @@ object WatermarkHooks {
                 hookCaptureContext(loader)
                 hookWatermarkBitmapFactory(loader)
                 hookFinalJpegEncoder(loader)
+                hookJpegLandingVerifier(loader)
+                hookBitmapEncodeHelpers(loader)
+                hookLiveRecorderSnapshots(loader)
                 log("late discovery: re-install complete, total=${hookedCaptureMethods.size}")
 
                 DexKitHelper.findCanvasWrapper()?.let { cls ->
@@ -886,16 +1347,26 @@ object WatermarkHooks {
         hookCaptureContext(loader)
         hookWatermarkBitmapFactory(loader)
         hookFinalJpegEncoder(loader)
+        hookCloudWatermarkAttribute(loader)
+        hookJpegLandingVerifier(loader)
+        hookBitmapEncodeHelpers(loader)
+        hookLiveRecorderSnapshots(loader)
 
         val captureOk = hookedCaptureMethods.any {
             it.contains("(structural)") || it.contains("(la.a;ZI)")
         }
         val factoryOk = hookedCaptureMethods.any { it.contains("bitmapIdx=") }
         val finalGuardOk = hookedCaptureMethods.any { it.contains("(final-jpeg)") }
+        val nativeOffOk = hookedCaptureMethods.any { it.contains("(native-wm-off)") }
+        val verifierOk = hookedCaptureMethods.any { it.contains("(landing-verifier)") }
+        val liveRecorderOk = hookedCaptureMethods.any { it.contains("(live-recorder)") }
         log(
             "=== hook install summary: capture=${if (captureOk) "OK" else "MISSING"} " +
                     "factory=${if (factoryOk) "OK" else "MISSING"} " +
                     "finalGuard=${if (finalGuardOk) "OK" else "MISSING"} " +
+                    "nativeOff=${if (nativeOffOk) "OK" else "MISSING"} " +
+                    "landingVerifier=${if (verifierOk) "OK" else "PENDING"} " +
+                    "liveRecorder=${if (liveRecorderOk) "OK" else "PENDING"} " +
                     "total=${hookedCaptureMethods.size} ==="
         )
         when {

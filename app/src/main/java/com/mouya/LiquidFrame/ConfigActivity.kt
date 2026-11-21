@@ -51,8 +51,6 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
@@ -73,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -94,6 +93,7 @@ import com.mouya.LiquidFrame.ui.GlassCard
 import com.mouya.LiquidFrame.ui.LiquidBackdropProvider
 import com.mouya.LiquidFrame.ui.LiquidColors
 import com.mouya.LiquidFrame.ui.LiquidPage
+import com.mouya.LiquidFrame.ui.LiquidMenuPanel
 import com.mouya.LiquidFrame.ui.LiquidPageTransition
 import com.mouya.LiquidFrame.ui.LiquidSliderRow
 import com.mouya.LiquidFrame.ui.LiquidToggleRow
@@ -102,6 +102,7 @@ import com.mouya.LiquidFrame.ui.SettingDropdownRow
 import com.mouya.LiquidFrame.ui.SettingRow
 import com.mouya.LiquidFrame.ui.SettingSection
 import com.mouya.LiquidFrame.ui.StatusPill
+import com.mouya.LiquidFrame.ui.ValuePill
 import com.mouya.LiquidFrame.ui.bgPrimary
 import com.mouya.LiquidFrame.ui.isDark
 import com.mouya.LiquidFrame.ui.textPrimary
@@ -116,8 +117,10 @@ class ConfigActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "LiquidFrame"
+        // Preview resolution. Taller than a wide photo strip so the capsule has real
+        // content above it; the window still fills the card width.
         const val PREVIEW_W = 900
-        const val PREVIEW_H = 420
+        const val PREVIEW_H = 560
 
         // The reference panel is about 12% of the photo's short side, not of its width.
         const val PREVIEW_PANEL_H_FRACTION = 0.12f
@@ -137,7 +140,6 @@ class ConfigActivity : ComponentActivity() {
     private var previewRunnable: Runnable? = null
     private var basePhoto: Bitmap? = null
     private var displayedPreviewBitmap: Bitmap? = null
-    private var backdropSource = "内置背景 background-a.jpg"
     private var backdropRevision = mutableIntStateOf(0)
 
     private val pickBackdrop = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -239,9 +241,10 @@ class ConfigActivity : ComponentActivity() {
                     Toast.makeText(this, "无法读取这张图片", Toast.LENGTH_SHORT).show()
                     return@post
                 }
-                basePhoto?.recycle()
+                // The old photo is not recycled here: a pending render may still hold
+                // it. Its pixels live on the Java heap, so dropping the reference is
+                // enough once nothing draws it.
                 basePhoto = cropped
-                backdropSource = "已选择照片"
                 backdropRevision.intValue++
             }
         }
@@ -284,8 +287,6 @@ class ConfigActivity : ComponentActivity() {
         var currentPage by remember { mutableStateOf(LiquidPage.Home) }
 
         var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
-        var previewResult by remember { mutableStateOf("正在准备预览") }
-        var previewSource by remember { mutableStateOf(backdropSource) }
         var writeStatus by remember { mutableStateOf(ConfigStore.lastWriteStatus()) }
         val initial = remember { ConfigStore.glassParams() }
         var presetMenuExpanded by remember { mutableStateOf(false) }
@@ -320,11 +321,9 @@ class ConfigActivity : ComponentActivity() {
 
         val currentBackdropRevision = backdropRevision.intValue
         LaunchedEffect(currentBackdropRevision) {
-            previewSource = backdropSource
-            schedulePreview { bitmap, result ->
+            schedulePreview { bitmap ->
                 replaceDisplayedPreview(bitmap)
                 previewBitmap = bitmap
-                previewResult = result
             }
         }
 
@@ -332,7 +331,7 @@ class ConfigActivity : ComponentActivity() {
             enabled, adaptive, preserveContent, dispersion,
             band, amount, blur, lift, tint, rim, angle, depth,
         ) {
-            kotlinx.coroutines.delay(180)
+            kotlinx.coroutines.delay(120)
             val values = ConfigStore.snapshot().apply {
                 this[ConfigStore.KEY_ENABLED] = enabled.toString()
                 this[ConfigStore.KEY_ADAPTIVE] = adaptive.toString()
@@ -352,10 +351,9 @@ class ConfigActivity : ComponentActivity() {
                 ConfigStore.lastWriteStatus()
             }
             writeStatus = status
-            schedulePreview { bitmap, result ->
+            schedulePreview { bitmap ->
                 replaceDisplayedPreview(bitmap)
                 previewBitmap = bitmap
-                previewResult = result
             }
         }
 
@@ -366,7 +364,7 @@ class ConfigActivity : ComponentActivity() {
             capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleShowLogo,
             capsuleLogoPreset, capsuleLogoPosition, capsuleScale,
         ) {
-            kotlinx.coroutines.delay(180)
+            kotlinx.coroutines.delay(120)
             val effectiveModel = if (capsuleModelEnabled) capsuleModel else ""
             val values = ConfigStore.snapshot().apply {
                 this[ConfigStore.KEY_CAPSULE_ENABLED] = capsuleEnabled.toString()
@@ -384,10 +382,9 @@ class ConfigActivity : ComponentActivity() {
                 ConfigStore.save(values)
                 ConfigStore.lastWriteStatus()
             }
-            schedulePreview { bitmap, result ->
+            schedulePreview { bitmap ->
                 replaceDisplayedPreview(bitmap)
                 previewBitmap = bitmap
-                previewResult = result
             }
         }
 
@@ -597,18 +594,45 @@ class ConfigActivity : ComponentActivity() {
                                     SettingRow(
                                         title = "当前材质",
                                         subtitle = "选择内置风格或载入已保存的自定义预设",
-                                        trailing = { Text(presetLabel, color = LiquidColors.blue, fontSize = 14.sp, fontWeight = FontWeight.Medium) },
-                                        onClick = { presetMenuExpanded = true },
+                                        trailing = { ValuePill(presetLabel, presetMenuExpanded) },
+                                        onClick = { presetMenuExpanded = !presetMenuExpanded },
                                     )
-                                    DropdownMenu(expanded = presetMenuExpanded, onDismissRequest = { presetMenuExpanded = false }) {
-                                        listOf("Edge Clear", "Edge Soft", "Night Clear").forEach { name ->
-                                            DropdownMenuItem(text = { Text(name) }, onClick = { presetMenuExpanded = false; applyBuiltInPreset(name) })
-                                        }
-                                        ConfigStore.presetNames().forEach { name ->
-                                            DropdownMenuItem(text = { Text(name) }, onClick = {
-                                                presetMenuExpanded = false
-                                                ConfigStore.loadPreset(name)?.let { applyPresetValues(it); presetLabel = name }
-                                            })
+                                    if (presetMenuExpanded) {
+                                        androidx.compose.ui.window.Popup(
+                                            alignment = Alignment.TopEnd,
+                                            onDismissRequest = { presetMenuExpanded = false },
+                                            properties = androidx.compose.ui.window.PopupProperties(focusable = true),
+                                        ) {
+                                            val entrance = remember {
+                                                androidx.compose.animation.core.MutableTransitionState(false).apply { targetState = true }
+                                            }
+                                            androidx.compose.animation.AnimatedVisibility(
+                                                visibleState = entrance,
+                                                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(110)) +
+                                                    androidx.compose.animation.scaleIn(
+                                                        initialScale = 0.9f,
+                                                        animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.75f, stiffness = 620f),
+                                                    ),
+                                                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(80)),
+                                            ) {
+                                                LiquidMenuPanel(
+                                                    options = buildList {
+                                                        add("Edge Clear" to "Edge Clear")
+                                                        add("Edge Soft" to "Edge Soft")
+                                                        add("Night Clear" to "Night Clear")
+                                                        ConfigStore.presetNames().forEach { add(it to it) }
+                                                    },
+                                                    selected = presetLabel,
+                                                    onSelected = { name ->
+                                                        when {
+                                                            name == "Edge Clear" || name == "Edge Soft" || name == "Night Clear" -> applyBuiltInPreset(name)
+                                                            else -> ConfigStore.loadPreset(name)?.let { applyPresetValues(it); presetLabel = name }
+                                                        }
+                                                    },
+                                                    onDismiss = { presetMenuExpanded = false },
+                                                    modifier = Modifier.padding(top = 4.dp, end = 8.dp),
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -744,8 +768,6 @@ class ConfigActivity : ComponentActivity() {
                                             appendLine("LiquidFrame Diagnostic Log")
                                             appendLine("Version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
                                             appendLine("写入状态: $writeStatus")
-                                            appendLine("预览: $previewResult")
-                                            appendLine("背景: $previewSource")
                                             appendLine()
                                             appendLine("--- 参数 ---")
                                             appendLine("enabled=$enabled")
@@ -833,19 +855,23 @@ class ConfigActivity : ComponentActivity() {
                                         ) {
                                             Text("实时预览", color = ComposeColor.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                         }
-                                    }
-                                    Row(
-                                        Modifier.fillMaxWidth().padding(top = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(previewSource, fontSize = 12.sp, color = textSecondary())
-                                            Text(previewResult, fontSize = 11.sp, color = textSecondary(), modifier = Modifier.padding(top = 2.dp))
-                                        }
-                                        androidx.compose.material3.TextButton(onClick = ::chooseBackdrop) {
-                                            Icon(Icons.Outlined.Image, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Text("换一张", modifier = Modifier.padding(start = 6.dp))
+                                        // Backdrop picker: a small corner action rather than a
+                                        // caption row under the image.
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(10.dp)
+                                                .size(34.dp)
+                                                .clip(RoundedCornerShape(50))
+                                                .background(ComposeColor.Black.copy(alpha = 0.42f))
+                                                .clickable(onClick = ::chooseBackdrop),
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Image,
+                                                contentDescription = "更换预览背景",
+                                                tint = ComposeColor.White,
+                                                modifier = Modifier.align(Alignment.Center).size(17.dp),
+                                            )
                                         }
                                     }
                                 }
@@ -1019,7 +1045,7 @@ class ConfigActivity : ComponentActivity() {
         }
     }
 
-    private fun schedulePreview(callback: (Bitmap, String) -> Unit) {
+    private fun schedulePreview(callback: (Bitmap) -> Unit) {
         previewRunnable?.let(mainHandler::removeCallbacks)
         val scheduled = Runnable {
             val generation = previewGeneration.incrementAndGet()
@@ -1035,30 +1061,39 @@ class ConfigActivity : ComponentActivity() {
             }
             val params = ConfigStore.glassParams()
             previewExecutor.execute {
-                val outcome = renderPreview(copy, params)
+                // Skip this render entirely if a newer one was scheduled while this
+                // one sat in the queue — that queue is what let the preview lag
+                // behind rapid parameter changes.
+                if (generation != previewGeneration.get()) {
+                    copy.recycle()
+                    return@execute
+                }
+                renderPreview(copy, params)
                 mainHandler.post {
                     if (generation != previewGeneration.get() || isFinishing || isDestroyed) {
                         copy.recycle()
                         return@post
                     }
-                    callback(copy, outcome)
+                    callback(copy)
                 }
             }
         }
         previewRunnable = scheduled
-        mainHandler.postDelayed(scheduled, 90L)
+        mainHandler.postDelayed(scheduled, 60L)
     }
 
-    private fun renderPreview(bitmap: Bitmap, params: GlassParams): String {
+    private fun renderPreview(bitmap: Bitmap, params: GlassParams) {
         val width = bitmap.width
         val height = bitmap.height
         val shortSide = minOf(width, height)
-        if (width < 160 || height < 160) return "预览图尺寸不足"
+        if (width < 160 || height < 160) return
         val previewMeta = CapsuleRenderer.CaptureMeta(
             captureMillis = 1_792_657_488_000L,
             location = Location("preview").apply { latitude = 27.925; longitude = 118.549 },
             exif = CapsuleRenderer.ExifBits(100.0, 2.8, 1.0 / 461.0, 50),
         )
+        // The logo goes through its own loader here; a failed logo drops just the logo
+        // (the renderer isolates it) so the capsule preview never disappears for it.
         val showLogo = ConfigStore.capsuleShowLogo()
         val logo = if (showLogo) loadPreviewLogo(ConfigStore.capsuleLogoPreset()) else null
         val options = CapsuleRenderer.Options(
@@ -1074,8 +1109,7 @@ class ConfigActivity : ComponentActivity() {
             logoPosition = ConfigStore.capsuleLogoPosition(),
         )
         val lines = CapsuleRenderer.buildLines(options, previewMeta, shortSide)
-        val metrics = CapsuleRenderer.measureCapsule(width, shortSide, options.scale, lines, options)
-            ?: return "预览内容不足"
+        val metrics = CapsuleRenderer.measureCapsule(width, shortSide, options.scale, lines, options) ?: return
         val leftInset = (width * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
         val left = when (options.position) {
             "right" -> width - leftInset - metrics.capsuleWidth
@@ -1085,19 +1119,22 @@ class ConfigActivity : ComponentActivity() {
         val bottomMargin = (shortSide * 0.016f).coerceIn(4f, shortSide * 0.06f)
         val top = height - bottomMargin - metrics.capsuleHeight
         val panel = PanelRect(left, top, metrics.capsuleWidth, metrics.capsuleHeight, metrics.capsuleHeight * 0.5f)
-        return try {
+        try {
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
             val tuned = GlassSceneTuner.resolveParams(pixels, width, height, panel, params).copy(preserveContent = false)
             val glassResult = LiquidGlassOptics.renderPanel(pixels, width, height, panel, tuned, panelIsOpaquePlate = false)
-            if (glassResult.startsWith("skip")) return "玻璃渲染跳过：$glassResult"
+            if (glassResult.startsWith("skip")) {
+                Log.w(TAG, "preview render skipped: $glassResult")
+                return
+            }
             val textLayer = CapsuleRenderer.drawTextLayer(width, height, panel, metrics, CapsuleRenderer.TEXT_COLOR_WHITE)
-                ?: return "文字层生成失败"
+                ?: return
             CapsuleRenderer.blendTextOver(pixels, textLayer)
             bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-            "共用成片渲染器 · 参数为示例值 · ${metrics.capsuleWidth.toInt()}×${metrics.capsuleHeight.toInt()} · $glassResult"
+            Log.d(TAG, "preview rendered: ${metrics.capsuleWidth.toInt()}x${metrics.capsuleHeight.toInt()} $glassResult")
         } catch (t: Throwable) {
-            "预览失败：${t.javaClass.simpleName}"
+            Log.w(TAG, "preview render failed: ${t.javaClass.simpleName}: ${t.message}")
         } finally {
             logo?.takeIf { !it.isRecycled }?.recycle()
         }

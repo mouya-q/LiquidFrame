@@ -68,6 +68,29 @@ object DexKitHelper {
     @Volatile
     private var captureReceiverParams: Int? = null
 
+    // --- deep targets (6.6+/6.7+ post-capture pipeline) ---
+
+    @Volatile
+    private var dataInterfaceName: String? = null
+
+    @Volatile
+    private var byteDataImplName: String? = null
+
+    @Volatile
+    private var taskDataClassName: String? = null
+
+    @Volatile
+    private var taskJpegSetterName: String? = null
+
+    @Volatile
+    private var taskJpegFillerName: String? = null
+
+    @Volatile
+    private var encodeHelperNames: List<Pair<String, String>> = emptyList()
+
+    @Volatile
+    private var recorderSnapshotNames: List<Pair<String, String>> = emptyList()
+
     fun init(context: Context) {
         if (scanStarted) return
         scanStarted = true
@@ -194,6 +217,24 @@ object DexKitHelper {
             captureReceiverOwner = receiver?.owner
             captureReceiverMethod = receiver?.method
             captureReceiverParams = receiver?.paramCount
+
+            val deep = found.deepTargets
+            dataInterfaceName = deep.dataInterface
+            byteDataImplName = deep.byteDataImpl
+            taskDataClassName = deep.taskDataClass
+            taskJpegSetterName = deep.taskJpegSetter?.method
+            taskJpegFillerName = deep.taskJpegFiller?.method
+            encodeHelperNames = deep.bitmapEncodeHelpers.map { it.owner to it.method }
+            recorderSnapshotNames = deep.recorderSnapshots.map { it.owner to it.method }
+            log(
+                "deep targets: dataIface=${deep.dataInterface ?: "none"}" +
+                        " byteImpl=${deep.byteDataImpl ?: "none"}" +
+                        " task=${deep.taskDataClass ?: "none"}" +
+                        " setter=${deep.taskJpegSetter?.method ?: "?"}" +
+                        " filler=${deep.taskJpegFiller?.method ?: "?"}" +
+                        " encoders=${deep.bitmapEncodeHelpers.size}" +
+                        " recorders=${deep.recorderSnapshots.size}"
+            )
 
             val receiverLabel = if (receiver != null) {
                 receiver.owner + "#" + receiver.method
@@ -341,6 +382,86 @@ object DexKitHelper {
         // This works for both 6.4.x (static) and 6.7.x (instance) watermark factories.
         android.graphics.Bitmap::class.java.isAssignableFrom(method.returnType) &&
                 method.parameterTypes.any { android.graphics.Bitmap::class.java.isAssignableFrom(it) }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Deep-target lookups (6.6+/6.7+ post-capture pipeline)
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The jpeg-data holder interface (`gi.e` on 6.7): `c()` returns the bytes.
+     * Null when discovery has not finished or found nothing.
+     */
+    fun findDataInterface(loader: ClassLoader): Class<*>? = dataInterfaceName?.let { load(it, loader) }
+
+    /** The `([B)V` wrapper class (`gi.a` on 6.7) used to re-wrap patched jpeg bytes. */
+    fun findByteDataImpl(loader: ClassLoader): Class<*>? = byteDataImplName?.let { load(it, loader) }
+
+    /** The parallel-task-data class (`di.s` on 6.7) that holds the final jpeg field. */
+    fun findTaskDataClass(loader: ClassLoader): Class<*>? = taskDataClassName?.let { load(it, loader) }
+
+    /**
+     * `r(Lgi/e;)V` (setJpegData): the ordinary landing point for Java-watermarked jpegs.
+     * Both landing methods take the data interface as their first parameter.
+     */
+    fun findTaskJpegSetter(loader: ClassLoader): Method? {
+        val task = findTaskDataClass(loader) ?: return null
+        val name = taskJpegSetterName ?: return null
+        val iface = findDataInterface(loader) ?: return null
+        return task.declaredMethods.firstOrNull { m ->
+            m.name == name && m.parameterTypes.size == 1 && m.parameterTypes[0] == iface
+        }
+    }
+
+    /**
+     * `a(Lgi/e;I)V` (fillJpegData): the landing point of the ~2 s native (MIVI engine)
+     * result, which is what overwrites the Java watermark with the stock one.
+     */
+    fun findTaskJpegFiller(loader: ClassLoader): Method? {
+        val task = findTaskDataClass(loader) ?: return null
+        val name = taskJpegFillerName ?: return null
+        val iface = findDataInterface(loader) ?: return null
+        return task.declaredMethods.firstOrNull { m ->
+            m.name == name && m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == iface && m.parameterTypes[1] == Int::class.javaPrimitiveType
+        }
+    }
+
+    /**
+     * `k(I, Bitmap)Lgi/e;`-style encoders (`Wr.j.k` on 6.7): the last Java encode before
+     * a jpeg lands on the task, used to register glass outputs so the landing verifier
+     * never double-renders them.
+     */
+    fun findBitmapEncodeHelpers(loader: ClassLoader): List<Method> {
+        val iface = findDataInterface(loader) ?: return emptyList()
+        val out = ArrayList<Method>(encodeHelperNames.size)
+        for ((owner, name) in encodeHelperNames) {
+            val cls = load(owner, loader) ?: continue
+            val intType = Int::class.javaPrimitiveType ?: continue
+            cls.declaredMethods.firstOrNull { m ->
+                m.name == name && m.returnType == iface &&
+                        m.parameterTypes.size == 2 &&
+                        m.parameterTypes[0] == intType &&
+                        android.graphics.Bitmap::class.java.isAssignableFrom(m.parameterTypes[1])
+            }?.let { out.add(it) }
+        }
+        return out
+    }
+
+    /**
+     * Live-photo snapshot methods (`Rm.b.o` on 6.7): their 7th parameter (index 6) is the
+     * watermark id the recorder burns into the recorded video.
+     */
+    fun findRecorderSnapshots(loader: ClassLoader): List<Method> {
+        val out = ArrayList<Method>(recorderSnapshotNames.size)
+        for ((owner, name) in recorderSnapshotNames) {
+            val cls = load(owner, loader) ?: continue
+            cls.declaredMethods.firstOrNull { m ->
+                m.name == name && m.parameterTypes.size == 9 &&
+                        m.parameterTypes[6] == java.lang.String::class.java
+            }?.let { out.add(it) }
+        }
+        return out
     }
 
     private fun log(message: String) {

@@ -1,3 +1,25 @@
+
+## 2.3.0 — Camera 6.6/6.7: the native engine no longer overwrites the glass
+
+- Root cause: the finished photo never passes a Java encoder on 6.6/6.7 — the MIVI/CV
+  engine draws the stock watermark natively from a `CloudWmAttribute` attached at capture
+  start, then lands its JPEG over the glass one ~2 s later via `di.s.a(gi.e, int)`. The old
+  guard also hooked the wrong encoder: `bitmapToJpegBuffer` wins when a direct buffer exists.
+- Neutralise `CloudWmAttribute` at its constructor (empty id + config, the stock "no user
+  config" state) so the engine emits a clean photo; the live-video watermark dies here too.
+- Landing verifier hooks `setJpegData`/`fillJpegData` on `di.s` (via `gi.e`/`gi.a`) and burns
+  the capsule into any landed JPEG that lacks it; rotated-EXIF jpegs are skipped, glass
+  outputs are hash-registered so nothing renders twice.
+- Encoder guards cover both `bitmapToJpeg` variants plus `Wr.j.k(int, Bitmap)`.
+- Live-photo video: recorder watermark id blanked → no stock watermark; per-frame glass
+  is future work.
+- Matchers verified unique against all 11 dex files of 6.7.000480.0
+  (`tools/verify_new_matchers.py`); install summary gains `nativeOff`/`landingVerifier`/
+  `liveRecorder` (`PENDING` until the dex scan lands, ~45 s).
+- Settings: plain live preview again with the backdrop picker in the preview corner; logo
+  draw failures drop the logo only and the capture render retries without it; new launcher
+  icon and window mark; FlClash-style anchored popups for selection rows.
+
 ## 2.2.1 — Final encoder guard keeps the glass from being overwritten
 
 The merged 2.2.0 pipeline replaced only the watermark factory's return value, which is not

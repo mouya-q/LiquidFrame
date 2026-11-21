@@ -353,13 +353,66 @@ object DexScan {
          */
         val captureReceivers = ArrayList<CaptureReceiver>()
 
-        /** Adds a receiver once, keyed by owner#method, so the two-pass scan cannot duplicate. */
+        /**
+         * `Lgi/e;`-style data-holder interface candidates: zero-arg methods returning
+         * `Z`, `InputStream`, `[B`, `I` and `V`. The byte-array implementation has the same
+         * shape, so the final interface is resolved by the task-class cross-check in
+         * [matchDeepTargets]: only the real interface is used as both `(L<iface>;)V`
+         * (setJpegData) and `(L<iface>;I)V` (fillJpegData) by the parallel-task-data class.
+         */
+        val dataInterfaceCandidates = LinkedHashSet<String>()
+
+        /** `Lgi/a;`-style byte[] implementation: `([B)V` ctor, `[B` instance field, `()InputStream`. */
+        val byteDataImpls = LinkedHashSet<String>()
+
+        /**
+         * Everything the deep adaptation needs, resolved across every dex by [matchDeepTargets].
+         */
+        val deepTargets = DeepTargets()
+
+        /**
+         * Adds a receiver once, keyed by owner#method, so the two-pass scan cannot duplicate.
+         */
         fun addReceiver(receiver: CaptureReceiver) {
             if (captureReceivers.none { it.owner == receiver.owner && it.method == receiver.method }) {
                 captureReceivers.add(receiver)
             }
         }
     }
+
+    /**
+     * Deep targets for the 6.6+/6.7+ post-capture pipeline, where the final file is
+     * finished by the native MIVI engine and re-landed as JPEG bytes onto the parallel
+     * task data after the Java watermark tasks already ran.
+     *
+     * All names are obfuscated per build, so every entry is resolved structurally:
+     *  - [dataInterface]  — `gi.e`: the jpeg-data holder (`c()[B` reads the bytes).
+     *  - [byteDataImpl]   — `gi.a`: `([B)V` constructor to wrap patched bytes.
+     *  - [taskDataClass]  — `di.s`: holds the jpegData field; [taskJpegSetter] is
+     *                      `r(gi.e)V` (setJpegData) and [taskJpegFiller] is `a(gi.e, I)V`
+     *                      (fillJpegData — the ~2 s native result lands here).
+     *  - [bitmapEncodeHelpers] — `Wr.j.k(I, Bitmap)gi.e`: encodes a (glass) bitmap.
+     *  - [recorderSnapshots] — `Rm.b.o(I, Rm.y, Object, I, Z, Z, String, Z, I)Z`:
+     *                      live-photo snapshot; the String at index 6 is the watermark id
+     *                      the recorder burns into the recorded video.
+     */
+    class DeepTargets {
+        var dataInterface: String? = null
+        var byteDataImpl: String? = null
+        var taskDataClass: String? = null
+        var taskJpegSetter: MethodTarget? = null
+        var taskJpegFiller: MethodTarget? = null
+        val bitmapEncodeHelpers = ArrayList<MethodTarget>()
+        val recorderSnapshots = ArrayList<MethodTarget>()
+
+        fun isResolvable(): Boolean = dataInterface != null
+    }
+
+    /** A structurally-resolved method: the declaring class plus its (obfuscated) name. */
+    data class MethodTarget(
+        val owner: String,
+        val method: String,
+    )
 
     /**
      * The fingerprint of a capture-metadata record, in field *declaration order*.
@@ -404,7 +457,90 @@ object DexScan {
         // the record in classes5 and the receiver in classes4), so receivers are matched in a
         // second pass once every record is known.
         matchCaptureReceivers(archives, found)
+        matchDeepTargets(archives, found)
         return found
+    }
+
+    /**
+     * Second pass: resolve the deep 6.6+/6.7+ pipeline targets now that every dex has been
+     * scanned once and the data-interface candidates are all known.
+     *
+     * The parallel-task-data class is the pivot: it is the only class that references a
+     * data interface both as `(L<iface>;)V` (setJpegData) and `(L<iface>;I)V` (fillJpegData)
+     * *and* has a `com/xiaomi/cam/watermark/WatermarkRemover$b` parameter somewhere — that
+     * triple conjunction pins both the interface and the task class, verified unique on
+     * 6.7.000480.0 (`gi.e` + `di.s`).
+     */
+    private fun matchDeepTargets(archives: List<String>, found: Found) {
+        val ifaceCandidates = found.dataInterfaceCandidates
+        if (ifaceCandidates.isEmpty()) return
+        for (archive in archives) {
+            try {
+                ZipFile(archive).use { zip ->
+                    val entries = zip.entries().asSequence()
+                        .filter { it.name.startsWith("classes") && it.name.endsWith(".dex") }
+                        .sortedBy { it.name }
+                        .toList()
+                    for (entry in entries) {
+                        val bytes = try {
+                            zip.getInputStream(entry).use { it.readBytes() }
+                        } catch (t: Throwable) {
+                            continue
+                        }
+                        val dex = DexFile(bytes)
+                        if (!dex.isDex()) continue
+                        for (cls in dex.classes()) {
+                            val hasRemoverParam = cls.methods.any { m ->
+                                m.params.any { it.contains("watermark/WatermarkRemover$") }
+                            }
+                            if (hasRemoverParam && found.deepTargets.taskDataClass == null) {
+                                for (iface in ifaceCandidates) {
+                                    val setter = cls.methods.firstOrNull { m ->
+                                        m.returnType == VOID && m.params == listOf(iface)
+                                    }
+                                    val filler = cls.methods.firstOrNull { m ->
+                                        m.returnType == VOID && m.params == listOf(iface, INT)
+                                    }
+                                    if (setter != null && filler != null) {
+                                        found.deepTargets.dataInterface = iface
+                                        found.deepTargets.taskDataClass = cls.name
+                                        found.deepTargets.taskJpegSetter = MethodTarget(cls.name, setter.name)
+                                        found.deepTargets.taskJpegFiller = MethodTarget(cls.name, filler.name)
+                                        break
+                                    }
+                                }
+                            }
+                            // `k(I, Bitmap)gi.e`-style encoders, recorded for any candidate
+                            // interface and filtered down to the resolved one afterwards.
+                            for (m in cls.methods) {
+                                if (m.returnType !in ifaceCandidates) continue
+                                if (m.params != listOf(INT, BITMAP)) continue
+                                found.deepTargets.bitmapEncodeHelpers.add(MethodTarget(cls.name, m.name))
+                            }
+                            // `o(I, Rm.y, Object, I, Z, Z, String, Z, I)Z` live-photo snapshot.
+                            for (m in cls.methods) {
+                                if (m.params.size != 9) continue
+                                if (m.params[2] != "Ljava/lang/Object;") continue
+                                if (m.params[6] != STRING) continue
+                                if (m.returnType != BOOLEAN) continue
+                                if (found.deepTargets.recorderSnapshots.none {
+                                        it.owner == cls.name && it.method == m.name
+                                    }) {
+                                    found.deepTargets.recorderSnapshots.add(MethodTarget(cls.name, m.name))
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("LiquidFrame", "DexScanner: deep pass failed on $archive: ${t.javaClass.simpleName}")
+            }
+        }
+        // The byte-array impl that wraps patched jpeg bytes.
+        found.deepTargets.byteDataImpl = found.byteDataImpls.firstOrNull()
+        // Encode helpers were recorded against every interface candidate; the runtime hook
+        // re-checks each method's actual return type when it loads the class, so a helper
+        // against a sibling candidate simply fails the check and stays inert.
     }
 
     /**
@@ -464,7 +600,36 @@ object DexScan {
                 found.captureRecordTypes[cls.name] = cls.name
                 recordPlan(cls.instanceFieldTypes)?.let { found.recordClassesFirstPlan[cls.name] = it }
             }
+            if (isDataInterfaceCandidate(cls)) found.dataInterfaceCandidates.add(cls.name)
+            if (isByteDataImpl(cls)) found.byteDataImpls.add(cls.name)
         }
+    }
+
+    /**
+     * `Lgi/e;`-style holder: five zero-arg methods returning `Z`, `InputStream`, `[B`, `I`, `V`.
+     *
+     * The byte[] implementation has the same method shapes, so it is excluded here and
+     * recorded separately by [isByteDataImpl]; the ByteBuffer implementation stays a
+     * candidate because the task-class cross-check in [matchDeepTargets] eliminates it.
+     */
+    private fun isDataInterfaceCandidate(cls: DexClass): Boolean {
+        val zeroArgReturns = cls.methods.asSequence()
+            .filter { it.params.isEmpty() }
+            .map { it.returnType }
+            .toSet()
+        if (!setOf("Z", INPUT_STREAM, BYTE_ARRAY, INT, VOID).all { it in zeroArgReturns }) return false
+        // The byte[] impl is not the interface itself.
+        if (cls.methods.any { it.isConstructor && it.params == listOf(BYTE_ARRAY) } &&
+            cls.instanceFieldTypes.contains(BYTE_ARRAY)
+        ) return false
+        return true
+    }
+
+    /** `Lgi/a;`-style impl: `([B)V` constructor, `[B` instance field, `()InputStream` method. */
+    private fun isByteDataImpl(cls: DexClass): Boolean {
+        val hasBCtor = cls.methods.any { it.isConstructor && it.params == listOf(BYTE_ARRAY) }
+        if (!hasBCtor || !cls.instanceFieldTypes.contains(BYTE_ARRAY)) return false
+        return cls.methods.any { it.params.isEmpty() && it.returnType == INPUT_STREAM }
     }
 
     /**
@@ -561,4 +726,6 @@ object DexScan {
 
     private const val LOCATION = "Landroid/location/Location;"
     private const val MAX_RECORD_FIELDS = 40
+    private const val INPUT_STREAM = "Ljava/io/InputStream;"
+    private const val BYTE_ARRAY = "[B"
 }

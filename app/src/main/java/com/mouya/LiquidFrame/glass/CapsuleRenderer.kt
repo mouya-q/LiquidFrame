@@ -453,17 +453,28 @@ object CapsuleRenderer {
             val logoPlacement = metrics.logo
             val logoBitmap = metrics.logoBitmap
             if (logoPlacement != null && logoBitmap != null && !logoBitmap.isRecycled) {
-                val dst = RectF(
-                    capsule.left + logoPlacement.left,
-                    capsule.top + logoPlacement.top,
-                    capsule.left + logoPlacement.left + logoPlacement.width,
-                    capsule.top + logoPlacement.top + logoPlacement.height,
-                )
-                val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                    setShadowLayer(metrics.unitPx * 0.9f, 0f, metrics.unitPx * 0.2f, 0x52000000)
+                // The logo is isolated in its own guard: a bad logo bitmap (bad decode,
+                // recycled mid-flight, pathological size) must drop the logo, not the
+                // whole text layer — a null text layer costs the entire watermark.
+                try {
+                    val dst = RectF(
+                        capsule.left + logoPlacement.left,
+                        capsule.top + logoPlacement.top,
+                        capsule.left + logoPlacement.left + logoPlacement.width,
+                        capsule.top + logoPlacement.top + logoPlacement.height,
+                    )
+                    val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                        setShadowLayer(metrics.unitPx * 0.9f, 0f, metrics.unitPx * 0.2f, 0x52000000)
+                    }
+                    canvas.drawBitmap(logoBitmap, null, dst, logoPaint)
+                    logoPaint.clearShadowLayer()
+                } catch (t: Throwable) {
+                    android.util.Log.w(
+                        "LiquidFrame",
+                        "capsule logo draw failed (dropping logo, keeping text): " +
+                            "${t.javaClass.simpleName}: ${t.message}",
+                    )
                 }
-                canvas.drawBitmap(logoBitmap, null, dst, logoPaint)
-                logoPaint.clearShadowLayer()
             }
 
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -487,6 +498,12 @@ object CapsuleRenderer {
             bmp.getPixels(out, 0, cw, 0, 0, cw, ch)
             out
         } catch (t: Throwable) {
+            // A null text layer costs the whole watermark, so the reason must be
+            // visible in the log rather than silent.
+            android.util.Log.w(
+                "LiquidFrame",
+                "capsule text layer failed: ${t.javaClass.simpleName}: ${t.message}",
+            )
             null
         } finally {
             bmp?.recycle()

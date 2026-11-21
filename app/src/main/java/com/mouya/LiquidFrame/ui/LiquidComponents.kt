@@ -4,17 +4,21 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -26,10 +30,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -42,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -49,6 +60,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.kyant.capsule.ContinuousRoundedRectangle
 import com.kyant.shapes.Capsule
 import java.util.Locale
@@ -347,7 +360,128 @@ fun StatusPill(text: String, color: Color) {
         }
     }
 }
-/** A compact MIUIX-style preference row backed by a real anchored selection menu. */
+/**
+ * The value pill that anchors a [LiquidMenuPanel]: a compact rounded chip showing the
+ * current selection with a caret that rotates as the menu opens.
+ *
+ * Modelled on FlClash's prism-ui rows: the selected value itself is the button, so the
+ * popup grows out of the thing it is changing.
+ */
+@Composable
+fun ValuePill(
+    text: String,
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val caretRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = spring(dampingRatio = 0.8f, stiffness = 550f),
+        label = "valuePillCaret",
+    )
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (isDark()) Color(0xFF2A2A2E) else Color(0xFFF2F2F7))
+            .padding(start = 12.dp, end = 8.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text,
+            color = LiquidColors.blue,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(3.dp))
+        Icon(
+            Icons.Filled.KeyboardArrowDown,
+            contentDescription = if (expanded) "收起菜单" else "展开菜单",
+            tint = if (expanded) LiquidColors.blue else textSecondary(),
+            modifier = Modifier
+                .size(16.dp)
+                .graphicsLayer { rotationZ = caretRotation },
+        )
+    }
+}
+
+/**
+ * The anchored selection menu itself: a compact rounded panel that opens from the value
+ * pill with a scale-and-fade, lists the options with a fixed check slot so labels stay
+ * aligned, and marks the active one with a check.
+ *
+ * The check slot reserves its width even when empty; without it the first unselected
+ * row's text would sit further left than the selected one's, and the panel would appear
+ * to lurch sideways as the selection moves.
+ */
+@Composable
+fun LiquidMenuPanel(
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelected: (String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .shadow(20.dp, ContinuousRoundedRectangle(18.dp), ambientColor = Color.Black.copy(alpha = 0.22f), spotColor = Color.Black.copy(alpha = 0.22f))
+            .clip(ContinuousRoundedRectangle(18.dp))
+            .background(surfaceColor())
+            .border(0.5.dp, separatorColor().copy(alpha = 0.6f), ContinuousRoundedRectangle(18.dp))
+            .widthIn(min = 190.dp)
+            .heightIn(max = 360.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(vertical = 5.dp),
+    ) {
+        options.forEach { (value, label) ->
+            val active = value == selected
+            val rowInteraction = remember { MutableInteractionSource() }
+            val rowPressed by rowInteraction.collectIsPressedAsState()
+            val rowScale by animateFloatAsState(
+                targetValue = if (rowPressed) 0.97f else 1f,
+                animationSpec = spring(dampingRatio = 0.65f, stiffness = 1200f),
+                label = "menuItemPress",
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = rowScale
+                        scaleY = rowScale
+                    }
+                    .clickable(
+                        indication = null,
+                        interactionSource = rowInteraction,
+                    ) {
+                        onDismiss()
+                        onSelected(value)
+                    }
+                    .padding(start = 11.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = if (active) "已选中" else null,
+                    tint = if (active) LiquidColors.blue else Color.Transparent,
+                    modifier = Modifier.size(15.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    label,
+                    fontSize = 13.sp,
+                    color = if (active) textPrimary() else textSecondary(),
+                    fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A preference row whose selection menu is anchored to a value pill, in the style of
+ * FlClash's prism-ui options rows: tapping anywhere on the row (or the pill) opens a
+ * compact popup directly out of the pill rather than a full-width material dropdown.
+ */
 @Composable
 fun SettingDropdownRow(
     title: String,
@@ -357,28 +491,41 @@ fun SettingDropdownRow(
     onSelected: (String) -> Unit,
 ) {
     var expanded by remember(title) { mutableStateOf(false) }
-    androidx.compose.foundation.layout.Box {
+    Box {
         SettingRow(
             title = title,
             subtitle = subtitle,
-            trailing = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(selected, color = LiquidColors.blue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = textSecondary())
-                }
-            },
-            onClick = { expanded = true },
+            trailing = { ValuePill(selected, expanded) },
+            onClick = { expanded = !expanded },
         )
-        androidx.compose.material3.DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            options.forEach { (value, label) ->
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text(label) },
-                    onClick = { expanded = false; onSelected(value) },
-                )
+        if (expanded) {
+            Popup(
+                alignment = Alignment.TopEnd,
+                onDismissRequest = { expanded = false },
+                properties = PopupProperties(focusable = true),
+            ) {
+                // The popup composes fresh each time; AnimatedVisibility would skip the
+                // enter animation, so the panel drives a MutableTransitionState that
+                // starts false and flips true on the first composed frame.
+                val entrance = remember {
+                    MutableTransitionState(false).apply { targetState = true }
+                }
+                AnimatedVisibility(
+                    visibleState = entrance,
+                    enter = fadeIn(tween(110)) + scaleIn(
+                        initialScale = 0.9f,
+                        animationSpec = spring(dampingRatio = 0.75f, stiffness = 620f),
+                    ),
+                    exit = fadeOut(tween(80)),
+                ) {
+                    LiquidMenuPanel(
+                        options = options,
+                        selected = selected,
+                        onSelected = onSelected,
+                        onDismiss = { expanded = false },
+                        modifier = Modifier.padding(top = 4.dp, end = 8.dp),
+                    )
+                }
             }
         }
     }
