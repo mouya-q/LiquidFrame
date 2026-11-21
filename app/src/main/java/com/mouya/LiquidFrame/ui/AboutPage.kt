@@ -275,14 +275,18 @@ private fun rememberAboutAnimationTime(): Float {
 }
 
 // Animated gradient wordmark: the shared palette interpolates over a 12 s cycle
-// and the gradient axis slowly rotates, so the fill flows through the letters.
-// SrcIn paints the gradient through the glyph coverage, keeping it inside the
-// glyphs, and the palette is closed (first colour appended) so the loop is
-// seamless.
+// and the gradient axis slowly sweeps, so the fill flows through the letters.
+// The sweep is anisotropic — wide across, narrow vertically, like the reference —
+// and it stays at least as long as the text box, so the gradient never collapses
+// to a flat wash. SrcIn paints the gradient through the glyph coverage and the
+// closed colour list makes the loop seamless.
+private const val WORDMARK_SWEEP_X = 1.15f
+private const val WORDMARK_SWEEP_Y = 0.45f
+
 @Composable
 private fun AnimatedGradientWordmark(dark: Boolean) {
     val animationTime = rememberAboutAnimationTime()
-    val colors = animatedGradientColors(animationTime, dark)
+    val colors = wordmarkGradientColors(animationTime, dark)
     Text(
         "LiquidFrame",
         style = TextStyle(
@@ -297,8 +301,8 @@ private fun AnimatedGradientWordmark(dark: Boolean) {
                     drawContent()
                     val opaque = colors.map { it.copy(alpha = 1f) }
                     val vector = Offset(
-                        x = cos(animationTime * BACKGROUND_SPEED) * size.width,
-                        y = sin(animationTime * BACKGROUND_SPEED) * size.height,
+                        x = cos(animationTime * BACKGROUND_SPEED) * size.width * WORDMARK_SWEEP_X,
+                        y = sin(animationTime * BACKGROUND_SPEED) * size.height * WORDMARK_SWEEP_Y,
                     )
                     drawRect(
                         brush = Brush.linearGradient(
@@ -414,7 +418,10 @@ private fun strengthenGradientColor(color: Color): Color {
 }
 
 private fun animatedGradientColors(animationTime: Float, dark: Boolean): List<Color> {
-    val palettes = if (dark) DarkPalettes else LightPalettes
+    return interpolatePalettes(if (dark) DarkPalettes else LightPalettes, animationTime)
+}
+
+private fun interpolatePalettes(palettes: List<List<Color>>, animationTime: Float): List<Color> {
     val segmentValue = animationTime / COLOR_INTERPOLATION_SECONDS
     val segment = floor(segmentValue).toInt() % 4
     val rawProgress = segmentValue - floor(segmentValue)
@@ -428,6 +435,23 @@ private fun animatedGradientColors(animationTime: Float, dark: Boolean): List<Co
     return start.indices.map { index ->
         lerp(start[index], end[index], progress)
     }
+}
+
+// Saturated brand palettes for the wordmark itself. The page field uses pastel
+// washes tuned for a translucent backdrop; the wordmark needs full-strength
+// colours or the gradient reads as washed-out white text in light mode.
+private val LightWordmarkPalettes = listOf(
+    listOf(Color(0xFF54B7FF), Color(0xFF7D8BFF), Color(0xFFC47BF0), Color(0xFFEE86BD)),
+    listOf(Color(0xFF7D8BFF), Color(0xFFC47BF0), Color(0xFFEE86BD), Color(0xFF54B7FF)),
+    listOf(Color(0xFFC47BF0), Color(0xFFEE86BD), Color(0xFF54B7FF), Color(0xFF7D8BFF)),
+)
+private val DarkWordmarkPalettes = listOf(
+    listOf(Color(0xFF6EC6FF), Color(0xFF9DA9FF), Color(0xFFD79BFF), Color(0xFFFF9ECF)),
+    listOf(Color(0xFF9DA9FF), Color(0xFFD79BFF), Color(0xFFFF9ECF), Color(0xFF6EC6FF)),
+    listOf(Color(0xFFD79BFF), Color(0xFFFF9ECF), Color(0xFF6EC6FF), Color(0xFF9DA9FF)),
+)
+private fun wordmarkGradientColors(animationTime: Float, dark: Boolean): List<Color> {
+    return interpolatePalettes(if (dark) DarkWordmarkPalettes else LightWordmarkPalettes, animationTime)
 }
 
 private val LightPalettes = listOf(

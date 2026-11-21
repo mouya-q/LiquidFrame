@@ -17,15 +17,15 @@ standard library only (zlib + struct), which is all the build environment has.
 Usage
 -----
     python3 tools/icon_from_png.py <input.png> <output.png> [--size 432]
-                                   [--pad 0.01] [--mode crop|canvas]
+                                   [--pad 0.01] [--mode crop|canvas] [--fit-safe]
 
 `--mode crop` (default) trims to the artwork's opaque bounding box and centres
 the result; use it when the artwork *is* the whole glyph.
 
 `--mode canvas` keeps the original square canvas, transparent margins included.
-That is the right mode for an adaptive-icon foreground: the supplied artwork
-already places its line work inside the 72/108 dp safe area, so preserving the
-canvas margins is what keeps the mark from being clipped by the launcher mask.
+`--fit-safe` (canvas mode only) expands that canvas so the artwork's opaque
+bounding box fills at most 72/108 of it — the zone launchers actually show —
+so no launcher mask can crop into the artwork; the surplus stays transparent.
 
 Output: RGBA8, non-interlaced PNG.
 """
@@ -257,6 +257,7 @@ def main(argv: list[str]) -> int:
     size = 432
     pad_ratio = 0.01
     mode = "crop"
+    fit_safe = False
     index = 3
     while index < len(argv):
         if argv[index] == "--size":
@@ -270,6 +271,9 @@ def main(argv: list[str]) -> int:
             if mode not in ("crop", "canvas"):
                 raise SystemExit(f"unknown mode {mode!r}")
             index += 2
+        elif argv[index] == "--fit-safe":
+            fit_safe = True
+            index += 1
         else:
             raise SystemExit(f"unknown argument {argv[index]!r}")
 
@@ -280,6 +284,34 @@ def main(argv: list[str]) -> int:
             raise SystemExit(f"--mode canvas needs a square source; got {width}x{height}")
         box_left = box_top = 0
         box_w = box_h = width
+        if fit_safe:
+            # The launcher only shows the middle 72/108 of a foreground layer.
+            # Expand the canvas so the artwork fits inside that zone; the added
+            # margin is transparent, so the artwork itself is untouched.
+            top, bottom, left, right = opaque_bounds(width, height, rows)
+            artwork_w = right - left + 1
+            artwork_h = bottom - top + 1
+            safe_side = max(artwork_w, artwork_h) * 108 / 72 * 1.02
+            expanded = width
+            steps = 0
+            while expanded < safe_side and steps < 4096:
+                expanded += 2
+                steps += 1
+            extra = expanded - width
+            # Rebuild the rows with an expanded transparent canvas, centred.
+            new_rows = []
+            for y in range(expanded):
+                if extra // 2 <= y < extra // 2 + height:
+                    src = rows[y - extra // 2]
+                    line = bytearray(expanded * 4)
+                    line[extra // 2 * 4:extra // 2 * 4 + width * 4] = src
+                    new_rows.append(line)
+                else:
+                    new_rows.append(bytearray(expanded * 4))
+            rows = new_rows
+            width = height = expanded
+            box_left = box_top = 0
+            box_w = box_h = expanded
         print(f"source {width}x{height}  keeping full canvas")
     else:
         top, bottom, left, right = opaque_bounds(width, height, rows)

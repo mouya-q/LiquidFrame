@@ -2,38 +2,28 @@ package com.mouya.LiquidFrame.glass
 
 data class GlassParams(
 
-    val refractionHeightFraction: Float = 0.20f,
-
-    val refractionAmountFraction: Float = 0.34f,
+    val refractionHeightFraction: Float = 0.12f,
+    val refractionAmountFraction: Float = 0.9f,
 
     val cornerRadiusFraction: Float = 0.5f,
-
-    val blurFraction: Float = 0.08f,
-
+    val blurFraction: Float = 0.05f,
     val vibrancy: Float = 1f,
     val vibrancyBrightness: Float = 0f,
-
     val depthEffect: Float = 1f,
-
     val chromaticAberration: Boolean = true,
     val dispersionIntensity: Float = 0.18f,
-
     val tintColor: Int = 0xFFFFFFFF.toInt(),
     val tintHueWeight: Float = 0.75f,
-
-    val tintAlpha: Float = 0.018f,
-
+    val tintAlpha: Float = 0.01f,
     val surfaceAlpha: Float = 0.022f,
-
-    val interiorLift: Float = 0f,
+    val interiorLift: Float = 0.22f,
 
     val preserveContent: Boolean = true,
 
     val highlightGain: Float = 1f,
     val highlightAngleDeg: Float = 45f,
     val highlightFalloff: Float = 1f,
-
-    val rimAlpha: Float = 0.22f,
+    val rimAlpha: Float = 0.24f,
 
     val rimWidthFraction: Float = 0.16f,
 

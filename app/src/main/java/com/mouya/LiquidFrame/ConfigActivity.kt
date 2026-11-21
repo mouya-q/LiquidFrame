@@ -283,7 +283,7 @@ class ConfigActivity : ComponentActivity() {
         var savePresetDialog by remember { mutableStateOf(false) }
         var clearConfigDialog by remember { mutableStateOf(false) }
         var presetName by remember { mutableStateOf("") }
-        var presetLabel by remember { mutableStateOf("Edge Clear") }
+        var presetLabel by remember { mutableStateOf("Softglass") }
 
         var enabled by remember { mutableStateOf(ConfigStore.isEnabled()) }
         var capsuleEnabled by remember { mutableStateOf(ConfigStore.capsuleEnabled()) }
@@ -374,8 +374,18 @@ class ConfigActivity : ComponentActivity() {
         }
 
         fun applyBuiltInPreset(name: String) {
+            // "Edge Clear" preserves the pre-Softglass defaults so the old look
+            // stays one tap away.
             val d = GlassParams.Default
             val p = when (name) {
+                "Edge Clear" -> GlassParams(
+                    refractionHeightFraction = 0.20f,
+                    refractionAmountFraction = 0.34f,
+                    blurFraction = 0.08f,
+                    tintAlpha = 0.018f,
+                    interiorLift = 0f,
+                    rimAlpha = 0.22f,
+                )
                 "Edge Soft" -> d.copy(refractionHeightFraction = 0.16f, refractionAmountFraction = 0.22f, blurFraction = 0.04f, tintAlpha = 0.012f, surfaceAlpha = 0.012f, rimAlpha = 0.16f, rimAmbient = 0.12f)
                 "Night Clear" -> d.copy(refractionHeightFraction = 0.22f, refractionAmountFraction = 0.38f, blurFraction = 0.10f, tintAlpha = 0.026f, surfaceAlpha = 0.03f, rimAlpha = 0.24f, rimAmbient = 0.2f)
                 else -> d
@@ -421,7 +431,7 @@ class ConfigActivity : ComponentActivity() {
             capsuleLogoPreset = "Apple"
             capsuleLogoPosition = "MIDDLE"
             capsuleScale = 1f
-            presetLabel = "Edge Clear"
+            presetLabel = "Softglass"
         }
 
         if (clearConfigDialog) {
@@ -583,6 +593,7 @@ class ConfigActivity : ComponentActivity() {
                                             ) {
                                                 LiquidMenuPanel(
                                                     options = buildList {
+                                                        add("Softglass" to "Softglass")
                                                         add("Edge Clear" to "Edge Clear")
                                                         add("Edge Soft" to "Edge Soft")
                                                         add("Night Clear" to "Night Clear")
@@ -591,7 +602,7 @@ class ConfigActivity : ComponentActivity() {
                                                     selected = presetLabel,
                                                     onSelected = { name ->
                                                         when {
-                                                            name == "Edge Clear" || name == "Edge Soft" || name == "Night Clear" -> applyBuiltInPreset(name)
+                                                            name == "Softglass" || name == "Edge Clear" || name == "Edge Soft" || name == "Night Clear" -> applyBuiltInPreset(name)
                                                             else -> ConfigStore.loadPreset(name)?.let { applyPresetValues(it); presetLabel = name }
                                                         }
                                                     },
