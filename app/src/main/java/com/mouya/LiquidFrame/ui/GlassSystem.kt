@@ -197,9 +197,11 @@ fun Modifier.liquidGlassCard(
  * and 0.72-alpha #1C1C1E in dark mode, following the dashboard palette.
  */
 @Composable
-fun glassContainer(): Color =
-    if (isSystemInDarkTheme()) Color(0xFF1C1C1E).copy(alpha = 0.72f)
-    else Color.White.copy(alpha = 0.72f)
+fun glassContainer(alpha: Float? = null): Color {
+    val resolvedAlpha = (alpha ?: 0.72f).coerceIn(0.08f, 1f)
+    return if (isSystemInDarkTheme()) Color(0xFF1C1C1E).copy(alpha = resolvedAlpha)
+    else Color.White.copy(alpha = resolvedAlpha)
+}
 
 // =====================================================================================
 // Core glass surface modifier

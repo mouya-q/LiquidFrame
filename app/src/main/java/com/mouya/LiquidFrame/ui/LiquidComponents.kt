@@ -141,6 +141,8 @@ fun SettingSection(
     modifier: Modifier = Modifier,
     collapsible: Boolean = false,
     initiallyExpanded: Boolean = true,
+    surfaceAlpha: Float? = null,
+    softBlur: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by remember(title) { mutableStateOf(initiallyExpanded) }
@@ -207,10 +209,18 @@ fun SettingSection(
             exit = shrinkVertically(shrinkTowards = Alignment.Top) +
                     fadeOut(animationSpec = tween(durationMillis = 110)),
         ) {
+            val shape = LiquidShapes.compact
+            val surface = glassContainer(surfaceAlpha)
+            val cardSurface = if (softBlur) {
+                Modifier
+                    .shadow(16.dp, shape, ambientColor = Color.Black.copy(alpha = 0.10f), spotColor = Color.Black.copy(alpha = 0.10f))
+                    .liquidBackdropBlur(shape = shape, blurRadius = 22.dp, surfaceColor = surface)
+                    .border(0.5.dp, separatorColor().copy(alpha = 0.55f), shape)
+            } else {
+                Modifier.liquidGlassCard(shape = shape, cornerRadius = 16.dp, glass = surface)
+            }
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .liquidGlassCard(shape = LiquidShapes.compact, cornerRadius = 16.dp, glass = glassContainer()),
+                modifier = Modifier.fillMaxWidth().then(cardSurface),
                 content = content,
             )
         }
@@ -424,8 +434,12 @@ fun LiquidMenuPanel(
     Column(
         modifier = modifier
             .shadow(20.dp, ContinuousRoundedRectangle(18.dp), ambientColor = Color.Black.copy(alpha = 0.22f), spotColor = Color.Black.copy(alpha = 0.22f))
+            .liquidBackdropBlur(
+                shape = ContinuousRoundedRectangle(18.dp),
+                blurRadius = 24.dp,
+                surfaceColor = surfaceColor().copy(alpha = if (isDark()) 0.84f else 0.78f),
+            )
             .clip(ContinuousRoundedRectangle(18.dp))
-            .background(surfaceColor())
             .border(0.5.dp, separatorColor().copy(alpha = 0.6f), ContinuousRoundedRectangle(18.dp))
             .widthIn(min = 190.dp)
             .heightIn(max = 360.dp)
@@ -444,6 +458,11 @@ fun LiquidMenuPanel(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clip(ContinuousRoundedRectangle(12.dp))
+                    .background(
+                        if (active) LiquidColors.blue.copy(alpha = if (isDark()) 0.18f else 0.10f)
+                        else Color.Transparent,
+                    )
                     .graphicsLayer {
                         scaleX = rowScale
                         scaleY = rowScale

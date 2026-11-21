@@ -17,6 +17,7 @@ class LiquidFrameHook : IXposedHookLoadPackage {
         if (param.packageName != "com.android.camera" && param.packageName != "com.miui.camera") return
 
         XposedBridge.log("LiquidFrame: Camera loaded (${param.packageName})")
+        LFLogger.i("Camera package loaded: ${param.packageName}")
         // Log the camera APK path so we can identify the exact version at runtime.
         try {
             val ctx = XposedHelpers.callStaticMethod(

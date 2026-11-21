@@ -65,6 +65,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,10 +108,12 @@ import com.mouya.LiquidFrame.ui.bgPrimary
 import com.mouya.LiquidFrame.ui.isDark
 import com.mouya.LiquidFrame.ui.textPrimary
 import com.mouya.LiquidFrame.ui.textSecondary
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 class ConfigActivity : ComponentActivity() {
@@ -150,6 +153,7 @@ class ConfigActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         ConfigStore.init(this)
         ConfigStore.load()
+        LFLogger.i("Settings activity initialized")
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
@@ -327,9 +331,15 @@ class ConfigActivity : ComponentActivity() {
             }
         }
 
+        // Persist every live control from one coherent snapshot. Separate effects used to
+        // save the material and capsule maps concurrently; each took a stale snapshot and
+        // could overwrite the other's last slider / logo selection.
         LaunchedEffect(
             enabled, adaptive, preserveContent, dispersion,
             band, amount, blur, lift, tint, rim, angle, depth,
+            capsuleEnabled, capsulePos, capsuleModel, capsuleModelEnabled,
+            capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleShowLogo,
+            capsuleLogoPreset, capsuleLogoPosition, capsuleScale,
         ) {
             kotlinx.coroutines.delay(120)
             val values = ConfigStore.snapshot().apply {
@@ -345,31 +355,9 @@ class ConfigActivity : ComponentActivity() {
                 this[ConfigStore.KEY_RIM] = rim.toString()
                 this[ConfigStore.KEY_ANGLE] = angle.toString()
                 this[ConfigStore.KEY_DEPTH] = depth.toString()
-            }
-            val status = withContext(Dispatchers.IO) {
-                ConfigStore.save(values)
-                ConfigStore.lastWriteStatus()
-            }
-            writeStatus = status
-            schedulePreview { bitmap ->
-                replaceDisplayedPreview(bitmap)
-                previewBitmap = bitmap
-            }
-        }
-
-        // Capsule settings: save config AND re-run preview so the user sees
-        // capsule changes (logo, scale, toggles, text) reflected in real time.
-        LaunchedEffect(
-            capsuleEnabled, capsulePos, capsuleModel, capsuleModelEnabled,
-            capsuleShowDatetime, capsuleShowExif, capsuleShowGps, capsuleShowLogo,
-            capsuleLogoPreset, capsuleLogoPosition, capsuleScale,
-        ) {
-            kotlinx.coroutines.delay(120)
-            val effectiveModel = if (capsuleModelEnabled) capsuleModel else ""
-            val values = ConfigStore.snapshot().apply {
                 this[ConfigStore.KEY_CAPSULE_ENABLED] = capsuleEnabled.toString()
                 this[ConfigStore.KEY_CAPSULE_POS] = capsulePos
-                this[ConfigStore.KEY_CAPSULE_MODEL] = effectiveModel
+                this[ConfigStore.KEY_CAPSULE_MODEL] = if (capsuleModelEnabled) capsuleModel else ""
                 this[ConfigStore.KEY_CAPSULE_DATETIME] = capsuleShowDatetime.toString()
                 this[ConfigStore.KEY_CAPSULE_EXIF] = capsuleShowExif.toString()
                 this[ConfigStore.KEY_CAPSULE_GPS] = capsuleShowGps.toString()
@@ -670,7 +658,7 @@ class ConfigActivity : ComponentActivity() {
                                     "相机参数",
                                     capsuleShowExif,
                                     { capsuleShowExif = !capsuleShowExif },
-                                    "仅显示本次拍摄记录的 35mm 等效焦距、光圈、快门和 ISO；缺失项不猜测",
+                                    "仅显示本次拍摄记录的 35mm 等效焦距、光圈、快门和 ISO",
                                 )
                                 SettingDivider()
                                 LiquidToggleRow(
@@ -911,8 +899,13 @@ class ConfigActivity : ComponentActivity() {
                         LiquidPage.Log -> {
                             val logScroll = rememberScrollState()
                             var logText by remember { mutableStateOf<List<String>>(emptyList()) }
-                            LaunchedEffect(Unit) {
-                                logText = LFLogger.tail(200)
+                            var logRefreshId by remember { mutableIntStateOf(0) }
+                            val logScope = rememberCoroutineScope()
+                            LaunchedEffect(logRefreshId) {
+                                while (true) {
+                                    logText = withContext(Dispatchers.IO) { LFLogger.readTail(200) }
+                                    kotlinx.coroutines.delay(1_500)
+                                }
                             }
                             Column(
                                 modifier = Modifier
@@ -933,9 +926,7 @@ class ConfigActivity : ComponentActivity() {
                                         color = textPrimary(),
                                     )
                                     androidx.compose.material3.TextButton(
-                                        onClick = {
-                                            logText = LFLogger.tail(200)
-                                        }
+                                        onClick = { logRefreshId++ }
                                     ) {
                                         Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Text("刷新", modifier = Modifier.padding(start = 6.dp))
@@ -949,16 +940,16 @@ class ConfigActivity : ComponentActivity() {
                                         verticalArrangement = Arrangement.spacedBy(2.dp),
                                     ) {
                                         if (logText.isEmpty()) {
-                                            Text("暂无日志", fontSize = 13.sp, color = textSecondary())
+                                            Text("等待日志…启动相机并触发一次拍摄后，这里会显示模块运行记录。", fontSize = 13.sp, color = textSecondary())
                                         } else {
                                             logText.forEach { line ->
                                                 Text(
                                                     line,
                                                     fontSize = 11.sp,
                                                     color = when {
-                                                        line.contains("ERROR", ignoreCase = true) -> LiquidColors.error
-                                                        line.contains("WARN", ignoreCase = true) -> LiquidColors.warning
-                                                        line.contains("INFO", ignoreCase = true) -> LiquidColors.blue
+                                                        line.contains("ERROR", ignoreCase = true) || line.contains("E/LiquidFrame") -> LiquidColors.error
+                                                        line.contains("WARN", ignoreCase = true) || line.contains("W/LiquidFrame") -> LiquidColors.warning
+                                                        line.contains("INFO", ignoreCase = true) || line.contains("I/LiquidFrame") -> LiquidColors.blue
                                                         else -> textSecondary()
                                                     },
                                                     modifier = Modifier.fillMaxWidth(),
@@ -985,7 +976,7 @@ class ConfigActivity : ComponentActivity() {
                                         }
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             androidx.compose.material3.TextButton(onClick = {
-                                                val content = LFLogger.tail(500).joinToString("\n")
+                                                val content = logText.takeLast(500).joinToString("\n")
                                                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                 clipboard.setPrimaryClip(
                                                     ClipData.newPlainText("LiquidFrame Log", content),
@@ -996,9 +987,12 @@ class ConfigActivity : ComponentActivity() {
                                                 Text("复制")
                                             }
                                             androidx.compose.material3.TextButton(onClick = {
-                                                LFLogger.clear()
-                                                logText = emptyList()
-                                                Toast.makeText(this@ConfigActivity, "日志已清空", Toast.LENGTH_SHORT).show()
+                                                logScope.launch {
+                                                    withContext(Dispatchers.IO) { LFLogger.clear() }
+                                                    logText = emptyList()
+                                                    logRefreshId++
+                                                    Toast.makeText(this@ConfigActivity, "日志已清空", Toast.LENGTH_SHORT).show()
+                                                }
                                             }) {
                                                 Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                                 Text("清空")
@@ -1060,6 +1054,7 @@ class ConfigActivity : ComponentActivity() {
                 return@Runnable
             }
             val params = ConfigStore.glassParams()
+            val settings = ConfigStore.snapshot().toMap()
             previewExecutor.execute {
                 // Skip this render entirely if a newer one was scheduled while this
                 // one sat in the queue — that queue is what let the preview lag
@@ -1068,7 +1063,7 @@ class ConfigActivity : ComponentActivity() {
                     copy.recycle()
                     return@execute
                 }
-                renderPreview(copy, params)
+                renderPreview(copy, params, settings)
                 mainHandler.post {
                     if (generation != previewGeneration.get() || isFinishing || isDestroyed) {
                         copy.recycle()
@@ -1082,57 +1077,81 @@ class ConfigActivity : ComponentActivity() {
         mainHandler.postDelayed(scheduled, 60L)
     }
 
-    private fun renderPreview(bitmap: Bitmap, params: GlassParams) {
+    private fun settingBoolean(values: Map<String, String>, key: String, default: Boolean): Boolean =
+        when (values[key]?.lowercase(Locale.US)) {
+            "true", "1", "yes" -> true
+            "false", "0", "no" -> false
+            else -> default
+        }
+
+    private fun settingFloat(values: Map<String, String>, key: String, default: Float): Float =
+        values[key]?.toFloatOrNull()?.takeIf { it.isFinite() } ?: default
+
+    private fun renderPreview(bitmap: Bitmap, params: GlassParams, settings: Map<String, String>) {
         val width = bitmap.width
         val height = bitmap.height
         val shortSide = minOf(width, height)
         if (width < 160 || height < 160) return
+        if (!settingBoolean(settings, ConfigStore.KEY_CAPSULE_ENABLED, true)) return
+
         val previewMeta = CapsuleRenderer.CaptureMeta(
             captureMillis = 1_792_657_488_000L,
             location = Location("preview").apply { latitude = 27.925; longitude = 118.549 },
             exif = CapsuleRenderer.ExifBits(100.0, 2.8, 1.0 / 461.0, 50),
         )
-        // The logo goes through its own loader here; a failed logo drops just the logo
-        // (the renderer isolates it) so the capsule preview never disappears for it.
-        val showLogo = ConfigStore.capsuleShowLogo()
-        val logo = if (showLogo) loadPreviewLogo(ConfigStore.capsuleLogoPreset()) else null
+        val showLogo = settingBoolean(settings, ConfigStore.KEY_CAPSULE_LOGO, true)
+        val logoPreset = when (settings[ConfigStore.KEY_CAPSULE_LOGO_PRESET]?.lowercase(Locale.US)) {
+            "leica" -> "Leica"
+            "leicawhite" -> "LeicaWhite"
+            "none", "off", "disabled" -> "None"
+            else -> "Apple"
+        }
+        val logo = if (showLogo && logoPreset != "None") loadPreviewLogo(logoPreset) else null
         val options = CapsuleRenderer.Options(
-            modelOverride = ConfigStore.capsuleModel(),
-            position = ConfigStore.capsulePos(),
-            showDateTime = ConfigStore.capsuleShowDatetime(),
-            showExif = ConfigStore.capsuleShowExif(),
-            showGps = ConfigStore.capsuleShowGps(),
-            scale = ConfigStore.capsuleScale(),
+            modelOverride = settings[ConfigStore.KEY_CAPSULE_MODEL]?.trim().orEmpty(),
+            position = when (settings[ConfigStore.KEY_CAPSULE_POS]?.lowercase(Locale.US)) {
+                "center" -> "center"
+                "right" -> "right"
+                else -> "left"
+            },
+            showDateTime = settingBoolean(settings, ConfigStore.KEY_CAPSULE_DATETIME, true),
+            showExif = settingBoolean(settings, ConfigStore.KEY_CAPSULE_EXIF, true),
+            showGps = settingBoolean(settings, ConfigStore.KEY_CAPSULE_GPS, true),
+            scale = settingFloat(settings, ConfigStore.KEY_CAPSULE_SCALE, 1f).coerceIn(0.6f, 2f),
             showLogo = showLogo,
             logo = logo,
-            logoPreset = ConfigStore.capsuleLogoPreset(),
-            logoPosition = ConfigStore.capsuleLogoPosition(),
+            logoPreset = logoPreset,
+            logoPosition = settings[ConfigStore.KEY_CAPSULE_LOGO_POSITION]?.trim()?.uppercase(Locale.US) ?: "MIDDLE",
         )
-        val lines = CapsuleRenderer.buildLines(options, previewMeta, shortSide)
-        val metrics = CapsuleRenderer.measureCapsule(width, shortSide, options.scale, lines, options) ?: return
-        val leftInset = (width * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
-        val left = when (options.position) {
-            "right" -> width - leftInset - metrics.capsuleWidth
-            "center" -> (width - metrics.capsuleWidth) * 0.5f
-            else -> leftInset
-        }.coerceIn(0f, (width - metrics.capsuleWidth).coerceAtLeast(0f))
-        val bottomMargin = (shortSide * 0.016f).coerceIn(4f, shortSide * 0.06f)
-        val top = height - bottomMargin - metrics.capsuleHeight
-        val panel = PanelRect(left, top, metrics.capsuleWidth, metrics.capsuleHeight, metrics.capsuleHeight * 0.5f)
         try {
+            val lines = CapsuleRenderer.buildLines(options, previewMeta, shortSide)
+            val metrics = CapsuleRenderer.measureCapsule(width, shortSide, options.scale, lines, options) ?: return
+            val leftInset = (width * CapsuleRenderer.HORIZONTAL_EDGE_INSET_FRACTION).coerceAtLeast(1f)
+            val left = when (options.position) {
+                "right" -> width - leftInset - metrics.capsuleWidth
+                "center" -> (width - metrics.capsuleWidth) * 0.5f
+                else -> leftInset
+            }.coerceIn(0f, (width - metrics.capsuleWidth).coerceAtLeast(0f))
+            val bottomMargin = (shortSide * 0.016f).coerceIn(4f, shortSide * 0.06f)
+            val top = height - bottomMargin - metrics.capsuleHeight
+            val panel = PanelRect(left, top, metrics.capsuleWidth, metrics.capsuleHeight, metrics.capsuleHeight * 0.5f)
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-            val tuned = GlassSceneTuner.resolveParams(pixels, width, height, panel, params).copy(preserveContent = false)
-            val glassResult = LiquidGlassOptics.renderPanel(pixels, width, height, panel, tuned, panelIsOpaquePlate = false)
-            if (glassResult.startsWith("skip")) {
-                Log.w(TAG, "preview render skipped: $glassResult")
-                return
+
+            if (settingBoolean(settings, ConfigStore.KEY_ENABLED, true)) {
+                val tuned = GlassSceneTuner.resolveParams(pixels, width, height, panel, params).copy(preserveContent = false)
+                val glassResult = LiquidGlassOptics.renderPanel(pixels, width, height, panel, tuned, panelIsOpaquePlate = false)
+                if (glassResult.startsWith("skip")) {
+                    Log.w(TAG, "preview render skipped: $glassResult")
+                    return
+                }
             }
+
             val textLayer = CapsuleRenderer.drawTextLayer(width, height, panel, metrics, CapsuleRenderer.TEXT_COLOR_WHITE)
                 ?: return
             CapsuleRenderer.blendTextOver(pixels, textLayer)
             bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-            Log.d(TAG, "preview rendered: ${metrics.capsuleWidth.toInt()}x${metrics.capsuleHeight.toInt()} $glassResult")
+            Log.d(TAG, "preview rendered: logo=$logoPreset, enabled=${settings[ConfigStore.KEY_ENABLED]}, panel=${metrics.capsuleWidth.toInt()}x${metrics.capsuleHeight.toInt()}")
         } catch (t: Throwable) {
             Log.w(TAG, "preview render failed: ${t.javaClass.simpleName}: ${t.message}")
         } finally {

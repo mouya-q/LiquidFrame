@@ -136,12 +136,17 @@ object ConfigStore {
      * or `su` escalation. The camera process reads the legacy path, so both must be kept in
      * sync for settings to take effect.
      */
+    @Synchronized
     fun save(values: Map<String, String>) {
-        cached = LinkedHashMap(values)
+        // Keep the format version in memory as well as on disk. Preview rendering and
+        // typed accessors consult this cache; without it the just-saved v2 controls were
+        // silently interpreted as v1 defaults until the next process restart.
+        val normalized = LinkedHashMap(values).apply { remove("version") }
+        cached = LinkedHashMap(normalized).apply { this["version"] = VERSION.toString() }
         val text = buildString {
             appendLine("# LiquidFrame settings")
             appendLine("version=$VERSION")
-            values.toSortedMap().forEach { (k, v) -> appendLine("$k=$v") }
+            normalized.toSortedMap().forEach { (k, v) -> appendLine("$k=$v") }
         }
 
         val primaryMode = writeText(file, text)
@@ -448,8 +453,11 @@ object ConfigStore {
         val version = cached["version"]?.toIntOrNull() ?: 1
         if (version < 2) return "Apple"
         val stored = cached[KEY_CAPSULE_LOGO_PRESET]?.trim().orEmpty()
-        return when (stored) {
-            "Apple", "Leica", "LeicaWhite", "None" -> stored
+        return when (stored.lowercase(Locale.US)) {
+            "apple" -> "Apple"
+            "leica" -> "Leica"
+            "leicawhite" -> "LeicaWhite"
+            "none", "off", "disabled" -> "None"
             else -> "Apple"
         }
     }

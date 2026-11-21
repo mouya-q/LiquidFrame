@@ -1,4 +1,19 @@
 
+## 2.3.1 — Verified against both shipped cameras; two reflective fixes
+- `tools/verify_runtime_100.py` replays every runtime matcher (12 layers) against the whole
+  APK: camera 6.6.000460.1 → capture record `xi/a`, receiver `S8/d.f`, factory `b.c`
+  (9 params, bitmapIdx 1), final JPEG guard `bitmapToJpeg`, native `CloudWmAttribute`;
+  camera 6.7.000480.0 → same layers plus `gi.e` data interface, `di.s` landing class, and
+  both `bitmapToJpeg`/`bitmapToJpegBuffer`. RESULT: PASS on both. The `gi.e` landing family
+  is 6.7-only, so its absence on 6.6 is the designed degradation, not a defect.
+- Fix: the `CloudWmAttribute` neutraliser wrote two **private** fields with
+  `getDeclaredField(...).set(...)` and no `isAccessible = true`, so the reflective write threw
+  `IllegalAccessException` and the native watermark silently stayed on. Now both fields are
+  marked accessible before the write.
+- Fix: `hookCloudWatermarkAttribute` was only installed from `installTypedPipelineHooks`, so a
+  build whose class lookup failed on first pass never retried after the DEX scan completed.
+  It is now re-run by the late-discovery pass like every other hook.
+
 ## 2.3.0 — Camera 6.6/6.7: the native engine no longer overwrites the glass
 
 - Root cause: the finished photo never passes a Java encoder on 6.6/6.7 — the MIVI/CV

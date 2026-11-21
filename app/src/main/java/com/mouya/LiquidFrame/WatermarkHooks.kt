@@ -199,7 +199,9 @@ object WatermarkHooks {
         if (cachedLogoPreset != presetName) {
             synchronized(logoLock) {
                 if (cachedLogoPreset != presetName) {
-                    cachedLogo?.let { if (!it.isRecycled) it.recycle() }
+                    // A camera frame may still be drawing the previous cached bitmap.
+                    // Drop the cache reference, but let GC reclaim it after in-flight users
+                    // release it; recycling here can race Canvas / pixel reads on that frame.
                     cachedLogo = null
                     cachedLogoPreset = presetName
                 }
@@ -868,8 +870,17 @@ object WatermarkHooks {
                         GlassConfig.refresh()
                         if (!GlassConfig.masterEnabled || !ConfigStore.capsuleEnabled()) return
                         val self = p.thisObject ?: return
-                        cls.getDeclaredField("mUserConfigData").set(self, ByteArray(0))
-                        cls.getDeclaredField("mWatermarkId").set(self, "")
+                        // Both fields are private instance fields, so reflective writes must
+                        // clear the access check first — without this the write throws
+                        // IllegalAccessException and the native watermark stays on.
+                        val configField = cls.getDeclaredField("mUserConfigData").apply {
+                            isAccessible = true
+                        }
+                        val idField = cls.getDeclaredField("mWatermarkId").apply {
+                            isAccessible = true
+                        }
+                        configField.set(self, ByteArray(0))
+                        idField.set(self, "")
                     } catch (t: Throwable) {
                         log("native watermark off failed: ${t.javaClass.simpleName}: ${t.message}")
                     }
@@ -1313,6 +1324,7 @@ object WatermarkHooks {
                 hookCaptureContext(loader)
                 hookWatermarkBitmapFactory(loader)
                 hookFinalJpegEncoder(loader)
+                hookCloudWatermarkAttribute(loader)
                 hookJpegLandingVerifier(loader)
                 hookBitmapEncodeHelpers(loader)
                 hookLiveRecorderSnapshots(loader)
